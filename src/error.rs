@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use jpeg::UnsupportedFeature;
 
+use crate::entry::BufferedEntry;
 use crate::tags::{
     CompressionMethod, PhotometricInterpretation, PlanarConfiguration, SampleFormat, Tag,
 };
@@ -52,7 +53,7 @@ pub enum TiffFormatError {
     TiffSignatureNotFound,
     TiffSignatureInvalid,
     ImageFileDirectoryNotFound,
-    InconsistentSizesEncountered,
+    InconsistentSizesEncountered(BufferedEntry),
     UnexpectedCompressedData {
         actual_bytes: usize,
         required_bytes: usize,
@@ -67,11 +68,13 @@ pub enum TiffFormatError {
     RequiredTagNotFound(Tag),
     UnknownPredictor(u16),
     UnknownPlanarConfiguration(u16),
-    ByteExpected(Value),
-    SignedByteExpected(Value),
-    SignedShortExpected(Value),
-    UnsignedIntegerExpected(Value),
-    SignedIntegerExpected(Value),
+    ByteExpected(BufferedEntry),
+    SignedByteExpected(BufferedEntry),
+    SignedShortExpected(BufferedEntry),
+    UnsignedIntegerExpected(BufferedEntry),
+    SignedIntegerExpected(BufferedEntry),
+    FloatExpected(BufferedEntry),
+    AsciiExpected(BufferedEntry),
     Format(String),
     RequiredTagEmpty(Tag),
     StripTileTagConflict,
@@ -83,11 +86,11 @@ pub enum TiffFormatError {
 impl fmt::Display for TiffFormatError {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         use self::TiffFormatError::*;
-        match *self {
+        match &self {
             TiffSignatureNotFound => write!(fmt, "TIFF signature not found."),
             TiffSignatureInvalid => write!(fmt, "TIFF signature invalid."),
             ImageFileDirectoryNotFound => write!(fmt, "Image file directory not found."),
-            InconsistentSizesEncountered => write!(fmt, "Inconsistent sizes encountered."),
+            InconsistentSizesEncountered(val) => write!(fmt, "Inconsistent sizes encountered. {val:?}"),
             UnexpectedCompressedData {
                 actual_bytes,
                 required_bytes,
@@ -129,6 +132,8 @@ impl fmt::Display for TiffFormatError {
             SignedIntegerExpected(ref val) => {
                 write!(fmt, "Expected signed integer, {:?} found.", val)
             }
+            FloatExpected(val) => write!(fmt, "Expected float or double, {val:?} found"),
+            AsciiExpected(val) => write!(fmt, "Expected Ascii, Byte or Undefined, {val:?} found"),
             Format(ref val) => write!(fmt, "Invalid format: {:?}.", val),
             RequiredTagEmpty(ref val) => write!(fmt, "Required tag {:?} was empty.", val),
             StripTileTagConflict => write!(fmt, "File should contain either (StripByteCounts and StripOffsets) or (TileByteCounts and TileOffsets), other combination was found."),

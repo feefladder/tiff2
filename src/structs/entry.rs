@@ -11,13 +11,9 @@ use crate::{
     },
     util::fix_endianness,
     value::Value,
-    ByteOrder,
 };
 
-use std::{
-    collections::BTreeMap,
-    io::{self, Read},
-};
+use std::{collections::BTreeMap, io::Read};
 pub type Directory = BTreeMap<Tag, IfdEntry>;
 
 ///
@@ -28,7 +24,7 @@ pub enum IfdEntry {
         count: u64,
         offset: u64,
     },
-    Value(Value),
+    Value(BufferedEntry),
 }
 
 impl IfdEntry {
@@ -95,14 +91,11 @@ impl IfdEntry {
             let mut offset = vec![0u8; usize::try_from(count)? * tag_type.size()];
             r.read_exact(&mut offset)?;
             fix_endianness(&mut offset, r.byte_order, 8 * tag_type.primitive_size());
-            Ok(IfdEntry::Value(
-                BufferedEntry {
-                    tag_type,
-                    count,
-                    data: offset,
-                }
-                .try_into()?,
-            ))
+            Ok(IfdEntry::Value(BufferedEntry {
+                tag_type,
+                count,
+                data: offset,
+            }))
         }
     }
 }
@@ -111,65 +104,335 @@ impl IfdEntry {
 ///
 /// Should not be used for tags where the data fits in the offset field
 /// byte-order of the data should be native-endian in this buffer
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct BufferedEntry {
     pub tag_type: TagType,
     pub count: u64,
     pub data: Vec<u8>,
 }
 
-// macro_rules! entry_try_into_unsigned {
-//     ($type:ty) => {
-//         #[rustfmt::skip]
-//         impl TryInto<$type> for BufferedEntry {
-//             type Error = TiffError;
+impl BufferedEntry {
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
 
-//             fn try_into(self) -> Result<$type, Self::Error> {
-//                 match self.tag_type {
-//                     BYTE =>         <$type>::try_from(bytemuck::try_cast::<_, u8 >(self.data)?).into(),
-//                     SHORT =>        <$type>::try_from(bytemuck::try_cast::<_, u16>(self.data)?).into(),
-//                     IFD | LONG =>   <$type>::try_from(bytemuck::try_cast::<_, u32>(self.data)?).into(),
-//                     IFD8 | LONG8 => <$type>::try_from(bytemuck::try_cast::<_, u64>(self.data)?).into(),
-//                     _ => Err(TiffFormatError::UnsignedIntegerExpected(self)),
-//                 }
-//             }
-//         }
-//     };
-// }
+    pub fn new(tag_type: TagType, count: u64) -> TiffResult<Self> {
+        Ok(BufferedEntry {
+            tag_type,
+            count,
+            data: vec![0u8; tag_type.size() * usize::try_from(count)?],
+        })
+    }
 
-// entry_try_into_unsigned!(u8);
-// entry_try_into_unsigned!(u16);
-// entry_try_into_unsigned!(u32);
-// entry_try_into_unsigned!(u64);
+    #[rustfmt::skip]
+    pub fn get_u64(&self, index: usize) -> TiffResult<u64> {
+            if usize::try_from(self.count)? <= index {
+                return Err(TiffError::LimitsExceeded);
+            }
+            match self.tag_type {
+                TagType::BYTE                  => Ok(<&[u8 ]>::try_from(self)?[index].into()),
+                TagType::SHORT                 => Ok(<&[u16]>::try_from(self)?[index].into()),
+                TagType::LONG  | TagType::IFD  => Ok(<&[u32]>::try_from(self)?[index].into()),
+                TagType::LONG8 | TagType::IFD8 => Ok(<&[u64]>::try_from(self)?[index].into()),
+                _ => Err(TiffFormatError::UnsignedIntegerExpected(self.clone()).into()),
+            }
+        }
+}
 
+// Conversion logic
+// ----------------
+// structured as follows:
+// - f32/f64
+// - macro
+// - other types using macro
+//
+// with the following:
+// - single value - fails if multiple values
+// - slice - only for the exact type (u64->u64)
+// - vec - also for other types (creates an owned copy of underlying data)
 
-macro_rules! entry_try_into_signed {
+impl TryFrom<&BufferedEntry> for f32 {
+    type Error = TiffError;
+
+    fn try_from(val: &BufferedEntry) -> Result<Self, Self::Error> {
+        if val.data.len() != val.tag_type.size() {
+            return Err(TiffFormatError::InconsistentSizesEncountered(val.clone()).into());
+        }
+        match val.tag_type {
+            TagType::FLOAT => Ok(bytemuck::cast(<[u8; 4]>::try_from(val.data()).unwrap())),
+            _ => Err(TiffFormatError::FloatExpected(val.clone()).into()),
+        }
+    }
+}
+
+#[rustfmt::skip]
+impl TryFrom<&BufferedEntry> for f64 {
+    type Error = TiffError;
+
+    fn try_from(val: &BufferedEntry) -> Result<Self, Self::Error> {
+        if val.data.len() != val.tag_type.size() {
+            return Err(TiffFormatError::InconsistentSizesEncountered(val.clone()).into());
+        }
+        match val.tag_type {
+            TagType::FLOAT  => Ok(Self::from(bytemuck::cast::<_, f32>(<[u8; 4]>::try_from(val.data()).unwrap()))),
+            TagType::DOUBLE => Ok(           bytemuck::cast          (<[u8; 8]>::try_from(val.data()).unwrap()) ),
+            _ =>  Err(TiffFormatError::FloatExpected(val.clone()).into())
+        }
+    }
+}
+
+macro_rules! entry_tryfrom_unsigned {
     ($type:ty) => {
         #[rustfmt::skip]
-        impl TryInto<$type> for BufferedEntry {
+        impl TryFrom<&BufferedEntry> for $type {
             type Error = TiffError;
 
-            fn try_into(self) -> Result<$type, Self::Error> {
-                if self.data.len() != usize::try_from(self.count)? * self.tag_type.size() {
-                    return Err(TiffFormatError::InconsistentSizesEncountered.into());
+            fn try_from(val: &BufferedEntry) -> Result<Self, Self::Error> {
+                if val.data.len() != val.tag_type.size() {
+                    dbg!(val.data.len() != val.tag_type.size());
+                    return Err(TiffFormatError::InconsistentSizesEncountered(val.clone()).into());
                 }
-                match self.tag_type {
-                    TagType::SBYTE  => Ok(<$type>::try_from(bytemuck::try_cast::<_, i8 >(<[u8; 8 ]>::try_from(self.data.as_slice()).unwrap()).unwrap()).unwrap()),
-                    TagType::SSHORT => Ok(<$type>::try_from(bytemuck::try_cast::<_, i16>(<[u8; 16]>::try_from(self.data.as_slice()).unwrap()).unwrap()).unwrap()),
-                    TagType::SLONG  => Ok(<$type>::try_from(bytemuck::try_cast::<_, i32>(<[u8; 32]>::try_from(self.data.as_slice()).unwrap()).unwrap()).unwrap()),
-                    TagType::SLONG8 => Ok(<$type>::try_from(bytemuck::try_cast::<_, i64>(<[u8; 64]>::try_from(self.data.as_slice()).unwrap()).unwrap()).unwrap()),
-                    _ => Err(TiffFormatError::InconsistentSizesEncountered.into())//UnsignedIntegerExpected(self).into()),
+                match val.tag_type {
+                    // because we do `<[u8; n]>::try_from()` in stead of
+                    // `<&[u8;n]>`, we copy over the data, but IDontCare.
+                    TagType::BYTE                  => Ok(Self::try_from(bytemuck::cast::<_, u8 >(<[u8; 1]>::try_from(val.data()).unwrap())).unwrap()),
+                    TagType::SHORT                 => Ok(Self::try_from(bytemuck::cast::<_, u16>(<[u8; 2]>::try_from(val.data()).unwrap())).unwrap()),
+                    TagType::LONG  | TagType::IFD  => Ok(Self::try_from(bytemuck::cast::<_, u32>(<[u8; 4]>::try_from(val.data()).unwrap())).unwrap()),
+                    TagType::LONG8 | TagType::IFD8 => Ok(Self::try_from(bytemuck::cast::<_, u64>(<[u8; 8]>::try_from(val.data()).unwrap())).unwrap()),
+                    _ => Err(TiffFormatError::UnsignedIntegerExpected(val.clone()).into()),
+                }
+            }
+        }
+
+        #[rustfmt::skip]
+        impl TryFrom<&BufferedEntry> for Vec<$type> {
+            type Error = TiffError;
+
+            fn try_from(val: &BufferedEntry) -> Result<Self, Self::Error> {
+                if val.data.len() != val.tag_type.size() * usize::try_from(val.count)? {
+                    dbg!(val.data.len() != val.tag_type.size() * usize::try_from(val.count)?);
+                    return Err(TiffFormatError::InconsistentSizesEncountered(val.clone()).into());
+                }
+                match val.tag_type {
+                    TagType::BYTE                  => Ok(bytemuck::cast_slice::<_, u8 >(val.data()).iter().map(|val| <$type>::try_from(*val).unwrap()).collect()),
+                    TagType::SHORT                 => Ok(bytemuck::cast_slice::<_, u16>(val.data()).iter().map(|val| <$type>::try_from(*val).unwrap()).collect()),
+                    TagType::LONG  | TagType::IFD  => Ok(bytemuck::cast_slice::<_, u32>(val.data()).iter().map(|val| <$type>::try_from(*val).unwrap()).collect()),
+                    TagType::LONG8 | TagType::IFD8 => Ok(bytemuck::cast_slice::<_, u64>(val.data()).iter().map(|val| <$type>::try_from(*val).unwrap()).collect()),
+                    _ => Err(TiffFormatError::UnsignedIntegerExpected(val.clone()).into()),
                 }
             }
         }
     };
 }
 
-entry_try_into_signed!(i8);
-entry_try_into_signed!(i16);
-entry_try_into_signed!(i32);
-entry_try_into_signed!(i64);
+entry_tryfrom_unsigned!(u8);
+entry_tryfrom_unsigned!(u16);
+entry_tryfrom_unsigned!(u32);
+entry_tryfrom_unsigned!(u64);
 
+macro_rules! entry_tryfrom_signed {
+    ($type:ty) => {
+        #[rustfmt::skip]
+        impl TryFrom<&BufferedEntry> for $type {
+            type Error = TiffError;
+
+            fn try_from(val: &BufferedEntry) -> Result<Self, Self::Error> {
+                if val.data.len() != val.tag_type.size() {
+                    return Err(TiffFormatError::InconsistentSizesEncountered(val.clone()).into());
+                }
+                match val.tag_type {
+                    // because we do `<[u8; n]>::try_from()` in stead of
+                    // `<&[u8;n]>`, we copy over the data, but IDC.
+                    TagType::SBYTE  => Ok(<$type>::try_from(bytemuck::cast::<_, i8 >(<[u8; 1]>::try_from(val.data()).unwrap())).unwrap()),
+                    TagType::SSHORT => Ok(<$type>::try_from(bytemuck::cast::<_, i16>(<[u8; 2]>::try_from(val.data()).unwrap())).unwrap()),
+                    TagType::SLONG  => Ok(<$type>::try_from(bytemuck::cast::<_, i32>(<[u8; 4]>::try_from(val.data()).unwrap())).unwrap()),
+                    TagType::SLONG8 => Ok(<$type>::try_from(bytemuck::cast::<_, i64>(<[u8; 8]>::try_from(val.data()).unwrap())).unwrap()),
+                    _ => Err(TiffFormatError::SignedIntegerExpected(val.clone()).into())//UnsignedIntegerExpected(self).into()),
+                }
+            }
+        }
+
+        #[rustfmt::skip]
+        impl TryFrom<&BufferedEntry> for Vec<$type> {
+            type Error = TiffError;
+
+            fn try_from(val: &BufferedEntry) -> Result<Self, Self::Error> {
+                if val.data.len() != val.tag_type.size() * usize::try_from(val.count)? {
+                    return Err(TiffFormatError::InconsistentSizesEncountered(val.clone()).into());
+                }
+                match val.tag_type {
+                    // because we do `<[u8; n]>::try_from()` in stead of
+                    // `<&[u8;n]>`, we copy over the data, but IDC.
+                    TagType::SBYTE  => Ok(bytemuck::cast_slice::<_, i8 >(val.data()).iter().map(|val| <$type>::try_from(*val).unwrap()).collect()),
+                    TagType::SSHORT => Ok(bytemuck::cast_slice::<_, i16>(val.data()).iter().map(|val| <$type>::try_from(*val).unwrap()).collect()),
+                    TagType::SLONG  => Ok(bytemuck::cast_slice::<_, i32>(val.data()).iter().map(|val| <$type>::try_from(*val).unwrap()).collect()),
+                    TagType::SLONG8 => Ok(bytemuck::cast_slice::<_, i64>(val.data()).iter().map(|val| <$type>::try_from(*val).unwrap()).collect()),
+                    _ => Err(TiffFormatError::SignedIntegerExpected(val.clone()).into())//UnsignedIntegerExpected(self).into()),
+                }
+            }
+        }
+    };
+}
+
+entry_tryfrom_signed!(i8);
+entry_tryfrom_signed!(i16);
+entry_tryfrom_signed!(i32);
+entry_tryfrom_signed!(i64);
+
+// ------
+// Slices
+// ------
+
+impl<'a> TryFrom<&'a BufferedEntry> for &'a [f32] {
+    type Error = TiffError;
+
+    fn try_from(val: &'a BufferedEntry) -> Result<Self, Self::Error> {
+        if val.data.len() != val.tag_type.size() * usize::try_from(val.count)? {
+            return Err(TiffFormatError::InconsistentSizesEncountered(val.clone()).into());
+        }
+        match val.tag_type {
+            TagType::FLOAT => Ok(bytemuck::cast_slice(&val.data()[..])),
+            _ => Err(TiffFormatError::FloatExpected(val.clone()).into()),
+        }
+    }
+}
+
+/// slice casting is more stringent and efficient.
+#[rustfmt::skip]
+impl<'a> TryFrom<&'a BufferedEntry> for &'a[f64] {
+    type Error = TiffError;
+
+    fn try_from(val: &'a BufferedEntry) -> Result<Self, Self::Error> {
+        if val.data.len() != val.tag_type.size() * usize::try_from(val.count)? {
+            return Err(TiffFormatError::InconsistentSizesEncountered(val.clone()).into());
+        }
+        match val.tag_type {
+            TagType::DOUBLE => Ok(           bytemuck::cast_slice          (&val.data()[..]) ),
+            _ =>  Err(TiffFormatError::FloatExpected(val.clone()).into())
+        }
+    }
+}
+
+macro_rules! entry_tryfrom_slice {
+    ($type:ty, $($tag_type:pat),+) => {
+        #[rustfmt::skip]
+        impl<'a> TryFrom<&'a BufferedEntry> for &'a[$type] {
+            type Error = TiffError;
+
+            fn try_from(val: &'a BufferedEntry) -> Result<Self, Self::Error> {
+                if val.data.len() != val.tag_type.size() * usize::try_from(val.count)? {
+                    dbg!(val.data.len() != val.tag_type.size());
+                    return Err(TiffFormatError::InconsistentSizesEncountered(val.clone()).into());
+                }
+                match val.tag_type {
+                    $(
+                        $tag_type => Ok(bytemuck::cast_slice(&val.data()[..])),
+                    )+
+                    _ => Err(TiffFormatError::InconsistentSizesEncountered(val.clone()).into()),
+                }
+            }
+        }
+    };
+}
+
+entry_tryfrom_slice!(u8, TagType::BYTE);
+entry_tryfrom_slice!(u16, TagType::SHORT);
+entry_tryfrom_slice!(u32, TagType::LONG, TagType::IFD);
+entry_tryfrom_slice!(u64, TagType::LONG8, TagType::IFD8);
+entry_tryfrom_slice!(i8, TagType::SBYTE);
+entry_tryfrom_slice!(i16, TagType::SSHORT);
+entry_tryfrom_slice!(i32, TagType::SLONG);
+entry_tryfrom_slice!(i64, TagType::SLONG8);
+
+// -------
+// vectors
+// -------
+
+#[rustfmt::skip]
+impl TryFrom<&BufferedEntry> for Vec<f64> {
+    type Error = TiffError;
+
+    fn try_from(val: &BufferedEntry) -> Result<Self, Self::Error> {
+        if val.data.len() != val.tag_type.size() * usize::try_from(val.count)? {
+            return Err(TiffFormatError::InconsistentSizesEncountered(val.clone()).into());
+        }
+        match val.tag_type {
+            TagType::DOUBLE => Ok(bytemuck::cast_slice(&val.data()[..]).to_vec()),
+            TagType::FLOAT =>  Ok(bytemuck::cast_slice::<_, f32>(&val.data()[..]).iter().map(|v| f64::from(*v)).collect()),
+            _ =>  Err(TiffFormatError::FloatExpected(val.clone()).into())
+        }
+    }
+}
+
+#[rustfmt::skip]
+impl TryFrom<&BufferedEntry> for Vec<f32> {
+    type Error = TiffError;
+
+    fn try_from(val: &BufferedEntry) -> Result<Self, Self::Error> {
+        if val.data.len() != val.tag_type.size() * usize::try_from(val.count)? {
+            return Err(TiffFormatError::InconsistentSizesEncountered(val.clone()).into());
+        }
+        match val.tag_type {
+            TagType::FLOAT =>   Ok(bytemuck::cast_slice(&val.data()[..]).to_vec()),
+            // TagType::DOUBLE =>  Ok(bytemuck::cast_slice::<_, f64>(&val.data()[..]).iter().map(|v| f32::try_from(*v)).collect()),
+            _ =>  Err(TiffFormatError::FloatExpected(val.clone()).into())
+        }
+    }
+}
+
+// String
+// -------
+
+impl<'a> TryFrom<&'a BufferedEntry> for &'a str {
+    type Error = TiffError;
+
+    fn try_from(val: &'a BufferedEntry) -> Result<Self, Self::Error> {
+        if val.data().len() != usize::try_from(val.count)? {
+            return Err(TiffFormatError::InconsistentSizesEncountered(val.clone()).into());
+        }
+        match val.tag_type {
+            TagType::ASCII | TagType::BYTE | TagType::UNDEFINED => {
+                if val.data().is_ascii() && val.data().ends_with(&[0]) {
+                    let v = std::str::from_utf8(val.data())?;
+                    let v = v.trim_matches(char::from(0));
+                    Ok(v)
+                } else {
+                    Err(TiffFormatError::InvalidTag.into())
+                }
+            }
+            _ => Err(TiffFormatError::AsciiExpected(val.clone()).into()),
+        }
+    }
+}
+
+// macro_rules! entry_tryfrom_unsigned_vec {
+//     ($type:ty) => {
+//         #[rustfmt::skip]
+//         impl TryFrom<&BufferedEntry> for Vec<$type> {
+//             type Error = TiffError;
+
+//             fn try_from(val: &BufferedEntry) -> Result<Self, Self::Error> {
+//                 if val.data.len() != val.tag_type.size() {
+//                     dbg!(val.data.len() != val.tag_type.size());
+//                     return Err(TiffFormatError::InconsistentSizesEncountered(val.clone()).into());
+//                 }
+//                 match val.tag_type {
+//                     // because we do `<[u8; n]>::try_from()` in stead of
+//                     // `<&[u8;n]>`, we copy over the data, but IDontCare.
+//                     TagType::BYTE                  => Ok(Self::try_from(bytemuck::cast_slice::<_, u8 >(val.data())).unwrap()),
+//                     TagType::SHORT                 => Ok(Self::try_from(bytemuck::cast_slice::<_, u16>(val.data())).unwrap()),
+//                     TagType::LONG  | TagType::IFD  => Ok(Self::try_from(bytemuck::cast_slice::<_, u32>(val.data())).unwrap()),
+//                     TagType::LONG8 | TagType::IFD8 => Ok(Self::try_from(bytemuck::cast_slice::<_, u64>(val.data())).unwrap()),
+//                     _ => Err(TiffFormatError::UnsignedIntegerExpected(val.clone()).into()),
+//                 }
+//             }
+//         }
+//     };
+// }
+
+// entry_tryfrom_unsigned_vec!(u8);
+
+/// Should not be needed in future, since we do everything from BufferedEntry
 fn from_single(tag_type: TagType, data: &[u8]) -> TiffResult<Value> {
     Ok(match tag_type {
         TagType::BYTE => Value::Byte(data[0]),
@@ -233,8 +496,280 @@ impl TryFrom<BufferedEntry> for Value {
     }
 }
 
+#[rustfmt::skip]
+impl TryFrom<Value> for BufferedEntry {
+    type Error = TiffError;
+    fn try_from(val: Value) -> Result<Self, Self::Error> {
+        Ok(match val {
+            Value::Byte(v)                     => BufferedEntry{ tag_type: TagType::BYTE     , count: 1, data: v.to_ne_bytes().to_vec()},
+            Value::SignedByte(v)               => BufferedEntry{ tag_type: TagType::SBYTE    , count: 1, data: v.to_ne_bytes().to_vec()},
+            Value::Ascii(v)                => BufferedEntry{ tag_type: TagType::ASCII    , count: u64::try_from(v.len() + 1)?, data: (v + "\0").as_bytes().to_vec() },
+            Value::Undefined(v)                => BufferedEntry{ tag_type: TagType::UNDEFINED, count: 1, data: v.to_ne_bytes().to_vec() },
+            Value::Short(v)                   => BufferedEntry{ tag_type: TagType::SHORT    , count: 1, data: v.to_ne_bytes().to_vec() },
+            Value::SShort(v)                  => BufferedEntry{ tag_type: TagType::SSHORT    , count: 1, data: v.to_ne_bytes().to_vec() },
+            Value::Long(v)                    => BufferedEntry{ tag_type: TagType::LONG     , count: 1, data: v.to_ne_bytes().to_vec() },
+            Value::Ifd(v)                     => BufferedEntry{ tag_type: TagType::IFD      , count: 1, data: v.to_ne_bytes().to_vec() },
+            Value::SLong(v)                   => BufferedEntry{ tag_type: TagType::SLONG    , count: 1, data: v.to_ne_bytes().to_vec() },
+            Value::Long8(v)                   => BufferedEntry{ tag_type: TagType::LONG8    , count: 1, data: v.to_ne_bytes().to_vec() },
+            Value::Ifd8(v)                    => BufferedEntry{ tag_type: TagType::IFD8     , count: 1, data: v.to_ne_bytes().to_vec() },
+            Value::SLong8(v)                  => BufferedEntry{ tag_type: TagType::SLONG8   , count: 1, data: v.to_ne_bytes().to_vec() },
+            Value::Float(v)                   => BufferedEntry{ tag_type: TagType::FLOAT    , count: 1, data: v.to_ne_bytes().to_vec() },
+            Value::Double(v)                  => BufferedEntry{ tag_type: TagType::DOUBLE   , count: 1, data: v.to_ne_bytes().to_vec() },
+            Value::Rational(num, denom)  => BufferedEntry{ tag_type: TagType::RATIONAL , count: 1, data: bytemuck::cast_slice(&[num, denom]).to_vec() },
+            Value::SRational(num, denom) => BufferedEntry{ tag_type: TagType::SRATIONAL, count: 1, data: bytemuck::cast_slice(&[num, denom]).to_vec() },
+            Value::List(vec) => {
+                let mut buf = Self::try_from(vec[0].clone())?;
+                for v in &vec[1..] {
+                    let mut temp = Self::try_from(v.clone())?;
+                    if temp.tag_type != buf.tag_type {
+                        return Err(TiffFormatError::InvalidTag.into());
+                    }
+                    buf.data.append(&mut temp.data);
+                    buf.count += temp.count;
+                }
+                buf
+            },
+        })
+    }
+}
+
+#[allow(unused_imports)]
 mod test_entry {
     use super::*;
+    use crate::ByteOrder;
+    use std::io;
+    use TagType::{
+        ASCII,
+        // SINGLE BYTE
+        BYTE,
+        DOUBLE,
+        FLOAT,
+        IFD,
+        IFD8,
+        // 4-BYTE
+        LONG,
+        // 8-BYTE
+        LONG8,
+        RATIONAL,
+        SBYTE,
+        // 2-BYTE
+        SHORT,
+        SLONG,
+        SLONG8,
+        SRATIONAL,
+        SSHORT,
+        UNDEFINED,
+    };
+
+    macro_rules! test_buffered_into {
+        ($t:ty,  $name:ident, $(($tag_type:expr, $st:ty)),+) => {
+            #[test]
+            fn $name() {
+                let val = 42 as $t;
+                $(
+                    let source_val = val as $st;
+                    let e = BufferedEntry{
+                        tag_type: $tag_type,
+                        count: 1,
+                        data: source_val.to_ne_bytes().to_vec()
+                    };
+                    println!("testing for type {}, {:?}", std::any::type_name::<$t>(), $tag_type);
+                    dbg!(&e);
+                    // First check: converting data manually
+                    assert_eq!(source_val, <$st>::from_ne_bytes(e.data.as_slice().try_into().unwrap()));
+                    // sanity: sizes match
+                    assert_eq!(e.data.len(), e.tag_type.size());
+                    // test is ok: test assertion
+                    assert_eq!(val, <$t>::try_from(&e).unwrap());
+
+
+                    let source_vec = vec![source_val; 5];
+                    let e = BufferedEntry{
+                        tag_type: $tag_type,
+                        count: 5,
+                        data: bytemuck::cast_slice::<_, u8>(&source_vec[..]).to_vec()
+                    };
+                    println!("testing for type {}, {:?}", std::any::type_name::<$t>(), $tag_type);
+                    dbg!(&e);
+                    assert_eq!(vec![val;5], <Vec<$t>>::try_from(&e).unwrap());
+                )+
+            }
+        };
+    }
+
+    macro_rules! test_buffered_into_wrongsize {
+        ($t:ty, $name:ident, $($tag_type:expr),+) => {
+            #[test]
+            fn $name() {
+              let size = std::mem::size_of::<$t>();
+              $(
+                let e = BufferedEntry{tag_type: $tag_type, count: 1, data: vec![0; size + 1]};
+                println!("testing for type {}, {:?}", std::any::type_name::<$t>(), $tag_type);
+                let TiffError::FormatError(err) = <$t>::try_from(&e).unwrap_err() else {
+                    panic!("wrong error type, should be InconsistentSizesEncountered")
+                };
+                assert_eq!(
+                    err,
+                    TiffFormatError::InconsistentSizesEncountered(e.clone()),
+                );
+
+                let e = BufferedEntry{tag_type: $tag_type, count: 2, data: vec![0; size * 2]};
+                println!("testing for type {}, {:?}", std::any::type_name::<$t>(), $tag_type);
+                let TiffError::FormatError(err) = <$t>::try_from(&e).unwrap_err() else {
+                    panic!("wrong error type, should be InconsistentSizesEncountered")
+                };
+                assert_eq!(
+                    err,
+                    TiffFormatError::InconsistentSizesEncountered(e.clone()),
+                );
+              )+
+            }
+        };
+    }
+
+    macro_rules! test_buffered_into_no_int {
+        ($t:ty, $name:ident, $($tag_type:expr),+) => {
+            #[test]
+            fn $name() {
+                $(
+                    let e = BufferedEntry{tag_type: $tag_type , count: 1, data: vec![0; $tag_type.size()]};
+                    println!("testing for type {}, {:?}", std::any::type_name::<$t>(), $tag_type);
+                    dbg!(&e);
+                    // First check: converting data manually
+                    // assert_eq!(val, <$t>::from_ne_bytes(e.data.as_slice().try_into().unwrap()));
+                    // sanity: sizes match
+                    assert_eq!(e.data.len(), e.tag_type.size());
+                    // test is ok: test assertion
+                    let TiffError::FormatError(err) = <$t>::try_from(&e).unwrap_err() else {
+                        panic!("wrong error type, should be InconsistentSizesEncountered")
+                    };
+                    assert_eq!(
+                        err,
+                        TiffFormatError::SignedIntegerExpected(e.clone()),
+                    );
+                )+
+            }
+        };
+    }
+
+    macro_rules! test_buffered_into_no_uint {
+        ($t:ty, $name:ident, $($tag_type:expr),+) => {
+            #[test]
+            fn $name() {
+                $(
+                    let e = BufferedEntry{tag_type: $tag_type , count: 1, data: vec![0; $tag_type.size()]};
+                    println!("testing for type {}, {:?}", std::any::type_name::<$t>(), $tag_type);
+                    dbg!(&e);
+                    // First check: converting data manually
+                    // assert_eq!(val, <$t>::from_ne_bytes(e.data.as_slice().try_into().unwrap()));
+                    // sanity: sizes match
+                    assert_eq!(e.data.len(), e.tag_type.size());
+                    // test is ok: test assertion
+                    let TiffError::FormatError(err) = <$t>::try_from(&e).unwrap_err() else {
+                        panic!("wrong error type, should be InconsistentSizesEncountered")
+                    };
+                    assert_eq!(
+                        err,
+                        TiffFormatError::UnsignedIntegerExpected(e.clone()),
+                    );
+                )+
+            }
+        };
+    }
+
+    macro_rules! test_buffered_into_no_float {
+        ($t:ty, $name:ident, $($tag_type:expr),+) => {
+            #[test]
+            fn $name() {
+                $(
+                    let e = BufferedEntry{tag_type: $tag_type , count: 1, data: vec![0; $tag_type.size()]};
+                    println!("testing for type {}, {:?}", std::any::type_name::<$t>(), $tag_type);
+                    dbg!(&e);
+                    // First check: converting data manually
+                    // assert_eq!(val, <$t>::from_ne_bytes(e.data.as_slice().try_into().unwrap()));
+                    // sanity: sizes match
+                    assert_eq!(e.data.len(), e.tag_type.size());
+                    // test is ok: test assertion
+                    let TiffError::FormatError(err) = <$t>::try_from(&e).unwrap_err() else {
+                        panic!("wrong error type, should be InconsistentSizesEncountered")
+                    };
+                    assert_eq!(
+                        err,
+                        TiffFormatError::FloatExpected(e.clone()),
+                    );
+                )+
+            }
+        };
+    }
+
+    #[rustfmt::skip]
+    mod into{
+        use super::*;
+
+        test_buffered_into!(f32, test_f32_into_type,  (FLOAT, f32));//, (DOUBLE, f64));
+        test_buffered_into!(f64, test_f64_into_type,  (FLOAT, f32), (DOUBLE, f64));
+        test_buffered_into!(u8 ,  test_u8_into_type,  (BYTE , u8), (SHORT , u16), (IFD, u32), (LONG , u32), (IFD8, u64), (LONG8 , u64));
+        test_buffered_into!(u16, test_u16_into_type,  (BYTE , u8), (SHORT , u16), (IFD, u32), (LONG , u32), (IFD8, u64), (LONG8 , u64));
+        test_buffered_into!(u32, test_u32_into_type,  (BYTE , u8), (SHORT , u16), (IFD, u32), (LONG , u32), (IFD8, u64), (LONG8 , u64));
+        test_buffered_into!(u64, test_u64_into_type,  (BYTE , u8), (SHORT , u16), (IFD, u32), (LONG , u32), (IFD8, u64), (LONG8 , u64));
+        test_buffered_into!(i8 ,  test_i8_into_type,  (SBYTE, i8), (SSHORT, i16),             (SLONG, i32),              (SLONG8, i64));
+        test_buffered_into!(i16, test_i16_into_type,  (SBYTE, i8), (SSHORT, i16),             (SLONG, i32),              (SLONG8, i64));
+        test_buffered_into!(i32, test_i32_into_type,  (SBYTE, i8), (SSHORT, i16),             (SLONG, i32),              (SLONG8, i64));
+        test_buffered_into!(i64, test_i64_into_type,  (SBYTE, i8), (SSHORT, i16),             (SLONG, i32),              (SLONG8, i64));
+        
+
+        test_buffered_into_wrongsize!(u8 , test_into_wrongsize_1, BYTE , SBYTE , UNDEFINED, ASCII);
+        test_buffered_into_wrongsize!(u16, test_into_wrongsize_2, SHORT, SSHORT);
+        test_buffered_into_wrongsize!(u32, test_into_wrongsize_4, LONG , SLONG , IFD , FLOAT );
+        test_buffered_into_wrongsize!(u64, test_into_wrongsize_8, LONG8, SLONG8, IFD8, DOUBLE, RATIONAL, SRATIONAL);
+        
+        test_buffered_into_no_int! (i8 , test_i8_into_noint   , BYTE,  SHORT, UNDEFINED, ASCII,  LONG, IFD, LONG8, IFD8, RATIONAL, SRATIONAL, FLOAT, DOUBLE);
+        test_buffered_into_no_uint!(u8 , test_u8_into_nouint  ,SBYTE, SSHORT, UNDEFINED, ASCII, SLONG,     SLONG8,       RATIONAL, SRATIONAL, FLOAT, DOUBLE);
+        test_buffered_into_no_float!(f32, test_f32_into_nofloat, BYTE,  SHORT, UNDEFINED, ASCII,  LONG, IFD, LONG8, IFD8, RATIONAL, SRATIONAL,        DOUBLE,
+                                                                SBYTE, SSHORT,                   SLONG,     SLONG8);
+        test_buffered_into_no_float!(f64, test_f62_into_nofloat, BYTE,  SHORT, UNDEFINED, ASCII,  LONG, IFD, LONG8, IFD8, RATIONAL, SRATIONAL,
+                                                                SBYTE, SSHORT,                   SLONG,     SLONG8);
+    }
+
+    macro_rules! test_buffered_into_slice {
+        ($t:ty, $tag_type:expr, $name:ident) => {
+            #[test]
+            fn $name() {
+                let v = vec![42 as $t; 2];
+                let e = BufferedEntry {
+                    tag_type: $tag_type,
+                    count: 2,
+                    data: bytemuck::cast_slice(&v[..]).to_vec(),
+                };
+                println!("testing for type {}", std::any::type_name::<$t>());
+                dbg!(&e);
+                // assert_eq!(v, <$t>::from_ne_bytes(e.data.as_slice().try_into().unwrap()));
+                assert_eq!(
+                    e.data.len(),
+                    e.tag_type.size() * usize::try_from(e.count).unwrap()
+                );
+                assert_eq!(v, <&[$t]>::try_from(&e).unwrap());
+            }
+        };
+    }
+
+    #[rustfmt::skip]
+    mod into_slice {
+        use super::*;
+        
+        test_buffered_into_slice!(i8 , SBYTE , test_i8_slice     );
+        test_buffered_into_slice!(i16, SSHORT, test_i16_slice    );
+        test_buffered_into_slice!(i32, SLONG , test_i32_slice    );
+        test_buffered_into_slice!(i64, SLONG8, test_i64_slice    );
+        test_buffered_into_slice!(u8 , BYTE  , test_u8_slice     );
+        test_buffered_into_slice!(u16, SHORT , test_u16_slice    );
+        test_buffered_into_slice!(u32, IFD   , test_u32_ifd_slice);
+        test_buffered_into_slice!(u32, LONG  , test_u32_slice    );
+        test_buffered_into_slice!(u64, IFD8  , test_u64_ifd_slice);
+        test_buffered_into_slice!(u64, LONG8 , test_u64_slice    );
+        test_buffered_into_slice!(f32, FLOAT , test_f32_slice    );
+        test_buffered_into_slice!(f64, DOUBLE, test_f64_slice    );
+    }
 
     // -----------------------------------------------------------------
     // tests below are copy-pasted from Ifd. Make sure to update there
@@ -274,7 +809,7 @@ mod test_entry {
         ];
         for (buf, byte_order, res) in cases {
             let mut r = EndianReader::wrap(io::Cursor::new(buf), byte_order);
-            assert_eq!(IfdEntry::from_reader(&mut r, false).unwrap(), IfdEntry::Value(res));
+            assert_eq!(IfdEntry::from_reader(&mut r, false).unwrap(), IfdEntry::Value(res.try_into().unwrap()));
         }
     }
 
@@ -318,7 +853,7 @@ mod test_entry {
         ];
         for (buf, byte_order, res) in cases {
             let mut r = EndianReader::wrap(io::Cursor::new(buf), byte_order);
-            assert_eq!(IfdEntry::from_reader(&mut r, true).unwrap(), IfdEntry::Value(res));
+            assert_eq!(IfdEntry::from_reader(&mut r, true).unwrap(), IfdEntry::Value(res.try_into().unwrap()));
         }
     }
 
@@ -352,7 +887,7 @@ mod test_entry {
         ];
         for (buf, byte_order, res) in cases {
             let mut r = EndianReader::wrap(io::Cursor::new(buf), byte_order);
-            assert_eq!(IfdEntry::from_reader(&mut r, false).unwrap(), IfdEntry::Value(res));
+            assert_eq!(IfdEntry::from_reader(&mut r, false).unwrap(), IfdEntry::Value(res.try_into().unwrap()));
         }
     }
 
@@ -390,7 +925,7 @@ mod test_entry {
         ];
         for (buf, byte_order, res) in cases {
             let mut r = EndianReader::wrap(io::Cursor::new(buf), byte_order);
-            assert_eq!(IfdEntry::from_reader(&mut r, true).unwrap(), IfdEntry::Value(res));
+            assert_eq!(IfdEntry::from_reader(&mut r, true).unwrap(), IfdEntry::Value(res.try_into().unwrap()));
         }
     }
 

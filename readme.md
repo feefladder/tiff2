@@ -74,3 +74,4 @@ different layouts with differing use-cases.
   - `ProcessedValue`: stored as Vec<Value> <- should not be used together with `Value::List`
     - Why is this any different than recursing Value?
   - Logical impl: Read: BufferedValue -> Value Write: Value -> BufferedValue
+    - actually eleganter solution would be to use bytemuck and BufferedValue

@@ -73,14 +73,14 @@ impl Ifd {
     /// }
     /// ```
     /// Does special-casing of IFDs for you
-    pub fn insert_tag_data_from_buffer(&mut self, tag: &Tag, data: Value) -> Option<IfdEntry> {
+    pub fn insert_tag_data_from_buffer(&mut self, tag: &Tag, data: BufferedEntry ) -> Option<IfdEntry> {
         let Some(IfdEntry::Offset {
             tag_type,
             count,
             offset,
         }) = self.get_tag(tag)
         else {
-            return None;//Err(UsageError::DuplicateTagData.into());
+            return None; //Err(UsageError::DuplicateTagData.into());
         };
 
         self.data.insert(*tag, IfdEntry::Value(data))
@@ -152,7 +152,7 @@ mod test_ifd {
         for (buf, byte_order, res) in cases {
             println!("Trying {buf:?}, with {byte_order:?} should become {res:?}");
             let mut dir = Directory::new();
-            dir.insert(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Value(res));
+            dir.insert(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Value(res.try_into().unwrap()));
             assert_eq!(Ifd::from_buffer(&buf, byte_order, false).unwrap(), Ifd{
                 sub_ifds: Vec::new(),
                 data: dir
@@ -203,7 +203,7 @@ mod test_ifd {
             println!("       |1 2 |1  2 |1  2  3  4  5  6  7  8 |1  2  3  4  5  6  7  8|");
             println!("Trying {buf:?}, with {byte_order:?} should become {res:?}");
             let mut dir = Directory::new();
-            dir.insert(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Value(res));
+            dir.insert(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Value(res.try_into().unwrap()));
             assert_eq!(Ifd::from_buffer(&buf, byte_order, true).unwrap(), Ifd{
                 sub_ifds: Vec::new(),
                 data: dir
@@ -242,7 +242,7 @@ mod test_ifd {
         for (buf, byte_order, res) in cases {
             println!("Trying {buf:?}, with {byte_order:?} should become {res:?}");
             let mut dir = Directory::new();
-            dir.insert(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Value(res));
+            dir.insert(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Value(res.try_into().unwrap()));
             assert_eq!(Ifd::from_buffer(&buf, byte_order, false).unwrap(), Ifd{
                 sub_ifds: Vec::new(),
                 data: dir
@@ -287,7 +287,7 @@ mod test_ifd {
             println!("       |1 2 |1  2 |1  2  3  4  5  6  7  8 |1  2  3  4  5  6  7  8|");
             println!("Trying {buf:?}, with {byte_order:?} should become {res:?}");
             let mut dir = Directory::new();
-            dir.insert(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Value(res));
+            dir.insert(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Value(res.try_into().unwrap()));
             assert_eq!(Ifd::from_buffer(&buf, byte_order, true).unwrap(), Ifd{
                 sub_ifds: Vec::new(),
                 data: dir
@@ -378,8 +378,8 @@ mod test_ifd {
         ([0,0,0,0,0,0,0,1, 1,1, 0,12, 0,0,0,0,0,0,0,2,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian   , 2, TagType::DOUBLE    ),
         ([1,0,0,0,0,0,0,0, 1,1, 5, 0, 2,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, 2, TagType::RATIONAL  ),
         ([0,0,0,0,0,0,0,1, 1,1, 0, 5, 0,0,0,0,0,0,0,2,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian   , 2, TagType::RATIONAL  ),
-        ([1,0,0,0,0,0,0,0, 1,1, 10,0, 2,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, 2, TagType::SRATIONAL  ),
-        ([0,0,0,0,0,0,0,1, 1,1, 0,10, 0,0,0,0,0,0,0,2,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian   , 2, TagType::SRATIONAL  ),
+        ([1,0,0,0,0,0,0,0, 1,1, 10,0, 2,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, 2, TagType::SRATIONAL ),
+        ([0,0,0,0,0,0,0,1, 1,1, 0,10, 0,0,0,0,0,0,0,2,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian   , 2, TagType::SRATIONAL ),
         // we special-case IFD
         ];
         for (buf, byte_order, count, tag_type) in cases {
