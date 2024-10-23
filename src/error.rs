@@ -1,19 +1,22 @@
 use std::error::Error;
 use std::fmt;
+use std::fmt::write;
 use std::fmt::Display;
 use std::io;
 use std::str;
 use std::string;
+use std::sync;
 use std::sync::Arc;
 
 use jpeg::UnsupportedFeature;
 
 use crate::entry::BufferedEntry;
+use crate::tags::TagType;
 use crate::tags::{
     CompressionMethod, PhotometricInterpretation, PlanarConfiguration, SampleFormat, Tag,
 };
+use crate::ChunkType;
 use crate::ColorType;
-use crate::{value::Value, ChunkType};
 
 use weezl::LzwError;
 
@@ -28,7 +31,7 @@ pub enum TiffError {
 
     /// An I/O Error occurred while decoding the image.
     IoError(io::Error),
-
+    TryLockError,
     /// The Limits of the Decoder is exceeded.
     LimitsExceeded,
 
@@ -262,6 +265,7 @@ pub enum UsageError {
     /// ```
     IfdReadIntoEntry,
     DuplicateTagData,
+    RequiredTagNotLoaded(Tag, TagType, u64, u64),
 }
 
 impl fmt::Display for UsageError {
@@ -287,6 +291,7 @@ impl fmt::Display for UsageError {
             PredictorUnavailable => write!(fmt, "The requested predictor is not available"),
             IfdReadIntoEntry => write!(fmt, "sub-IFDs should be added to an ifd through `ifd.insert_ifd_from_buf`, not read as an Entry"),
             DuplicateTagData => write!(fmt, "Tried loading tag data into an IFD, while it was already present"),
+            RequiredTagNotLoaded(tag, tag_type, count, offset) => write!(fmt, "Required tag {tag:?} with type {tag_type:?} and count {count} not loaded from {offset:?}")
         }
     }
 }
@@ -305,6 +310,7 @@ impl fmt::Display for TiffError {
             TiffError::LimitsExceeded => write!(fmt, "The Decoder limits are exceeded"),
             TiffError::IntSizeError => write!(fmt, "Platform or format size limits exceeded"),
             TiffError::UsageError(ref e) => write!(fmt, "Usage error: {}", e),
+            TiffError::TryLockError => write!(fmt, "Poisoned lock encountered, good luck recovering!")
         }
     }
 }
@@ -318,6 +324,7 @@ impl Error for TiffError {
             TiffError::LimitsExceeded => "Decoder limits exceeded",
             TiffError::IntSizeError => "Platform or format size limits exceeded",
             TiffError::UsageError(..) => "Invalid usage",
+            TiffError::TryLockError => "Lock acquiring failed",
         }
     }
 
@@ -332,6 +339,13 @@ impl Error for TiffError {
 impl From<io::Error> for TiffError {
     fn from(err: io::Error) -> TiffError {
         TiffError::IoError(err)
+    }
+}
+
+impl<T> From<std::sync::TryLockError<T>> for TiffError {
+    fn from(err: std::sync::TryLockError<T>) -> Self {
+        println!("undocumented error: {err}");
+        TiffError::TryLockError
     }
 }
 
