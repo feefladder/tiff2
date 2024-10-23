@@ -201,6 +201,7 @@ mod tag_type {
         }
     }
 }
+
 tags! {
 /// See [TIFF compression tags](https://www.awaresystems.be/imaging/tiff/tifftags/compression.html)
 /// for reference.

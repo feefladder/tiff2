@@ -9,16 +9,18 @@ use std::sync;
 use std::sync::Arc;
 
 use jpeg::UnsupportedFeature;
+use weezl::LzwError;
 
-use crate::entry::BufferedEntry;
-use crate::tags::TagType;
+use crate::{
+    ChunkType,
+    ColorType,
+    TagType,
+    BufferedEntry
+};
 use crate::tags::{
     CompressionMethod, PhotometricInterpretation, PlanarConfiguration, SampleFormat, Tag,
 };
-use crate::ChunkType;
-use crate::ColorType;
 
-use weezl::LzwError;
 
 /// Tiff error kinds.
 #[derive(Debug)]
@@ -310,7 +312,9 @@ impl fmt::Display for TiffError {
             TiffError::LimitsExceeded => write!(fmt, "The Decoder limits are exceeded"),
             TiffError::IntSizeError => write!(fmt, "Platform or format size limits exceeded"),
             TiffError::UsageError(ref e) => write!(fmt, "Usage error: {}", e),
-            TiffError::TryLockError => write!(fmt, "Poisoned lock encountered, good luck recovering!")
+            TiffError::TryLockError => {
+                write!(fmt, "Poisoned lock encountered, good luck recovering!")
+            }
         }
     }
 }

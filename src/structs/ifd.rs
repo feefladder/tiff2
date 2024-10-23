@@ -1,8 +1,9 @@
 use crate::{
     decoder::{CogReader, EndianReader},
     error::{TiffError, TiffFormatError, TiffResult, UsageError},
-    structs::entry::{BufferedEntry, IfdEntry},
-    tags::Tag,
+    BufferedEntry,
+    IfdEntry,
+    Tag,
     ByteOrder,
 };
 
@@ -118,7 +119,7 @@ impl Ifd {
 #[allow(unused_imports)]
 mod test_ifd {
     use super::*;
-    use crate::{tags::TagType, value::Value};
+    use crate::{TagType, value::Value};
 
     // -----------------------------------------------------------------
     // tests below are copy-pasted from Entry. Make sure to update there

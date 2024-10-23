@@ -1,11 +1,19 @@
 use crate::{
-    entry::{BufferedEntry, IfdEntry}, error::{TiffError, TiffFormatError, TiffResult, TiffUnsupportedError}, ifd::Ifd, tags::{
+    BufferedEntry,
+    IfdEntry,
+    Ifd,
+    tags::{
         CompressionMethod, PhotometricInterpretation, PlanarConfiguration, Predictor, SampleFormat,
         Tag,
-    }, ByteOrder, ChunkType
+    },
+    error::{TiffError, TiffFormatError, TiffResult, TiffUnsupportedError},
+    ByteOrder, ChunkType,
 };
 
-use std::{collections::HashMap, sync::{Arc, Condvar, Mutex, RwLock}};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Condvar, Mutex, RwLock},
+};
 
 use super::tags::TagType;
 
@@ -57,7 +65,6 @@ impl TileAttributes {
     }
 }
 
-
 /// Struct that holds all relevant metadata that is needed to decode a chunk
 /// (strip or tile).
 /// this does not include chunkoffsets or -bytes, since those may be partial and
@@ -81,31 +88,35 @@ pub struct ChunkMetaData {
 
 pub enum MaybePartial {
     Whole(BufferedEntry),
-    Partial{
+    Partial {
         // tag_type: TagType,
         offset: u64,
         chunk_size: usize,
         data: Arc<RwLock<HashMap<u64, BufferedEntry>>>,
         pending_chunks: Arc<Mutex<HashMap<u64, Condvar>>>,
-    }
+    },
 }
 
 pub enum MaybePartialIndex<T> {
     Ok(T),
-    NeedRead{
+    NeedRead {
         offset: u64,
         count: u64,
-        buf: Vec<u8>
+        buf: Vec<u8>,
     },
     Pending(Condvar),
 }
-
 
 impl MaybePartial {
     fn get_u64(&self, index: usize) -> TiffResult<MaybePartialIndex<u64>> {
         match self {
             MaybePartial::Whole(e) => Ok(MaybePartialIndex::Ok(e.get_u64(index)?)),
-            MaybePartial::Partial { offset, chunk_size, data, pending_chunks } => {
+            MaybePartial::Partial {
+                offset,
+                chunk_size,
+                data,
+                pending_chunks,
+            } => {
                 let i_chunk: usize = index / chunk_size;
                 let subindex: usize = index % chunk_size;
                 if let Some(entry) = data.try_read()?.get(&i_chunk.try_into()?) {
@@ -114,8 +125,14 @@ impl MaybePartial {
                     if let Some(cv) = pending_chunks.try_lock()?.get(&i_chunk.try_into()?) {
                         Ok(MaybePartialIndex::Pending(cv.clone()))
                     } else {
-                        pending_chunks.try_lock()?.insert(i_chunk.try_into()?, Condvar::new());
-                        Ok(MaybePartialIndex::NeedRead { offset: *offset , count: u64::try_from(*chunk_size)?, buf: vec![0u8; *chunk_size] })
+                        pending_chunks
+                            .try_lock()?
+                            .insert(i_chunk.try_into()?, Condvar::new());
+                        Ok(MaybePartialIndex::NeedRead {
+                            offset: *offset,
+                            count: u64::try_from(*chunk_size)?,
+                            buf: vec![0u8; *chunk_size],
+                        })
                     }
                 }
             }
@@ -135,21 +152,17 @@ pub struct Image {
     pub chunk_bytes: BufferedEntry,
 }
 
-
 const IMAGE_TAGS: [Tag; 14] = [
     Tag::ImageWidth,
     Tag::ImageLength,
-
     Tag::BitsPerSample,
     Tag::SamplesPerPixel,
     Tag::SampleFormat,
-
     Tag::PhotometricInterpretation,
     Tag::Compression,
     Tag::Predictor,
     Tag::PlanarConfiguration,
     Tag::JPEGTables,
-    
     Tag::StripByteCounts,
     Tag::StripOffsets,
     Tag::TileByteCounts,
@@ -160,7 +173,7 @@ impl Image {
     // pub fn chunk_offsets(&self) -> &BufferedEntry {
     //     match self.
     // }
-    
+
     pub fn from_ifd(
         // reader: &mut SmartReader<R>,
         ifd: Ifd,
@@ -229,23 +242,20 @@ impl Image {
             PlanarConfiguration::Planar => samples,
         };
 
-        let jpeg_tables = if compression_method == CompressionMethod::ModernJPEG
-            && ifd.contains_key(&Tag::JPEGTables)
-        {
-            let vec = ifd
-                .find_tag(Tag::JPEGTables)?
-                .unwrap()
-                .into_u8_vec()?;
-            if vec.len() < 2 {
-                return Err(TiffError::FormatError(
-                    TiffFormatError::InvalidTagValueType(Tag::JPEGTables.to_u16()),
-                ));
-            }
+        // let jpeg_tables = if compression_method == CompressionMethod::ModernJPEG
+        //     && ifd.contains_key(&Tag::JPEGTables)
+        // {
+        //     let vec = ifd.find_tag(Tag::JPEGTables)?.unwrap().into_u8_vec()?;
+        //     if vec.len() < 2 {
+        //         return Err(TiffError::FormatError(
+        //             TiffFormatError::InvalidTagValueType(Tag::JPEGTables.to_u16()),
+        //         ));
+        //     }
 
-            Some(Arc::new(vec))
-        } else {
-            None
-        };
+        //     Some(Arc::new(vec))
+        // } else {
+        //     None
+        // };
 
         // let sample_format = match tag_reader.find_tag_uint_vec(Tag::SampleFormat)? {
         //     Some(vals) => {

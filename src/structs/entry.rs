@@ -1,13 +1,11 @@
 use crate::{
     decoder::EndianReader,
     error::{TiffError, TiffFormatError, TiffResult, UsageError},
-    tags::{
-        Tag,
-        TagType::{
-            self,
-            // self, ASCII, BYTE, DOUBLE, FLOAT, IFD, IFD8, LONG, RATIONAL, SBYTE, SHORT, SLONG,
-            // SRATIONAL, SSHORT, UNDEFINED, LONG8,
-        },
+    Tag,
+    TagType::{
+        self,
+        // self, ASCII, BYTE, DOUBLE, FLOAT, IFD, IFD8, LONG, RATIONAL, SBYTE, SHORT, SLONG,
+        // SRATIONAL, SSHORT, UNDEFINED, LONG8,
     },
     util::fix_endianness,
     value::Value,
