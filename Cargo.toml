@@ -9,4 +9,8 @@ bytemuck = { version = "1.19.0", features = ["extern_crate_alloc"] }
 futures-lite = "2.3.0"
 jpeg = { package = "jpeg-decoder", version = "0.3.0", default-features = false }
 log = "0.4.22"
+tokio = { version = "1.41.0", features = ["rt"] }
 weezl = "0.1.8"
+
+[dev-dependencies]
+tokio = { version = "1.41.0", features = ["rt-multi-thread", "macros"] }
