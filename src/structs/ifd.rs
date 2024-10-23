@@ -1,16 +1,12 @@
-use std::io::{self, Read};
-
 use crate::{
-    decoder::EndianReader,
-    encoder::tiff_value::TiffValue,
+    decoder::{CogReader, EndianReader},
     error::{TiffError, TiffFormatError, TiffResult, UsageError},
     structs::entry::{BufferedEntry, IfdEntry},
-    tags::{Tag, TagType},
-    value::Value,
+    tags::Tag,
     ByteOrder,
 };
 
-use std::{borrow::Cow, collections::BTreeMap};
+use std::{collections::BTreeMap, io};
 pub type Directory = BTreeMap<Tag, IfdEntry>;
 
 #[derive(Debug, PartialEq, Default)]
@@ -47,69 +43,82 @@ impl Ifd {
         Ok(ifd)
     }
 
-    // pub fn insert_ifd_from_buffer(&mut self, tag: &Tag, buffer: &[u8]) {
-    //     self.sub_ifds.push(Ifd::from_buffer(buf, num_entries, byte_order, bigtiff));
-    // }
     /// Get a tag. Will return None if the tag isn't present (in this tiff/Image)
     pub fn get_tag(&self, tag: &Tag) -> Option<&IfdEntry> {
         self.data.get(tag)
     }
+
     /// Get a tag, returning error if not present
+    ///
+    /// Can return `IfdEntry::Offset` if the tag is not loaded
     pub fn require_tag(&self, tag: &Tag) -> TiffResult<&IfdEntry> {
         self.data.get(tag).ok_or(TiffError::FormatError(
             TiffFormatError::RequiredTagNotFound(*tag),
         ))
+    }
+
+    /// Get a tag, returning error if not present or loaded
+    pub fn require_tag_value(&self, tag: &Tag) -> TiffResult<&BufferedEntry> {
+        match self.require_tag(&tag)? {
+            IfdEntry::Offset {
+                tag_type,
+                count,
+                offset,
+            } => Err(UsageError::RequiredTagNotLoaded(*tag, *tag_type, *count, *offset).into()),
+            IfdEntry::Value(be) => Ok(be),
+        }
+    }
+
+    /// get a tag, returning error if not loaded, Ok(None) if not present
+    pub fn get_tag_value(&self, tag: &Tag) -> TiffResult<Option<&BufferedEntry>> {
+        if let Some(be) = self.get_tag(tag) {
+            match be {
+                IfdEntry::Offset {
+                    tag_type,
+                    count,
+                    offset,
+                } => Err(UsageError::RequiredTagNotLoaded(*tag, *tag_type, *count, *offset).into()),
+                IfdEntry::Value(be) => Ok(Some(be)),
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn contains_key(&self, tag: &Tag) -> bool {
+        self.data.contains_key(tag)
     }
     /// Put the data corresponding to tag in self
     ///
     /// Can be used like:
     /// ```
     /// # let ifd = Ifd::default();
-    /// # ifd.data.insert(Tag::TileOffsets IfdEntry::Offset(TagType::DOUBLE, 1, 42));
+    /// # ifd.data.insert(Tag::TileOffsets, IfdEntry::Offset(TagType::LONG8, 1, 42));
     /// let tag = Tag::TileOffsets;
     /// if let IfdEntry::Offset(tag_type, count, offset) = ifd.get(Tag::TileOffsets) {
-    ///     let buf = reader.read_tag_data(offset, count * tag_type.size()).await?;
-    ///     ifd.insert_tag_data_from_buffer(tag, buf)
+    ///     let mut buf = BufferedEntry::new(tag_type, count);
+    ///     reader.read_tag_data(offset, &mut buf).await?;
+    ///     fix_endianness(&mut buf, byte_order);
+    ///     ifd.insert_tag_data_from_buffer(tag, buf);
     /// }
     /// ```
-    /// Does special-casing of IFDs for you
-    pub fn insert_tag_data_from_buffer(&mut self, tag: &Tag, data: BufferedEntry ) -> Option<IfdEntry> {
-        let Some(IfdEntry::Offset {
-            tag_type,
-            count,
-            offset,
-        }) = self.get_tag(tag)
-        else {
-            return None; //Err(UsageError::DuplicateTagData.into());
-        };
-
+    ///
+    /// # returns
+    /// The old value if it was present. If this was a BufferedEntry, this is
+    /// probably an error.
+    pub fn insert_tag_data_from_buffer(
+        &mut self,
+        tag: &Tag,
+        data: BufferedEntry,
+    ) -> Option<IfdEntry> {
         self.data.insert(*tag, IfdEntry::Value(data))
     }
 }
 
-// impl IfdEntry {
-//     fn from_bytes(bytes: &[u8], byte_order: ByteOrder, bigtiff: bool) -> TiffResult<Self> {
-//         let tag_type = TagType::from_u16(byte_order.u16(bytes[..2].try_into()?))
-//             .ok_or(TiffFormatError::InvalidTagValueType(()))?;
-//     }
-// }
-
-// pub fn tag_data_from_buffer(
-//     data: &mut [u8],
-//     byte_order: ByteOrder,
-//     tag_type: TagType,
-// ) -> TiffResult<Option<Value>> {
-//     // mutate the data in-place to get a buffer of nice values
-//     fix_endianness(data, byte_order, tag_type.size().try_into()?);
-//     // Now actually we can already use this buffer everywhere. However, we still want to cast it to the desirec value
-//     // That is actually
-//     todo!()
-// }
-
-// stealing @spoutn1k's code over....
-
+#[allow(unused_imports)]
 mod test_ifd {
     use super::*;
+    use crate::{tags::TagType, value::Value};
 
     // -----------------------------------------------------------------
     // tests below are copy-pasted from Entry. Make sure to update there
