@@ -4,7 +4,9 @@ Similar in function and planned lifespan as arrow2 crate:
 - Async support
 - seprarate IO- and CPU-intensive work
 - delegates parallelism downstream
-- optionally delegates io downstream
+- delegates io downstream using a trait
+- primary decoder impl is geared towards COGs, but doesn't have the geo stuff
+- similar in structure to `image-tiff`, so code can be copied over easily
 
 Now one very big hurdle to overcome is the fact that we only want to fetch (and decode) the relevant parts of our tiff and not the irrelevant parts. That means that we will need to be able to deal with IFDs that are partially loaded. e.g:
 ```rust
@@ -121,10 +123,12 @@ struct CogDecoder {
 
 impl CogDecoder {
   /// requiring mutable access to self is suboptimal
-  fn get_chunk(&mut self, i_chunk: u64, zoom_level: OverviewLevel) -> impl Future<Output = DecodingResult> {
+  /// actually solved
+  fn get_chunk(&mut self, i_chunk: u64, zoom_level: OverviewLevel) -> TiffResult<impl Future<Output = DecodingResult>/* + Send */> {
     match self.images.get(zoom_level) {
-      None => panic!(), // in this piece of code, we'd have to await IFD retrieval+decoding
-      Some(img) => img.clone().decode_chunk(i_chunk) // since this returns a future that doesn't reference self, we are happy
+      // this will make the caller 
+      None => Err(TiffError::ImageNotLoaded(zoom_level)), // in this piece of code, we'd have to await IFD retrieval+decoding
+      Some(img) => Ok(img.clone().decode_chunk(i_chunk)) // since this returns a future that doesn't reference self, we are happy
     }
   }
 }
@@ -134,7 +138,11 @@ impl Image {
   fn decode_chunk<R>(&self, reader: R, i_chunk: u64) -> impl Future<Output = DecodingResult>{
     let chunk_offset = self.chunk_offsets[i_chunk];
     let chunk_bytes = self.chunk_bytes[i_chunk];
-    ChunkDecoder::decode(r, chunk_offset, chunk_bytes, self.chunk_opts.clone())
+    let chunk_opts = self.chunk_opts.clone();
+    async move {
+      // don't mention `self` in here, see [stackoverflow](https://stackoverflow.com/a/77845970/14681457)
+      ChunkDecoder::decode(reader, chunk_offset, chunk_bytes, chunk_opts)
+    }
   }
 }
 
@@ -259,6 +267,12 @@ pub struct Image {
 }
 ```
 
+### Notable changes with image-tiff:
+
+- use of BufferedEntry in stead of Value everywhere
+- Ifd and other building blocks have a more central place
+- ChunkOpts is taking some place of Image
+- 
 
 ### todo:
 
