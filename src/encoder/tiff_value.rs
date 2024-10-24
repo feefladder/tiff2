@@ -3,7 +3,7 @@ use std::{borrow::Cow, io::Write, slice::from_ref};
 use crate::{
     bytecast,
     error::{TiffError, TiffFormatError, TiffResult},
-    tags::TagType,
+    structs::tags::TagType,
 };
 
 // use super::writer::TiffWriter;

@@ -1,9 +1,7 @@
 use crate::{
     decoder::{CogReader, EndianReader},
     error::{TiffError, TiffFormatError, TiffResult, UsageError},
-    BufferedEntry,
-    IfdEntry,
-    Tag,
+    structs::{BufferedEntry, IfdEntry, Tag},
     ByteOrder,
 };
 
@@ -119,7 +117,7 @@ impl Ifd {
 #[allow(unused_imports)]
 mod test_ifd {
     use super::*;
-    use crate::{TagType, value::Value};
+    use crate::structs::{value::Value, TagType};
 
     // -----------------------------------------------------------------
     // tests below are copy-pasted from Entry. Make sure to update there
@@ -202,10 +200,10 @@ mod test_ifd {
         ([0,0,0,0,0,0,0,1, 1,1, 0,11, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0, 0], ByteOrder::BigEndian,    Value::Float     (f32::from_bits(42))),
         ([1,0,0,0,0,0,0,0, 1,1, 12,0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, Value::Double    (f64::from_bits(42))),
         ([0,0,0,0,0,0,0,1, 1,1, 0,12, 0,0,0,0,0,0,0,1,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian,    Value::Double    (f64::from_bits(42))),
-        ([1,0,0,0,0,0,0,0, 1,1, 5, 0, 1,0,0,0,0,0,0,0,  42,0, 0, 0,13, 0, 0, 0], ByteOrder::LittleEndian, Value::Rational  (42, 13)            ),
-        ([0,0,0,0,0,0,0,1, 1,1, 0, 5, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0,13], ByteOrder::BigEndian,    Value::Rational  (42, 13)            ),
-        ([1,0,0,0,0,0,0,0, 1,1, 10,0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0,13, 0, 0, 0], ByteOrder::LittleEndian, Value::SRational (42, 13)            ),
-        ([0,0,0,0,0,0,0,1, 1,1, 0,10, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0,13], ByteOrder::BigEndian,    Value::SRational (42, 13)            ),
+        ([1,0,0,0,0,0,0,0, 1,1, 5, 0, 1,0,0,0,0,0,0,0,  42,0, 0, 0,43, 0, 0, 0], ByteOrder::LittleEndian, Value::Rational  (42, 43)            ),
+        ([0,0,0,0,0,0,0,1, 1,1, 0, 5, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0,43], ByteOrder::BigEndian,    Value::Rational  (42, 43)            ),
+        ([1,0,0,0,0,0,0,0, 1,1, 10,0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0,43, 0, 0, 0], ByteOrder::LittleEndian, Value::SRational (42, 43)            ),
+        ([0,0,0,0,0,0,0,1, 1,1, 0,10, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0,43], ByteOrder::BigEndian,    Value::SRational (42, 43)            ),
         // we special-case IFD
         ];
         for (buf, byte_order, res) in cases {

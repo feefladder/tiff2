@@ -1,7 +1,7 @@
 use std::io::Read;
 
 use crate::error::{TiffError, TiffFormatError, TiffResult};
-use crate::{Tag, TagType};
+use crate::structs::{Tag, TagType};
 
 use self::Value::{
     Ascii, Byte, Double, Float, List, Long, Long8, Rational, SLong, SLong8, SRational, SShort,
@@ -40,7 +40,6 @@ pub enum Value {
     // RationalBig(u64, u64),
 
     // SRationalBig(i64, i64),
-
     Ifd(u32),
     Ifd8(u64),
 }

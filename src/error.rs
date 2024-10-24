@@ -12,15 +12,15 @@ use jpeg::UnsupportedFeature;
 use weezl::LzwError;
 
 use crate::{
-    ChunkType,
-    ColorType,
-    TagType,
-    BufferedEntry
+    structs::{
+        tags::{
+            CompressionMethod, PhotometricInterpretation, PlanarConfiguration, SampleFormat, Tag,
+            TagType,
+        },
+        BufferedEntry,
+    },
+    ChunkType, ColorType,
 };
-use crate::tags::{
-    CompressionMethod, PhotometricInterpretation, PlanarConfiguration, SampleFormat, Tag,
-};
-
 
 /// Tiff error kinds.
 #[derive(Debug)]

@@ -1,11 +1,11 @@
 mod entry;
-pub use entry::{BufferedEntry, IfdEntry, Directory};
+pub use entry::{BufferedEntry, Directory, IfdEntry};
 /// IFD struct for non-images
 mod ifd;
 pub use ifd::Ifd;
 /// IFD struct and functions for IFDs related to images
 mod image;
-pub use image::Image;
+pub use image::{ChunkOpts, Image};
 /// Tags: type, and important ones here
 pub mod tags;
 pub use tags::{Tag, TagType};

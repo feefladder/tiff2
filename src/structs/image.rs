@@ -1,12 +1,12 @@
 use crate::{
-    BufferedEntry,
-    IfdEntry,
-    Ifd,
-    tags::{
-        CompressionMethod, PhotometricInterpretation, PlanarConfiguration, Predictor, SampleFormat,
-        Tag,
-    },
     error::{TiffError, TiffFormatError, TiffResult, TiffUnsupportedError},
+    structs::{
+        tags::{
+            CompressionMethod, PhotometricInterpretation, PlanarConfiguration, Predictor,
+            SampleFormat, Tag,
+        },
+        BufferedEntry, Ifd, IfdEntry,
+    },
     ByteOrder, ChunkType,
 };
 
@@ -69,7 +69,7 @@ impl TileAttributes {
 /// (strip or tile).
 /// this does not include chunkoffsets or -bytes, since those may be partial and
 /// then mutated.
-pub struct ChunkMetaData {
+pub struct ChunkOpts {
     pub byte_order: ByteOrder,
     pub image_width: u32,
     pub image_height: u32,
@@ -86,66 +86,66 @@ pub struct ChunkMetaData {
     pub tile_attributes: Option<TileAttributes>,
 }
 
-pub enum MaybePartial {
-    Whole(BufferedEntry),
-    Partial {
-        // tag_type: TagType,
-        offset: u64,
-        chunk_size: usize,
-        data: Arc<RwLock<HashMap<u64, BufferedEntry>>>,
-        pending_chunks: Arc<Mutex<HashMap<u64, Condvar>>>,
-    },
-}
+// pub enum MaybePartial {
+//     Whole(BufferedEntry),
+//     Partial {
+//         // tag_type: TagType,
+//         offset: u64,
+//         chunk_size: usize,
+//         data: Arc<RwLock<HashMap<u64, BufferedEntry>>>,
+//         pending_chunks: Arc<Mutex<HashMap<u64, Condvar>>>,
+//     },
+// }
 
-pub enum MaybePartialIndex<T> {
-    Ok(T),
-    NeedRead {
-        offset: u64,
-        count: u64,
-        buf: Vec<u8>,
-    },
-    Pending(Condvar),
-}
+// pub enum MaybePartialIndex<T> {
+//     Ok(T),
+//     NeedRead {
+//         offset: u64,
+//         count: u64,
+//         buf: Vec<u8>,
+//     },
+//     Pending(Condvar),
+// }
 
-impl MaybePartial {
-    fn get_u64(&self, index: usize) -> TiffResult<MaybePartialIndex<u64>> {
-        match self {
-            MaybePartial::Whole(e) => Ok(MaybePartialIndex::Ok(e.get_u64(index)?)),
-            MaybePartial::Partial {
-                offset,
-                chunk_size,
-                data,
-                pending_chunks,
-            } => {
-                let i_chunk: usize = index / chunk_size;
-                let subindex: usize = index % chunk_size;
-                if let Some(entry) = data.try_read()?.get(&i_chunk.try_into()?) {
-                    Ok(MaybePartialIndex::Ok(entry.get_u64(subindex)?))
-                } else {
-                    if let Some(cv) = pending_chunks.try_lock()?.get(&i_chunk.try_into()?) {
-                        Ok(MaybePartialIndex::Pending(cv.clone()))
-                    } else {
-                        pending_chunks
-                            .try_lock()?
-                            .insert(i_chunk.try_into()?, Condvar::new());
-                        Ok(MaybePartialIndex::NeedRead {
-                            offset: *offset,
-                            count: u64::try_from(*chunk_size)?,
-                            buf: vec![0u8; *chunk_size],
-                        })
-                    }
-                }
-            }
-        }
-    }
-}
+// impl MaybePartial {
+//     fn get_u64(&self, index: usize) -> TiffResult<MaybePartialIndex<u64>> {
+//         match self {
+//             MaybePartial::Whole(e) => Ok(MaybePartialIndex::Ok(e.get_u64(index)?)),
+//             MaybePartial::Partial {
+//                 offset,
+//                 chunk_size,
+//                 data,
+//                 pending_chunks,
+//             } => {
+//                 let i_chunk: usize = index / chunk_size;
+//                 let subindex: usize = index % chunk_size;
+//                 if let Some(entry) = data.try_read()?.get(&i_chunk.try_into()?) {
+//                     Ok(MaybePartialIndex::Ok(entry.get_u64(subindex)?))
+//                 } else {
+//                     if let Some(cv) = pending_chunks.try_lock()?.get(&i_chunk.try_into()?) {
+//                         Ok(MaybePartialIndex::Pending(cv.clone()))
+//                     } else {
+//                         pending_chunks
+//                             .try_lock()?
+//                             .insert(i_chunk.try_into()?, Condvar::new());
+//                         Ok(MaybePartialIndex::NeedRead {
+//                             offset: *offset,
+//                             count: u64::try_from(*chunk_size)?,
+//                             buf: vec![0u8; *chunk_size],
+//                         })
+//                     }
+//                 }
+//             }
+//         }
+//     }
+// }
 
 /// Image struct that holds all relevant metadata for locating an image's data in the file and which decoding method to use
 pub struct Image {
     /// IFD holding all data
     pub ifd: Ifd,
     /// Data that doesn't change between chunks
-    pub chunk_metadata: Arc<ChunkMetaData>,
+    pub chunk_opts: Arc<ChunkOpts>,
     /// Chunk offsets (maybe partially loaded)
     pub chunk_offsets: BufferedEntry,
     // Number of bytes per chunk (maybe partially loaded)
@@ -173,6 +173,18 @@ impl Image {
     // pub fn chunk_offsets(&self) -> &BufferedEntry {
     //     match self.
     // }
+
+    pub fn chunk_offset(&self, index: usize) -> TiffResult<u64> {
+        self.chunk_offsets.get_u64(index)
+    }
+
+    pub fn chunk_bytes(&self, index: usize) -> TiffResult<u64> {
+        self.chunk_bytes.get_u64(index)
+    }
+
+    pub fn chunk_opts(&self) -> Arc<ChunkOpts> {
+        self.chunk_opts.clone()
+    }
 
     pub fn from_ifd(
         // reader: &mut SmartReader<R>,
@@ -383,7 +395,7 @@ impl Image {
 }
 
 mod test {
-    use crate::tags::TagType;
+    use crate::structs::tags::TagType;
 
     use super::*;
 

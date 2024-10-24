@@ -8,8 +8,7 @@ pub mod error;
 /// Generic utility functions that can be used for both decoding and encoding
 pub mod util;
 
-mod structs;
-pub use structs::*;
+pub mod structs;
 
 /// static decoding functions to be used with the Tiff/Image struct. Additionally an
 /// opinionated decoder, optimized for COGs (without the geo part).
