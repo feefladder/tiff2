@@ -6,10 +6,12 @@ edition = "2021"
 [dependencies]
 async-trait = "0.1.83"
 bytemuck = { version = "1.19.0", features = ["extern_crate_alloc"] }
+crossbeam = "0.8.4"
 futures-lite = "2.3.0"
 jpeg = { package = "jpeg-decoder", version = "0.3.0", default-features = false }
 log = "0.4.22"
 object_store = { version = "0.11.1", features = ["http"] }
+thiserror = "1.0.65"
 tokio = { version = "1.41.0", features = ["rt"] }
 weezl = "0.1.8"
 
