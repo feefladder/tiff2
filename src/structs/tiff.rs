@@ -3,7 +3,7 @@
 
 use crate::{structs::Image, ByteOrder};
 
-pub struct tiff<R> {
+pub struct Tiff<R> {
     pub images: Vec<Image>,
     bigtiff: bool,
     byte_order: ByteOrder,

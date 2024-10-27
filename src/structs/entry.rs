@@ -65,6 +65,7 @@ impl IfdEntry {
     /// ```
     pub fn from_reader<R: Read + Seek>(r: &mut EndianReader<R>, bigtiff: bool) -> TiffResult<Self> {
         let t_u16 = r.read_u16()?;
+        println!("testing for {t_u16}");
         let tag_type =
             TagType::from_u16(t_u16).ok_or(TiffFormatError::InvalidTagValueType(t_u16))?;
         
@@ -97,11 +98,13 @@ impl IfdEntry {
 
             // discard remaining bytes of offset
             let rem = if bigtiff {
-                8 - offset.len()
+                8 - offset.len() * tag_type.size()
             } else {
-                4 - offset.len()
+                4 - offset.len() * tag_type.size()
             };
-            r.seek(SeekFrom::Current(rem.try_into()?))?;
+            if rem != 0 {
+                r.seek(SeekFrom::Current(rem.try_into()?))?;
+            }
             // std::io::copy(&mut r.as_ref().take(rem), &mut std::io::sink());
 
             // fix endianness and return
@@ -483,23 +486,15 @@ mod test_entry {
     // /// test conversion for single value, slice and too big numbers
     // /// actually not nice that 
     // macro_rules! test_bufferedentry_into {
-    //     ($t:ty,  $name:ident, $(($tag_type:expr, $st:ty)),+) => {
+    //     ($t:ty,  $name:ident, $(($type:ident, $st:ty)),+) => {
     //         #[test]
     //         fn $name() {
     //             let val = 42 as $t;
     //             $(
     //                 let source_val = val as $st;
-    //                 let e = BufferedEntry{
-    //                     tag_type: $tag_type,
-    //                     count: 1,
-    //                     data: source_val.to_ne_bytes().to_vec()
-    //                 };
-    //                 println!("testing for single type {}, {:?}", std::any::type_name::<$t>(), $tag_type);
+    //                 let e = ProcessedEntry::$type(vec![source_val]);
+    //                 println!("testing for single type {}, {:?}", std::any::type_name::<$t>(), $type);
     //                 dbg!(&e);
-    //                 // First check: converting data manually
-    //                 assert_eq!(source_val, <$st>::from_ne_bytes(e.data.as_slice().try_into().unwrap()));
-    //                 // sanity: sizes match
-    //                 assert_eq!(e.data.len(), e.tag_type.size());
     //                 // test is ok: test assertion
     //                 assert_eq!(val, <$t>::try_from(&e).unwrap());
 
@@ -507,17 +502,13 @@ mod test_entry {
     //                 if std::mem::size_of::<$t>() < std::mem::size_of::<$st>() {
     //                     let sv = <$st>::MAX;
     //                     println!("{sv} should not fit in {}", std::any::type_name::<$t>());
-    //                     let entry = BufferedEntry{
-    //                         tag_type: $tag_type,
-    //                         count: 1,
-    //                         data: sv.to_ne_bytes().to_vec()
-    //                     };
+    //                     let entry = ProcessedEntry::$type(vec![sv]);
     //                     // https://stackoverflow.com/a/68919527/14681457
     //                     match <$t>::try_from(&entry) {
     //                         Ok(v) => panic!("{v}"),
     //                         Err(e) => {
     //                             println!("{e:?}");
-    //                             assert!(matches!(e, TiffError::IntSizeError));
+    //                             assert!(matches!(e, TiffError::IntSizeError(_)));
     //                         },
     //                     }
     //                 }
@@ -528,48 +519,49 @@ mod test_entry {
     //     };
     // }
 
-    // macro_rules! test_bufferedentry_into_wrongsize {
-    //     ($t:ty, $name:ident, $($tag_type:expr),+) => {
-    //         #[test]
-    //         fn $name() {
-    //           let size = std::mem::size_of::<$t>();
-    //           $(
-    //             let e = BufferedEntry{tag_type: $tag_type, count: 1, data: vec![0; size + 1]};
-    //             println!("testing for type {}, {:?}", std::any::type_name::<$t>(), $tag_type);
-    //             let TiffError::FormatError(err) = <$t>::try_from(&e).unwrap_err() else {
-    //                 panic!("wrong error type, should be InconsistentSizesEncountered")
-    //             };
-    //             assert_eq!(
-    //                 err,
-    //                 TiffFormatError::InconsistentSizesEncountered(e.clone()),
-    //             );
+    // // macro_rules! test_bufferedentry_into_wrongsize {
+    // //     ($t:ty, $name:ident, $($type:ident),+) => {
+    // //         #[test]
+    // //         fn $name() {
+    // //           let size = std::mem::size_of::<$t>();
+    // //           $(
+    // //             let e = ProcessedEntry::$type(vec![0]) BufferedEntry{tag_type: $tag_type, count: 1, data: vec![0; size + 1]};
+    // //             println!("testing for type {}, {:?}", std::any::type_name::<$t>(), $tag_type);
+    // //             let TiffError::FormatError(err) = <$t>::try_from(&e).unwrap_err() else {
+    // //                 panic!("wrong error type, should be InconsistentSizesEncountered")
+    // //             };
+    // //             assert_eq!(
+    // //                 err,
+    // //                 TiffFormatError::InconsistentSizesEncountered(e.clone()),
+    // //             );
 
-    //             let e = BufferedEntry{tag_type: $tag_type, count: 2, data: vec![0; size * 2]};
-    //             println!("testing for type {}, {:?}", std::any::type_name::<$t>(), $tag_type);
-    //             let TiffError::FormatError(err) = <$t>::try_from(&e).unwrap_err() else {
-    //                 panic!("wrong error type, should be InconsistentSizesEncountered")
-    //             };
-    //             assert_eq!(
-    //                 err,
-    //                 TiffFormatError::InconsistentSizesEncountered(e.clone()),
-    //             );
-    //           )+
-    //         }
-    //     };
-    // }
+    // //             let e = BufferedEntry{tag_type: $tag_type, count: 2, data: vec![0; size * 2]};
+    // //             println!("testing for type {}, {:?}", std::any::type_name::<$t>(), $tag_type);
+    // //             let TiffError::FormatError(err) = <$t>::try_from(&e).unwrap_err() else {
+    // //                 panic!("wrong error type, should be InconsistentSizesEncountered")
+    // //             };
+    // //             assert_eq!(
+    // //                 err,
+    // //                 TiffFormatError::InconsistentSizesEncountered(e.clone()),
+    // //             );
+    // //           )+
+    // //         }
+    // //     };
+    // // }
 
     // macro_rules! test_bufferedentry_into_no_int {
-    //     ($t:ty, $name:ident, $($tag_type:expr),+) => {
+    //     ($t:ty, $name:ident, $($type:ident),+) => {
     //         #[test]
     //         fn $name() {
     //             $(
-    //                 let e = BufferedEntry{tag_type: $tag_type , count: 1, data: vec![0; $tag_type.size()]};
-    //                 println!("testing for type {}, {:?}", std::any::type_name::<$t>(), $tag_type);
+    //                 let z = 0 as $t;
+    //                 let e = ProcessedEntry::$type(vec![z]);//BufferedEntry{tag_type: $tag_type , count: 1, data: vec![0; $tag_type.size()]};
+    //                 println!("testing for type {}, {:?}", std::any::type_name::<$t>(), $type);
     //                 dbg!(&e);
     //                 // First check: converting data manually
     //                 // assert_eq!(val, <$t>::from_ne_bytes(e.data.as_slice().try_into().unwrap()));
     //                 // sanity: sizes match
-    //                 assert_eq!(e.data.len(), e.tag_type.size());
+    //                 // assert_eq!(e.data.len(), e.tag_type.size());
     //                 // test is ok: test assertion
     //                 let TiffError::FormatError(err) = <$t>::try_from(&e).unwrap_err() else {
     //                     panic!("wrong error type, should be InconsistentSizesEncountered")
@@ -588,7 +580,8 @@ mod test_entry {
     //         #[test]
     //         fn $name() {
     //             $(
-    //                 let e = BufferedEntry{tag_type: $tag_type , count: 1, data: vec![0; $tag_type.size()]};
+    //                 let z = 0 as $t;
+    //                 let e = ProcessedEntry::$type(vec![z])//BufferedEntry{tag_type: $tag_type , count: 1, data: vec![0; $tag_type.size()]};
     //                 println!("testing for type {}, {:?}", std::any::type_name::<$t>(), $tag_type);
     //                 dbg!(&e);
     //                 // First check: converting data manually
@@ -637,29 +630,29 @@ mod test_entry {
     // mod into{
     //     use super::*;
 
-    //     test_bufferedentry_into!(f32, test_f32_into_type,  (FLOAT, f32));//, (DOUBLE, f64));
-    //     test_bufferedentry_into!(f64, test_f64_into_type,  (FLOAT, f32), (DOUBLE, f64));
-    //     test_bufferedentry_into!(u8 ,  test_u8_into_type,  (BYTE , u8), (SHORT , u16), (IFD, u32), (LONG , u32), (IFD8, u64), (LONG8 , u64));
-    //     test_bufferedentry_into!(u16, test_u16_into_type,  (BYTE , u8), (SHORT , u16), (IFD, u32), (LONG , u32), (IFD8, u64), (LONG8 , u64));
-    //     test_bufferedentry_into!(u32, test_u32_into_type,  (BYTE , u8), (SHORT , u16), (IFD, u32), (LONG , u32), (IFD8, u64), (LONG8 , u64));
-    //     test_bufferedentry_into!(u64, test_u64_into_type,  (BYTE , u8), (SHORT , u16), (IFD, u32), (LONG , u32), (IFD8, u64), (LONG8 , u64));
-    //     test_bufferedentry_into!(i8 ,  test_i8_into_type,  (SBYTE, i8), (SSHORT, i16),             (SLONG, i32),              (SLONG8, i64));
-    //     test_bufferedentry_into!(i16, test_i16_into_type,  (SBYTE, i8), (SSHORT, i16),             (SLONG, i32),              (SLONG8, i64));
-    //     test_bufferedentry_into!(i32, test_i32_into_type,  (SBYTE, i8), (SSHORT, i16),             (SLONG, i32),              (SLONG8, i64));
-    //     test_bufferedentry_into!(i64, test_i64_into_type,  (SBYTE, i8), (SSHORT, i16),             (SLONG, i32),              (SLONG8, i64));
+    //     test_bufferedentry_into!(f32, test_f32_into_type,  (Float, f32));//, (DOUBLE, f64));
+    //     test_bufferedentry_into!(f64, test_f64_into_type,  (Float, f32), (Double, f64));
+    //     test_bufferedentry_into!(u8 ,  test_u8_into_type,  ( Byte, u8), ( Short, u16), (Ifd, u32), ( Long, u32), (Ifd8, u64), ( Long8, u64));
+    //     test_bufferedentry_into!(u16, test_u16_into_type,  ( Byte, u8), ( Short, u16), (Ifd, u32), ( Long, u32), (Ifd8, u64), ( Long8, u64));
+    //     test_bufferedentry_into!(u32, test_u32_into_type,  ( Byte, u8), ( Short, u16), (Ifd, u32), ( Long, u32), (Ifd8, u64), ( Long8, u64));
+    //     test_bufferedentry_into!(u64, test_u64_into_type,  ( Byte, u8), ( Short, u16), (Ifd, u32), ( Long, u32), (Ifd8, u64), ( Long8, u64));
+    //     test_bufferedentry_into!(i8 ,  test_i8_into_type,  (SByte, i8), (SShort, i16),             (SLong, i32),              (SLong8, i64));
+    //     test_bufferedentry_into!(i16, test_i16_into_type,  (SByte, i8), (SShort, i16),             (SLong, i32),              (SLong8, i64));
+    //     test_bufferedentry_into!(i32, test_i32_into_type,  (SByte, i8), (SShort, i16),             (SLong, i32),              (SLong8, i64));
+    //     test_bufferedentry_into!(i64, test_i64_into_type,  (SByte, i8), (SShort, i16),             (SLong, i32),              (SLong8, i64));
         
 
-    //     test_bufferedentry_into_wrongsize!(u8 , test_into_wrongsize_1, BYTE , SBYTE , UNDEFINED, ASCII);
-    //     test_bufferedentry_into_wrongsize!(u16, test_into_wrongsize_2, SHORT, SSHORT);
-    //     test_bufferedentry_into_wrongsize!(u32, test_into_wrongsize_4, LONG , SLONG , IFD , FLOAT );
-    //     test_bufferedentry_into_wrongsize!(u64, test_into_wrongsize_8, LONG8, SLONG8, IFD8, DOUBLE, RATIONAL, SRATIONAL);
+    //     // test_bufferedentry_into_wrongsize!(u8 , test_into_wrongsize_1, Byte , SByte , Undefined, Ascii);
+    //     // test_bufferedentry_into_wrongsize!(u16, test_into_wrongsize_2, Short, SShort);
+    //     // test_bufferedentry_into_wrongsize!(u32, test_into_wrongsize_4, Long, SLong , Ifd , Float );
+    //     // test_bufferedentry_into_wrongsize!(u64, test_into_wrongsize_8, Long8, SLong8, Ifd8, Double, Rational, SRational);
         
-    //     test_bufferedentry_into_no_int! (i8 , test_i8_into_noint   , BYTE,  SHORT, UNDEFINED, ASCII,  LONG, IFD, LONG8, IFD8, RATIONAL, SRATIONAL, FLOAT, DOUBLE);
-    //     test_bufferedentry_into_no_uint!(u8 , test_u8_into_nouint  ,SBYTE, SSHORT, UNDEFINED, ASCII, SLONG,     SLONG8,       RATIONAL, SRATIONAL, FLOAT, DOUBLE);
-    //     test_bufferedentry_into_no_float!(f32, test_f32_into_nofloat, BYTE,  SHORT, UNDEFINED, ASCII,  LONG, IFD, LONG8, IFD8, RATIONAL, SRATIONAL,        DOUBLE,
-    //                                                             SBYTE, SSHORT,                   SLONG,     SLONG8);
-    //     test_bufferedentry_into_no_float!(f64, test_f62_into_nofloat, BYTE,  SHORT, UNDEFINED, ASCII,  LONG, IFD, LONG8, IFD8, RATIONAL, SRATIONAL,
-    //                                                             SBYTE, SSHORT,                   SLONG,     SLONG8);
+    //     test_bufferedentry_into_no_int! (i8 , test_i8_into_noint    , Byte,  Short, Undefined, Ascii,  Long, Ifd, Long8, Ifd8, Rational, SRational, Float, Double);
+    //     test_bufferedentry_into_no_uint!(u8 , test_u8_into_nouint   ,SByte, SShort, Undefined, Ascii, SLong,     SLong8,       Rational, SRational, Float, Double);
+    //     test_bufferedentry_into_no_float!(f32, test_f32_into_nofloat, Byte,  Short, Undefined, Ascii,  Long, Ifd, Long8, Ifd8, Rational, SRational,        Double,
+    //                                                                  SByte, SShort,                   SLong,     SLong8);
+    //     test_bufferedentry_into_no_float!(f64, test_f62_into_nofloat, Byte,  Short, Undefined, Ascii,  Long, Ifd, Long8, Ifd8, Rational, SRational,
+    //                                                                  SByte, SShort,                   SLong,     SLong8);
     // }
 
     // macro_rules! test_bufferedentry_into_slice {

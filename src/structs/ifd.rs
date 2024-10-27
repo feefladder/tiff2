@@ -119,6 +119,37 @@ mod test_ifd {
     use super::*;
     use crate::structs::{value::Value, ProcessedEntry, TagType};
 
+    /// test reading multiple tags, esp. whether we skip over the offset properly
+    #[test]
+    #[rustfmt::skip]
+    fn test_multitag() {
+        let cases = [
+            //n_tags tag type  count    offset
+            // //    // /  \  /     \   /     \
+            ([2,0, 1,1, 1,0, 1,0,0,0, 42, 0, 0, 0,
+                   0,1, 1,0, 1,0,0,0, 43, 0, 0, 0], ProcessedEntry::Byte(vec![42]), ProcessedEntry::Byte(vec![43])),
+            ([2,0, 1,1, 4,0, 1,0,0,0, 42, 0, 0, 0,
+                   0,1, 4,0, 1,0,0,0, 43, 0, 0, 0], ProcessedEntry::Long(vec![42]), ProcessedEntry::Long(vec![43])),
+            ([2,0, 1,1, 9,0, 1,0,0,0, 42, 0, 0, 0,
+                   0,1, 9,0, 1,0,0,0, 43, 0, 0, 0], ProcessedEntry::SLong(vec![42]), ProcessedEntry::SLong(vec![43])),
+            ([2,0, 1,1, 1,0, 4,0,0,0, 42,42,42,42,
+                   0,1, 1,0, 4,0,0,0, 43,43,43,43], ProcessedEntry::Byte(vec![42;4]), ProcessedEntry::Byte(vec![43;4])),
+            ([2,0, 1,1, 1,0, 3,0,0,0, 42,42,42, 0,
+                   0,1, 9,0, 1,0,0,0, 42, 0, 0, 0], ProcessedEntry::Byte(vec![42;3]), ProcessedEntry::SLong(vec![42])),
+        ];
+        for (buf, res1, res2) in cases {
+            let t1 = Tag::from_u16_exhaustive(0x0101);
+            let t2 = Tag::from_u16_exhaustive(0x0100);
+            let mut dir = Directory::new();
+            dir.insert(t1, IfdEntry::Value(res1));
+            dir.insert(t2, IfdEntry::Value(res2));
+            assert_eq!(Ifd::from_buffer(&buf[..], ByteOrder::LittleEndian, false).unwrap(), Ifd{
+                sub_ifds: Vec::new(),
+                data: dir
+            });
+        }
+    }
+
     // -----------------------------------------------------------------
     // tests below are copy-pasted from Entry. Make sure to update there
     // accordingly
