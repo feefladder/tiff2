@@ -1,15 +1,13 @@
-use std::error::Error;
 use std::fmt;
-use std::fmt::write;
 use std::fmt::Display;
 use std::io;
 use std::str;
 use std::string;
-use std::sync;
 use std::sync::Arc;
 
 use jpeg::UnsupportedFeature;
 use weezl::LzwError;
+use thiserror::Error;
 
 use crate::{
     structs::{
@@ -17,32 +15,40 @@ use crate::{
             CompressionMethod, PhotometricInterpretation, PlanarConfiguration, SampleFormat, Tag,
             TagType,
         },
-        BufferedEntry,
+        ProcessedEntry,
     },
     ChunkType, ColorType,
 };
 
+/// Result of an image decoding/encoding process
+pub type TiffResult<T> = Result<T, TiffError>;
+
 /// Tiff error kinds.
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum TiffError {
     /// The Image is not formatted properly.
-    FormatError(TiffFormatError),
+    #[error("{0}")]
+    FormatError(#[from] TiffFormatError),
 
     /// The Decoder does not support features required by the image.
-    UnsupportedError(TiffUnsupportedError),
+    #[error("The Decoder does not support the image format `{0}`")]
+    UnsupportedError(#[from] TiffUnsupportedError),
 
     /// An I/O Error occurred while decoding the image.
-    IoError(io::Error),
-    TryLockError,
+    #[error("{0}")]
+    IoError(#[from] io::Error),
     /// The Limits of the Decoder is exceeded.
+    #[error( "The Decoder limits are exceeded")]
     LimitsExceeded,
 
     /// An integer conversion to or from a platform size failed, either due to
     /// limits of the platform size or limits of the format.
-    IntSizeError,
+    #[error("Failed integer conversion {0}")]
+    IntSizeError(#[from] std::num::TryFromIntError),
 
     /// The image does not support the requested operation
-    UsageError(UsageError),
+    #[error("Usage error: {0}")]
+    UsageError(#[from] UsageError),
 }
 
 /// The image is not formatted properly.
@@ -52,101 +58,69 @@ pub enum TiffError {
 ///
 /// The list of variants may grow to incorporate errors of future features. Matching against this
 /// exhaustively is not covered by interface stability guarantees.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Error)]
 #[non_exhaustive]
 pub enum TiffFormatError {
+    #[error("TIFF signature not found.")]
     TiffSignatureNotFound,
+    #[error("TIFF signature invalid.")]
     TiffSignatureInvalid,
+    #[error("Image file directory not found.")]
     ImageFileDirectoryNotFound,
-    InconsistentSizesEncountered(BufferedEntry),
+    #[error("Inconsistent sizes encountered. {0:?}")]
+    InconsistentSizesEncountered(ProcessedEntry),
+    #[error("Decompression returned different amount of bytes than expected: got {actual_bytes}, expected {required_bytes}.")]
     UnexpectedCompressedData {
         actual_bytes: usize,
         required_bytes: usize,
     },
+    #[error("Inconsistent elements in strip: got {actual_samples}, expected {required_samples}.")]
     InconsistentStripSamples {
         actual_samples: usize,
         required_samples: usize,
     },
+    #[error("Invalid dimensions: {0}x{1}.")]
     InvalidDimensions(u32, u32),
+    #[error("Image contains invalid tag.")]
     InvalidTag,
+    #[error("Tag `{0:?}` did not have the expected value type.")]
     InvalidTagValueType(u16),
+    #[error("Required tag `{0:?}` not found.")]
     RequiredTagNotFound(Tag),
+    #[error("Unknown predictor `{0}` encountered")]
     UnknownPredictor(u16),
+    #[error("Unknown planar configuration `{0}` encountered")]
     UnknownPlanarConfiguration(u16),
-    ByteExpected(BufferedEntry),
-    SignedByteExpected(BufferedEntry),
-    SignedShortExpected(BufferedEntry),
-    UnsignedIntegerExpected(BufferedEntry),
-    SignedIntegerExpected(BufferedEntry),
-    FloatExpected(BufferedEntry),
-    AsciiExpected(BufferedEntry),
+    // #[error("Expected byte, {0:?} found.")]
+    // ByteExpected(ProcessedEntry),
+    // #[error("Expected signed byte, {0:?} found.")]
+    // SignedByteExpected(ProcessedEntry),
+    // #[error("Expected signed short, {0:?} found.")]
+    // SignedShortExpected(ProcessedEntry),
+    #[error("Expected unsigned integer, {0:?} found.")]
+    UnsignedIntegerExpected(ProcessedEntry),
+    #[error("Expected signed integer, {0:?} found.")]
+    SignedIntegerExpected(ProcessedEntry),
+    #[error("Expected float or double, {0:?} found")]
+    FloatExpected(ProcessedEntry),
+    #[error("Expected Ascii, Byte or Undefined, {0:?} found")]
+    AsciiExpected(ProcessedEntry),
+    #[error("Expected Rational, {0:?} found")]
+    RationalExpected(ProcessedEntry),
+    #[error("Expected signed rational, {0:?} found")]
+    SignedRationalExpected(ProcessedEntry),
+    #[error("Invalid format: {0:?}.")]
     Format(String),
+    #[error("Required tag {0:?} was empty.")]
     RequiredTagEmpty(Tag),
+    #[error("File should contain either (StripByteCounts and StripOffsets) or (TileByteCounts and TileOffsets), other combination was found.")]
     StripTileTagConflict,
+    #[error("File contained a cycle in the list of IFDs")]
     CycleInOffsets,
-    JpegDecoder(JpegDecoderError),
+    #[error("{0}")]
+    JpegDecoder(#[from] JpegDecoderError),
+    #[error("Samples per pixel is zero")]
     SamplesPerPixelIsZero,
-}
-
-impl fmt::Display for TiffFormatError {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-        use self::TiffFormatError::*;
-        match &self {
-            TiffSignatureNotFound => write!(fmt, "TIFF signature not found."),
-            TiffSignatureInvalid => write!(fmt, "TIFF signature invalid."),
-            ImageFileDirectoryNotFound => write!(fmt, "Image file directory not found."),
-            InconsistentSizesEncountered(val) => write!(fmt, "Inconsistent sizes encountered. {val:?}"),
-            UnexpectedCompressedData {
-                actual_bytes,
-                required_bytes,
-            } => {
-                write!(
-                    fmt,
-                    "Decompression returned different amount of bytes than expected: got {}, expected {}.",
-                    actual_bytes, required_bytes
-                )
-            }
-            InconsistentStripSamples {
-                actual_samples,
-                required_samples,
-            } => {
-                write!(
-                    fmt,
-                    "Inconsistent elements in strip: got {}, expected {}.",
-                    actual_samples, required_samples
-                )
-            }
-            InvalidDimensions(width, height) => write!(fmt, "Invalid dimensions: {}x{}.", width, height),
-            InvalidTag => write!(fmt, "Image contains invalid tag."),
-            InvalidTagValueType(ref tag) => {
-                write!(fmt, "Tag `{:?}` did not have the expected value type.", tag)
-            }
-            RequiredTagNotFound(ref tag) => write!(fmt, "Required tag `{:?}` not found.", tag),
-            UnknownPredictor(ref predictor) => {
-                write!(fmt, "Unknown predictor “{}” encountered", predictor)
-            }
-            UnknownPlanarConfiguration(ref planar_config) =>  {
-                write!(fmt, "Unknown planar configuration “{}” encountered", planar_config)
-            }
-            ByteExpected(ref val) => write!(fmt, "Expected byte, {:?} found.", val),
-            SignedByteExpected(ref val) => write!(fmt, "Expected signed byte, {:?} found.", val),
-            SignedShortExpected(ref val) => write!(fmt, "Expected signed short, {:?} found.", val),
-            UnsignedIntegerExpected(ref val) => {
-                write!(fmt, "Expected unsigned integer, {:?} found.", val)
-            }
-            SignedIntegerExpected(ref val) => {
-                write!(fmt, "Expected signed integer, {:?} found.", val)
-            }
-            FloatExpected(val) => write!(fmt, "Expected float or double, {val:?} found"),
-            AsciiExpected(val) => write!(fmt, "Expected Ascii, Byte or Undefined, {val:?} found"),
-            Format(ref val) => write!(fmt, "Invalid format: {:?}.", val),
-            RequiredTagEmpty(ref val) => write!(fmt, "Required tag {:?} was empty.", val),
-            StripTileTagConflict => write!(fmt, "File should contain either (StripByteCounts and StripOffsets) or (TileByteCounts and TileOffsets), other combination was found."),
-            CycleInOffsets => write!(fmt, "File contained a cycle in the list of IFDs"),
-            JpegDecoder(ref error) => write!(fmt, "{}",  error),
-            SamplesPerPixelIsZero => write!(fmt, "Samples per pixel is zero"),
-        }
-    }
 }
 
 /// The Decoder does not support features required by the image.
@@ -157,200 +131,63 @@ impl fmt::Display for TiffFormatError {
 ///
 /// The list of variants may grow. Matching against this exhaustively is not covered by interface
 /// stability guarantees.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Error)]
 #[non_exhaustive]
 pub enum TiffUnsupportedError {
+    #[error("Floating point predictor for {0:?} is unsupported.")]
     FloatingPointPredictor(ColorType),
+    #[error("Horizontal predictor for {0:?} is unsupported.")]
     HorizontalPredictor(ColorType),
+    #[error("Inconsistent bits per sample: {0:?}.")]
     InconsistentBitsPerSample(Vec<u8>),
+    #[error("{0:?} with {0:?} bits per sample is unsupported")]
     InterpretationWithBits(PhotometricInterpretation, Vec<u8>),
+    #[error("The image is using an unknown photometric interpretation.")]
     UnknownInterpretation,
+    #[error("Unknown compression method.")]
     UnknownCompressionMethod,
+    #[error("Compression method {0:?} is unsupported")]
     UnsupportedCompressionMethod(CompressionMethod),
+    #[error("{0} samples per pixel is unsupported.")]
     UnsupportedSampleDepth(u8),
+    #[error("Sample format {0:?} is unsupported.")]
     UnsupportedSampleFormat(Vec<SampleFormat>),
+    #[error("Color type {0:?} is unsupported")]
     UnsupportedColorType(ColorType),
+    #[error("{0} bits per channel not supported")]
     UnsupportedBitsPerChannel(u8),
+    #[error("Unsupported planar configuration “{0:?}”.")]
     UnsupportedPlanarConfig(Option<PlanarConfiguration>),
+    #[error( "Unsupported data type.")]
     UnsupportedDataType,
+    #[error("Unsupported photometric interpretation \"{0:?}\".")]
     UnsupportedInterpretation(PhotometricInterpretation),
+    #[error("Unsupported JPEG feature {0:?}")]
     UnsupportedJpegFeature(UnsupportedFeature),
+    #[error("Tile rows are not aligned to byte boundaries")]
     MisalignedTileBoundaries,
-}
-
-impl fmt::Display for TiffUnsupportedError {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-        use self::TiffUnsupportedError::*;
-        match *self {
-            FloatingPointPredictor(color_type) => write!(
-                fmt,
-                "Floating point predictor for {:?} is unsupported.",
-                color_type
-            ),
-            HorizontalPredictor(color_type) => write!(
-                fmt,
-                "Horizontal predictor for {:?} is unsupported.",
-                color_type
-            ),
-            InconsistentBitsPerSample(ref bits_per_sample) => {
-                write!(fmt, "Inconsistent bits per sample: {:?}.", bits_per_sample)
-            }
-            InterpretationWithBits(ref photometric_interpretation, ref bits_per_sample) => write!(
-                fmt,
-                "{:?} with {:?} bits per sample is unsupported",
-                photometric_interpretation, bits_per_sample
-            ),
-            UnknownInterpretation => write!(
-                fmt,
-                "The image is using an unknown photometric interpretation."
-            ),
-            UnknownCompressionMethod => write!(fmt, "Unknown compression method."),
-            UnsupportedCompressionMethod(method) => {
-                write!(fmt, "Compression method {:?} is unsupported", method)
-            }
-            UnsupportedSampleDepth(samples) => {
-                write!(fmt, "{} samples per pixel is unsupported.", samples)
-            }
-            UnsupportedSampleFormat(ref formats) => {
-                write!(fmt, "Sample format {:?} is unsupported.", formats)
-            }
-            UnsupportedColorType(color_type) => {
-                write!(fmt, "Color type {:?} is unsupported", color_type)
-            }
-            UnsupportedBitsPerChannel(bits) => {
-                write!(fmt, "{} bits per channel not supported", bits)
-            }
-            UnsupportedPlanarConfig(config) => {
-                write!(fmt, "Unsupported planar configuration “{:?}”.", config)
-            }
-            UnsupportedDataType => write!(fmt, "Unsupported data type."),
-            UnsupportedInterpretation(interpretation) => {
-                write!(
-                    fmt,
-                    "Unsupported photometric interpretation \"{:?}\".",
-                    interpretation
-                )
-            }
-            UnsupportedJpegFeature(ref unsupported_feature) => {
-                write!(fmt, "Unsupported JPEG feature {:?}", unsupported_feature)
-            }
-            MisalignedTileBoundaries => write!(fmt, "Tile rows are not aligned to byte boundaries"),
-        }
-    }
 }
 
 /// User attempted to use the Decoder in a way that is incompatible with a specific image.
 ///
 /// For example: attempting to read a tile from a stripped image.
-#[derive(Debug)]
+#[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum UsageError {
+    #[error("Requested operation is only valid for images with chunk encoding of type: {0:?}, got {0:?}.")]
     InvalidChunkType(ChunkType, ChunkType),
+    #[error("Image chunk index ({0}) requested.")]
     InvalidChunkIndex(u32),
+    #[error("The requested predictor is not compatible with the requested compression")]
     PredictorCompressionMismatch,
+    #[error("The requested predictor is not compatible with the image's format")]
     PredictorIncompatible,
+    #[error("The requested predictor is not available")]
     PredictorUnavailable,
-    /// IFDs should be handled separately, not read into a BufferedEntry
-    /// Correct usage:
-    /// ```
-    /// # use tiff2::ifd::Ifd;
-    /// # use tiff2::ByteOrder;
-    /// let ifd = Ifd::default() ;
-    /// let sub_ifd_buf = [
-    ///     0x01, 0x00,                         // Number of entries (1)
-    ///     0x00, 0x01, 0x03, 0x00,             // Tag (ImageWidth), Type (SHORT)
-    ///     0x01, 0x00, 0x00, 0x00,             // Count (1)
-    ///     0x2C, 0x01, 0x00, 0x00,             // Value (300)
-    ///     0x00, 0x00, 0x00, 0x00              // Offset to next IFD (0, meaning no more IFDs)
-    /// ];
-    /// ifd.insert_ifd_from_buffer(sub_ifd_buf, ByteOrder::LittleEndian);
-    /// ```
-    IfdReadIntoEntry,
+    #[error("Tried loading tag data into an IFD, while it was already present")]
     DuplicateTagData,
+    #[error("Required tag {0:?} with type {1:?} and count {2} not loaded from {3}")]
     RequiredTagNotLoaded(Tag, TagType, u64, u64),
-}
-
-impl fmt::Display for UsageError {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use self::UsageError::*;
-        match *self {
-            InvalidChunkType(expected, actual) => {
-                write!(
-                    fmt,
-                    "Requested operation is only valid for images with chunk encoding of type: {:?}, got {:?}.",
-                    expected, actual
-                )
-            }
-            InvalidChunkIndex(index) => write!(fmt, "Image chunk index ({}) requested.", index),
-            PredictorCompressionMismatch => write!(
-                fmt,
-                "The requested predictor is not compatible with the requested compression"
-            ),
-            PredictorIncompatible => write!(
-                fmt,
-                "The requested predictor is not compatible with the image's format"
-            ),
-            PredictorUnavailable => write!(fmt, "The requested predictor is not available"),
-            IfdReadIntoEntry => write!(fmt, "sub-IFDs should be added to an ifd through `ifd.insert_ifd_from_buf`, not read as an Entry"),
-            DuplicateTagData => write!(fmt, "Tried loading tag data into an IFD, while it was already present"),
-            RequiredTagNotLoaded(tag, tag_type, count, offset) => write!(fmt, "Required tag {tag:?} with type {tag_type:?} and count {count} not loaded from {offset:?}")
-        }
-    }
-}
-
-impl fmt::Display for TiffError {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-        match *self {
-            TiffError::FormatError(ref e) => write!(fmt, "Format error: {}", e),
-            TiffError::UnsupportedError(ref f) => write!(
-                fmt,
-                "The Decoder does not support the \
-                 image format `{}`",
-                f
-            ),
-            TiffError::IoError(ref e) => e.fmt(fmt),
-            TiffError::LimitsExceeded => write!(fmt, "The Decoder limits are exceeded"),
-            TiffError::IntSizeError => write!(fmt, "Platform or format size limits exceeded"),
-            TiffError::UsageError(ref e) => write!(fmt, "Usage error: {}", e),
-            TiffError::TryLockError => {
-                write!(fmt, "Poisoned lock encountered, good luck recovering!")
-            }
-        }
-    }
-}
-
-impl Error for TiffError {
-    fn description(&self) -> &str {
-        match *self {
-            TiffError::FormatError(..) => "Format error",
-            TiffError::UnsupportedError(..) => "Unsupported error",
-            TiffError::IoError(..) => "IO error",
-            TiffError::LimitsExceeded => "Decoder limits exceeded",
-            TiffError::IntSizeError => "Platform or format size limits exceeded",
-            TiffError::UsageError(..) => "Invalid usage",
-            TiffError::TryLockError => "Lock acquiring failed",
-        }
-    }
-
-    fn cause(&self) -> Option<&dyn Error> {
-        match *self {
-            TiffError::IoError(ref e) => Some(e),
-            _ => None,
-        }
-    }
-}
-
-impl From<io::Error> for TiffError {
-    fn from(err: io::Error) -> TiffError {
-        TiffError::IoError(err)
-    }
-}
-
-impl<T> From<std::sync::TryLockError<T>> for TiffError {
-    fn from(err: std::sync::TryLockError<T>) -> Self {
-        println!("undocumented error: {err}");
-        TiffError::TryLockError
-    }
 }
 
 impl From<str::Utf8Error> for TiffError {
@@ -365,30 +202,6 @@ impl From<string::FromUtf8Error> for TiffError {
     }
 }
 
-impl From<TiffFormatError> for TiffError {
-    fn from(err: TiffFormatError) -> TiffError {
-        TiffError::FormatError(err)
-    }
-}
-
-impl From<TiffUnsupportedError> for TiffError {
-    fn from(err: TiffUnsupportedError) -> TiffError {
-        TiffError::UnsupportedError(err)
-    }
-}
-
-impl From<UsageError> for TiffError {
-    fn from(err: UsageError) -> TiffError {
-        TiffError::UsageError(err)
-    }
-}
-
-impl From<std::num::TryFromIntError> for TiffError {
-    fn from(_err: std::num::TryFromIntError) -> TiffError {
-        TiffError::IntSizeError
-    }
-}
-
 impl From<LzwError> for TiffError {
     fn from(err: LzwError) -> TiffError {
         match err {
@@ -399,7 +212,7 @@ impl From<LzwError> for TiffError {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Error)]
 pub struct JpegDecoderError {
     inner: Arc<jpeg::Error>,
 }
@@ -436,5 +249,3 @@ impl From<jpeg::Error> for TiffError {
     }
 }
 
-/// Result of an image decoding/encoding process
-pub type TiffResult<T> = Result<T, TiffError>;
