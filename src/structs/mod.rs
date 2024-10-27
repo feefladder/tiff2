@@ -1,5 +1,5 @@
 mod entry;
-pub use entry::{BufferedEntry, Directory, IfdEntry};
+pub use entry::{ProcessedEntry, Directory, IfdEntry};
 /// IFD struct for non-images
 mod ifd;
 pub use ifd::Ifd;
