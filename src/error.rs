@@ -6,8 +6,8 @@ use std::string;
 use std::sync::Arc;
 
 use jpeg::UnsupportedFeature;
-use weezl::LzwError;
 use thiserror::Error;
+use weezl::LzwError;
 
 use crate::{
     structs::{
@@ -15,7 +15,7 @@ use crate::{
             CompressionMethod, PhotometricInterpretation, PlanarConfiguration, SampleFormat, Tag,
             TagType,
         },
-        ProcessedEntry,
+        Offset, ProcessedEntry,
     },
     ChunkType, ColorType,
 };
@@ -38,7 +38,7 @@ pub enum TiffError {
     #[error("{0}")]
     IoError(#[from] io::Error),
     /// The Limits of the Decoder is exceeded.
-    #[error( "The Decoder limits are exceeded")]
+    #[error("The Decoder limits are exceeded")]
     LimitsExceeded,
 
     /// An integer conversion to or from a platform size failed, either due to
@@ -158,7 +158,7 @@ pub enum TiffUnsupportedError {
     UnsupportedBitsPerChannel(u8),
     #[error("Unsupported planar configuration “{0:?}”.")]
     UnsupportedPlanarConfig(Option<PlanarConfiguration>),
-    #[error( "Unsupported data type.")]
+    #[error("Unsupported data type.")]
     UnsupportedDataType,
     #[error("Unsupported photometric interpretation \"{0:?}\".")]
     UnsupportedInterpretation(PhotometricInterpretation),
@@ -186,8 +186,8 @@ pub enum UsageError {
     PredictorUnavailable,
     #[error("Tried loading tag data into an IFD, while it was already present")]
     DuplicateTagData,
-    #[error("Required tag {0:?} with type {1:?} and count {2} not loaded from {3}")]
-    RequiredTagNotLoaded(Tag, TagType, u64, u64),
+    #[error("Required tag {0:?} with type {:?} and count {} not loaded from {}", .1.tag_type, .1.count, .1.offset)]
+    RequiredTagNotLoaded(Tag, Offset),
 }
 
 impl From<str::Utf8Error> for TiffError {
@@ -248,4 +248,3 @@ impl From<jpeg::Error> for TiffError {
         JpegDecoderError::new(error).into()
     }
 }
-
