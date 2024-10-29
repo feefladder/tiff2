@@ -269,7 +269,7 @@ pub struct Image {
 
 ### Notable changes with image-tiff:
 
-- use of BufferedEntry in stead of Value everywhere
+- use of ~BufferedEntry~ `ProcessedEntry` in stead of `Value` everywhere
 - Ifd and other building blocks have a more central place
 - ChunkOpts is taking some place of Image
 - 
@@ -277,19 +277,120 @@ pub struct Image {
 ### todo:
 
 - find a better name for `CogReader` trait
+
 - harmonize `Value` between "encoder" and decoder. Options:
   - `Value` (possibly recursive) enum:
     - Nice when there is only a single value
-    - Difficult to determine type based on List type
-    - IFD is still an offset
+    - Difficult to determine type based on List type, since all values in the vec should be the same
   - **`BufferedValue`: stored as bytes sequence <- I like actually**
     - need to do special indexing strats
     - nice for reading/writing "little-copy"
     - not re-organizing data more than needed just "feels nice"
-    - IFD should intuitively store the bytes of the IFD <- contrary to current
-      impl, breaks recursion
+    - IFD should ~intuitively store the bytes of the IFD <- contrary to current
+      impl, breaks recursion~ still store its values as offsets
+    - using bytemuck (on `Vec<u8>` or `Bytes`) [has](https://github.com/tokio-rs/bytes/issues/343) [alignment]() issues that [will not surface](https://stackoverflow.com/a/79128017/14681457) with the [default allocator](https://github.com/rust-lang/miri/issues/812), but _could_ surface with e.g. [jemalloc]()
+    - Could use `Bytes` to allow for reference-counted, "zero-copy" implementation.
+      - still has alignment issues [for now](https://github.com/tokio-rs/bytes/issues/437#issuecomment-2034334755)
+        - wait for `Bytes::from_owner` [to land](https://github.com/tokio-rs/bytes/pull/742)
+      - -> use ProcessedValue:
   - `ProcessedValue`: stored as Vec<Value> <- should not be used together with `Value::List`
     - Why is this any different than recursing Value?
+      - Can directly work on the networked buffer, by exposing our own data as a `&mut [u8]` slice
+      - multiple values are tightly packed
+      - extra (in theory, needless) allocation for single values
+  - **ideal world**: Use `BufferedEntry` as:
+    ```rust
+    /// Entry with tag data
+    pub struct BufferedEntry {
+      tag_type: TagType,
+      /// count := tag_type.size() * data.len()
+      count: u64,
+      /// Data should be aligned to `TagType.primitive_size()`
+      data: Bytes,
+    } 
+    ```
+    Until then, a possible solution could be:
+    ```rust
+    impl<'a> TryFrom<&'a BufferedEntry> for &'a [u64] {
+      type Error = TiffError;
+
+      fn try_from(val: &'a BufferedEntry ) -> Result<Self, Self::Error> {
+        if val.tag_type.size() * val.count != val.data.len() {
+          return Err(TiffFormatError::InconsistentSizesEncountered.into())
+        }
+        match val.tag_type {
+          TagType::LONG8 => match bytemuck::try_cast_slice::<u64>(val.data) {
+            Ok(v) => Ok(v),
+            Err(bytemuck::PodCastError::TargetAlignmentGreaterAndInputNotAligned) => {
+              // magic to cast slice, will cost an alloc
+              // how do we create a (temp) value that outlives the current function?
+              // [we don't](https://stackoverflow.com/a/64196091/14681457)
+              // val.data.chunks_exact(tag_type.size()).map(|chunk| u64::from_ne_bytes(chunk)).collect()
+              Err(bytemuck::PodCastError::TargetAlignmentGreaterAndInputNotAligned)
+            },
+            Err(e) => Err(e.into())
+          }
+        }
+      }
+    }
+    ```
+    or:
+    ```rust
+    let tag = Tag::from_u16(0x01_01); //ImageLength
+    let offset = Offset{
+      tag_type = TagType::Long8,
+      count: 1,
+      offset: 42,
+    }
+    let tag_range = [offset.offset..offset.offset + offset.tag_type.size() * offset.count];
+    let res: Bytes = reader.get_range(tag_range).await?;
+    // add check here, possibly creating a new alignment
+    if !res.has_minimum_alignment(8) {
+      res = Bytes::from_with_minimum_alignment(res, 8) //this function doesn't exist
+    }
+    BufferedEntry {
+      offset.tag_type,
+      offset.count,
+      res,
+    }
+    ```
+    Possible solutions: 
+    - [rkyvs]() `AlignedVec` as backing structure for Bytes
+    - _could_ make a Bytes object from a static slice, which could be downcast from `Vec<u64>` using bytemuck
+      - buffers are in ObjectStore, so we don't really have control over them
   - Logical impl: Read: BufferedValue -> Value Write: Value -> BufferedValue
     - actually eleganter solution would be to use bytemuck and BufferedValue
+  - other option:
+    ```rust
+    pub struct IfdEntry {
+      Offset(Offset),
+      Single(Value),
+      Multiple(ProcessedEntry),
+    }
+    ```
+    - no needless allocs for single values
+    - still controlled allocs for multiple values
+    - cumbersome match statements
+
+## Async notes
+
+- python issue [po3](https://github.com/apache/arrow-rs/issues/6587): basically that lifetimes of futures need to be `'static`
+- Arrow's [async reader](https://github.com/apache/arrow-rs/blob/936e40eb72adb8dc63f6aa67ec94885598408e53/parquet/src/arrow/async_reader/mod.rs#L1328)
+- make Futures an [associated type](https://github.com/apache/arrow-rs/issues/5240#issuecomment-1868472956), so that implementor can decide on `Send`ness
+
+## Alignment notes
+
+- [struct alignment](https://stackoverflow.com/q/41090078/14681457)
+  - [repr(align(64))](https://stackoverflow.com/a/51198446/14681457)
+  - [pr](https://github.com/rust-lang/rust/pull/47006)
+- [array alignment]()
+- [jemalloc alignment guarantees](https://github.com/jemalloc/jemalloc/issues/1533)
+- [arrow-rs change](https://github.com/apache/arrow-rs/pull/878/files#diff-3ce4a41635f4de013d61865c0990ca72dbfdc7432fc65c2b59a1e8919f925a05R57-R60) use `chunks_exact(8).map(u64::from_ne_bytes)` as safe alternative to casting
+  - [issue](https://github.com/apache/arrow-rs/issues/877) because unaligned reads through pointer, which we don't do
+- rust allocators [don't assume minimum alignment](https://github.com/rust-lang/rust/pull/46117)
+- ways to test:
+  - [bytes pr](https://github.com/tokio-rs/bytes/pull/346/files#diff-59a7c57d16e92b38766e932c25b74855e4be427436d609fbd2e0a7592284eac9)
+  - [answer to my question on SO]()
+- [rkyv `AlignedVec` source](https://docs.rs/rkyv/latest/src/rkyv/util/alloc/aligned_vec.rs.html#31-35)
+
 
