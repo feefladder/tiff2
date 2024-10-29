@@ -4,7 +4,7 @@ use std::io::Read;
 use crate::error::{TiffError, TiffFormatError, TiffResult};
 use crate::structs::{Tag, TagType};
 
-// 
+//
 // use self::Value::{
 //     Ascii, Byte, Double, Float, List, Long, Long8, Rational, SLong, SLong8, SRational, SShort,
 //     Short, SignedByte,

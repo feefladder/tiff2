@@ -1,17 +1,17 @@
 use crate::{
     decoder::{CogReader, EndianReader},
     error::{TiffError, TiffFormatError, TiffResult, UsageError},
-    structs::{ProcessedEntry, IfdEntry, Tag},
+    structs::{IfdEntry, ProcessedEntry, Tag},
     ByteOrder,
 };
 
 use std::{collections::BTreeMap, io};
 pub type Directory = BTreeMap<Tag, IfdEntry>;
 
-#[derive(Debug, PartialEq, Default)]
+#[derive(Debug, PartialEq, Default, Clone)]
 pub struct Ifd {
-    sub_ifds: Vec<Ifd>,
-    data: Directory,
+    pub(crate) sub_ifds: Vec<Ifd>,
+    pub(crate) data: Directory,
 }
 
 /// Base IFD struct without any special-cased metadata
@@ -28,12 +28,17 @@ impl Ifd {
     ) -> TiffResult<Self> {
         // let n_offset_bytes =
         let mut ifd = Ifd::default();
+
+        // maybe make this a parameter (num_entries), since we'd need to read
+        // that in order for us to get the correct range of the IFD
         let mut r = EndianReader::wrap(io::Cursor::new(buf), byte_order);
         let num_entries: u64 = if bigtiff {
             r.read_u64()?
         } else {
             r.read_u16()?.into()
         };
+
+        // Then this can be over a chunks_exact(buf, if bigtiff{})
         for _ in 0..num_entries {
             let tag = Tag::from_u16_exhaustive(r.read_u16()?);
             ifd.data
@@ -56,14 +61,46 @@ impl Ifd {
         ))
     }
 
+    /// remove a required tag from this Ifd, so we can use it as fast-access
+    /// in a wrapping struct.
+    ///
+    /// edge-case: tag is present, but value not loaded:  
+    /// The tag gets re-inserted into the dict and RequiredTagNotLoaded is returned
+    pub fn remove_required_val(&mut self, tag: &Tag) -> TiffResult<ProcessedEntry> {
+        match self
+            .data
+            .remove(&tag)
+            .ok_or(TiffFormatError::RequiredTagNotFound(*tag))?
+        {
+            IfdEntry::Offset(o) => {
+                // insert back into the ifd
+                self.data.insert(*tag, IfdEntry::Offset(o));
+                Err(UsageError::RequiredTagNotLoaded(*tag, o).into())
+            }
+            IfdEntry::Value(be) => Ok(be),
+        }
+    }
+
+    /// remove an optional tag from this Ifd, so it can be used as fast-access
+    /// in a wrapping struct.
+    ///
+    /// edge-case: tag is present, but value not loaded:  
+    /// The tag gets re-inserted into the dict and RequiredTagNotLoaded is returned
+    pub fn remove_optional_val(&mut self, tag: &Tag) -> TiffResult<Option<ProcessedEntry>> {
+        match self.data.remove(tag) {
+            Some(IfdEntry::Offset(o)) => {
+                self.data.insert(*tag, IfdEntry::Offset(o));
+                Err(UsageError::RequiredTagNotLoaded(*tag, o).into())
+            }
+            Some(IfdEntry::Value(v)) => Ok(Some(v)),
+            None => Ok(None),
+        }
+    }
+
     /// Get a tag, returning error if not present or loaded
     pub fn require_tag_value(&self, tag: &Tag) -> TiffResult<&ProcessedEntry> {
         match self.require_tag(&tag)? {
-            IfdEntry::Offset {
-                tag_type,
-                count,
-                offset,
-            } => Err(UsageError::RequiredTagNotLoaded(*tag, *tag_type, *count, *offset).into()),
+            IfdEntry::Offset(o) => Err(UsageError::RequiredTagNotLoaded(*tag, *o).into()),
             IfdEntry::Value(be) => Ok(be),
         }
     }
@@ -72,11 +109,7 @@ impl Ifd {
     pub fn get_tag_value(&self, tag: &Tag) -> TiffResult<Option<&ProcessedEntry>> {
         if let Some(be) = self.get_tag(tag) {
             match be {
-                IfdEntry::Offset {
-                    tag_type,
-                    count,
-                    offset,
-                } => Err(UsageError::RequiredTagNotLoaded(*tag, *tag_type, *count, *offset).into()),
+                IfdEntry::Offset(o) => Err(UsageError::RequiredTagNotLoaded(*tag, *o).into()),
                 IfdEntry::Value(be) => Ok(Some(be)),
             }
         } else {
@@ -114,10 +147,19 @@ impl Ifd {
     // }
 }
 
+impl From<Directory> for Ifd {
+    fn from(data: Directory) -> Self {
+        Self {
+            sub_ifds: Vec::new(),
+            data,
+        }
+    }
+}
+
 #[allow(unused_imports)]
 mod test_ifd {
     use super::*;
-    use crate::structs::{value::Value, ProcessedEntry, TagType};
+    use crate::structs::{value::Value, Offset, ProcessedEntry, TagType};
 
     /// test reading multiple tags, esp. whether we skip over the offset properly
     #[test]
@@ -138,8 +180,8 @@ mod test_ifd {
                    0,1, 9,0, 1,0,0,0, 42, 0, 0, 0], ProcessedEntry::Byte(vec![42;3]), ProcessedEntry::SLong(vec![42])),
         ];
         for (buf, res1, res2) in cases {
-            let t1 = Tag::from_u16_exhaustive(0x0101);
-            let t2 = Tag::from_u16_exhaustive(0x0100);
+            let t1 = Tag::from_u16_exhaustive(0x0101); // image_length
+            let t2 = Tag::from_u16_exhaustive(0x0100); // image_width
             let mut dir = Directory::new();
             dir.insert(t1, IfdEntry::Value(res1));
             dir.insert(t2, IfdEntry::Value(res2));
@@ -386,7 +428,7 @@ mod test_ifd {
         for (buf, byte_order, count, tag_type) in cases {
             println!("Trying {buf:?}, with {byte_order:?}");
             let mut dir = Directory::new();
-            dir.insert(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Offset { tag_type, count, offset: 42 });
+            dir.insert(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Offset(Offset { tag_type, count, offset: 42 }));
             assert_eq!(Ifd::from_buffer(&buf, byte_order, false).unwrap(), Ifd{
                 sub_ifds: Vec::new(),
                 data: dir
@@ -445,7 +487,7 @@ mod test_ifd {
             println!("       |1 2 |1  2 |1  2  3  4  5  6  7  8 |1  2  3  4  5  6  7  8|");
             println!("Trying {buf:?}, with {byte_order:?}");
             let mut dir = Directory::new();
-            dir.insert(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Offset { tag_type, count, offset: 42 });
+            dir.insert(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Offset(Offset{ tag_type, count, offset: 42 }));
             assert_eq!(Ifd::from_buffer(&buf, byte_order, true).unwrap(), Ifd{
                 sub_ifds: Vec::new(),
                 data: dir

@@ -1,9 +1,10 @@
 use crate::{
     decoder::EndianReader,
-    error::{TiffError, TiffFormatError::{
-        self,
-        UnsignedIntegerExpected, SignedIntegerExpected, FloatExpected,
-    }, TiffResult, UsageError},
+    error::{
+        TiffError,
+        TiffFormatError::{self, FloatExpected, SignedIntegerExpected, UnsignedIntegerExpected},
+        TiffResult, UsageError,
+    },
     structs::{
         Tag,
         TagType::{
@@ -15,18 +16,25 @@ use crate::{
     util::fix_endianness,
 };
 
-use std::{collections::BTreeMap, io::{Read, Seek, SeekFrom}};
+use std::{
+    collections::BTreeMap,
+    io::{Read, Seek, SeekFrom},
+};
 
 pub type Directory = BTreeMap<Tag, IfdEntry>;
 
+/// an offset into the field
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub struct Offset {
+    pub tag_type: TagType,
+    pub count: u64,
+    pub offset: u64,
+}
+
 ///
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum IfdEntry {
-    Offset {
-        tag_type: TagType,
-        count: u64,
-        offset: u64,
-    },
+    Offset(Offset),
     Value(ProcessedEntry),
 }
 
@@ -65,10 +73,9 @@ impl IfdEntry {
     /// ```
     pub fn from_reader<R: Read + Seek>(r: &mut EndianReader<R>, bigtiff: bool) -> TiffResult<Self> {
         let t_u16 = r.read_u16()?;
-        println!("testing for {t_u16}");
         let tag_type =
             TagType::from_u16(t_u16).ok_or(TiffFormatError::InvalidTagValueType(t_u16))?;
-        
+
         let count: u64 = if bigtiff {
             r.read_u64()?
         } else {
@@ -78,11 +85,9 @@ impl IfdEntry {
         let Some(value_bytes) = count.checked_mul(tag_type.size().try_into()?) else {
             return Err(TiffError::LimitsExceeded);
         };
-        if !bigtiff && value_bytes > 4
-            || value_bytes > 8
-        {
+        if (!bigtiff && value_bytes > 4) || value_bytes > 8 {
             // we are too big, just insert the offset for now
-            Ok(IfdEntry::Offset {
+            Ok(IfdEntry::Offset(Offset {
                 tag_type,
                 count,
                 offset: if bigtiff {
@@ -90,7 +95,7 @@ impl IfdEntry {
                 } else {
                     r.read_u32()?.into()
                 },
-            })
+            }))
         } else {
             // create a buffer for the offset
             let mut offset = ProcessedEntry::new(tag_type, count.try_into()?);
@@ -108,14 +113,18 @@ impl IfdEntry {
             // std::io::copy(&mut r.as_ref().take(rem), &mut std::io::sink());
 
             // fix endianness and return
-            fix_endianness(offset.buf_mut(), r.byte_order, 8 * tag_type.primitive_size());
+            fix_endianness(
+                offset.buf_mut(),
+                r.byte_order,
+                8 * tag_type.primitive_size(),
+            );
             Ok(IfdEntry::Value(offset))
         }
     }
 }
 
 /// Entry with buffered data that is properly aligned.
-/// 
+///
 /// Therefore, it is an enum over all possible tag types, to also be able to
 /// easily distinguish them (not needing to keep [`TagType`] around)
 /// ```
@@ -130,7 +139,8 @@ pub enum ProcessedEntry {
     SByte(Vec<i8>),
     Undefined(Vec<u8>),
     /// Ascii value, still bytes to avoid unsafe when giving it as a buffer
-    /// That means we can hold an invalid strig without UB
+    /// That means we can hold an invalid strig without UB when giving out the buffer
+    /// Also: we keep the `0` byte at the end of the string
     Ascii(Vec<u8>),
     Short(Vec<u16>),
     SShort(Vec<i16>),
@@ -144,7 +154,6 @@ pub enum ProcessedEntry {
     Double(Vec<f64>),
     Rational(Vec<u32>),
     SRational(Vec<i32>),
-    
 }
 
 impl ProcessedEntry {
@@ -222,9 +231,9 @@ impl ProcessedEntry {
 
 macro_rules! impl_try_from_processed_entry {
     (
-        $target:ty, 
-        [$($from_small:ident),*], 
-        $from_exact:ident, 
+        $target:ty,
+        [$($from_small:ident),*],
+        $from_exact:ident,
         [$($from_large:ident),*],
         $error_type:ident
     ) => {
@@ -239,6 +248,36 @@ macro_rules! impl_try_from_processed_entry {
                     $(ProcessedEntry::$from_small(v) => Ok(Self::from(v[0])),)*
                     ProcessedEntry::$from_exact(v) => Ok(v[0]),
                     $(ProcessedEntry::$from_large(v) => Ok(Self::try_from(v[0])?),)*
+                    _ => Err($error_type(val.clone()).into()),
+                }
+            }
+        }
+
+        impl TryFrom<ProcessedEntry> for $target {
+            type Error = TiffError;
+
+            fn try_from(val: ProcessedEntry) -> Result<Self, Self::Error> {
+                if val.len() != 1 {
+                    return Err(TiffFormatError::InconsistentSizesEncountered(val.clone()).into());
+                }
+                match val {
+                    $(ProcessedEntry::$from_small(v) => Ok(Self::from(v[0])),)*
+                    ProcessedEntry::$from_exact(v) => Ok(v[0]),
+                    $(ProcessedEntry::$from_large(v) => Ok(Self::try_from(v[0])?),)*
+                    _ => Err($error_type(val.clone()).into()),
+                }
+            }
+        }
+
+        impl TryFrom<ProcessedEntry> for Vec<$target> {
+            type Error = TiffError;
+
+            fn try_from(val: ProcessedEntry) -> Result<Self, Self::Error> {
+                match val {
+                    // https://stackoverflow.com/q/48308759/14681457
+                    $(ProcessedEntry::$from_small(v) => Ok(v.into_iter().map(<$target>::from).collect()),)*
+                    ProcessedEntry::$from_exact(v) => Ok(v),
+                    $(ProcessedEntry::$from_large(v) => Ok(v.into_iter().map(<$target>::try_from).collect::<Result<Self, _>>()?),)*
                     _ => Err($error_type(val.clone()).into()),
                 }
             }
@@ -289,38 +328,50 @@ macro_rules! impl_try_from_processed_entry {
     };
 }
 
-impl_try_from_processed_entry!(u8, [Ascii, Undefined], Byte, [Short, Long, Ifd, Long8, Ifd8], UnsignedIntegerExpected);
-impl_try_from_processed_entry!(u16, [Byte], Short, [ Long, Ifd, Long8, Ifd8], UnsignedIntegerExpected);
-impl_try_from_processed_entry!(u32, [Byte, Short, Ifd], Long, [Long8, Ifd8], UnsignedIntegerExpected);
-impl_try_from_processed_entry!(u64, [Byte, Short, Ifd, Long, Ifd8], Long8, [], UnsignedIntegerExpected);
+#[allow(unused_imports)]
+pub use macro_impls::*;
+#[rustfmt::skip]
+mod macro_impls {
+    use super::*;
+    impl_try_from_processed_entry!(u8, [Ascii, Undefined], Byte,[Short, Ifd, Long, Ifd8, Long8]   , UnsignedIntegerExpected);
+    impl_try_from_processed_entry!(u16,                   [Byte],Short,[Ifd, Long, Ifd8, Long8]   , UnsignedIntegerExpected );
+    impl_try_from_processed_entry!(u32,                   [Byte, Short, Ifd],Long,[Ifd8, Long8]   , UnsignedIntegerExpected );
+    impl_try_from_processed_entry!(u64,                   [Byte, Short, Ifd, Long, Ifd8],Long8, [], UnsignedIntegerExpected );
 
-impl_try_from_processed_entry!(i8, [], SByte, [SShort, SLong, SLong8], SignedIntegerExpected);
-impl_try_from_processed_entry!(i16, [SByte], SShort, [SLong, SLong8], SignedIntegerExpected);
-impl_try_from_processed_entry!(i32, [SByte, SShort], SLong, [SLong8], SignedIntegerExpected);
-impl_try_from_processed_entry!(i64, [SByte, SShort, SLong], SLong8, [],SignedIntegerExpected);
+    impl_try_from_processed_entry!(i8, [], SByte,[SShort, SLong, SLong8]   , SignedIntegerExpected );
+    impl_try_from_processed_entry!(i16,   [SByte],SShort,[SLong, SLong8]   , SignedIntegerExpected);
+    impl_try_from_processed_entry!(i32,   [SByte, SShort],SLong,[SLong8]   , SignedIntegerExpected);
+    impl_try_from_processed_entry!(i64,   [SByte, SShort, SLong],SLong8, [], SignedIntegerExpected);
 
-impl_try_from_processed_entry!(f32, [], Float, [], FloatExpected);
-impl_try_from_processed_entry!(f64, [Float], Double, [], FloatExpected);
+    impl_try_from_processed_entry!(f32, [], Float,          [], FloatExpected);
+    impl_try_from_processed_entry!(f64,    [Float], Double, [], FloatExpected);
 
-
+    // #[cfg(target_pointer_width = "32")]
+    // impl_try_from_processed_entry!(usize, [Byte],Short,[Ifd, Long, Ifd8, Long8], UnsignedIntegerExpected);
+    // #[cfg(target_pointer_width = "64")]
+    // impl_try_from_processed_entry!(usize, [Byte,Short, Long, Ifd, Ifd8], Long8, [], UnsignedIntegerExpected);
+}
 impl TryFrom<&ProcessedEntry> for (u32, u32) {
     type Error = TiffError;
 
     fn try_from(val: &ProcessedEntry) -> Result<Self, Self::Error> {
-        if val.len() != 2 {return Err(TiffFormatError::InconsistentSizesEncountered(val.clone()).into());}
+        if val.len() != 2 {
+            return Err(TiffFormatError::InconsistentSizesEncountered(val.clone()).into());
+        }
         match &val {
             ProcessedEntry::Rational(v) => Ok((v[0], v[1])),
-            _ => Err(TiffFormatError::RationalExpected(val.clone()).into())
+            _ => Err(TiffFormatError::RationalExpected(val.clone()).into()),
         }
     }
 }
-
 
 impl TryFrom<&ProcessedEntry> for (i32, i32) {
     type Error = TiffError;
 
     fn try_from(val: &ProcessedEntry) -> Result<Self, Self::Error> {
-        if val.len() != 2 {return Err(TiffFormatError::InconsistentSizesEncountered(val.clone()).into());}
+        if val.len() != 2 {
+            return Err(TiffFormatError::InconsistentSizesEncountered(val.clone()).into());
+        }
         match &val {
             ProcessedEntry::SRational(v) => Ok((v[0], v[1])),
             _ => Err(TiffFormatError::SignedRationalExpected(val.clone()).into()),
@@ -484,7 +535,7 @@ mod test_entry {
     }
 
     // /// test conversion for single value, slice and too big numbers
-    // /// actually not nice that 
+    // /// actually not nice that
     // macro_rules! test_bufferedentry_into {
     //     ($t:ty,  $name:ident, $(($type:ident, $st:ty)),+) => {
     //         #[test]
@@ -512,9 +563,9 @@ mod test_entry {
     //                         },
     //                     }
     //                 }
-                    
+
     //             )+
-                
+
     //         }
     //     };
     // }
@@ -640,13 +691,12 @@ mod test_entry {
     //     test_bufferedentry_into!(i16, test_i16_into_type,  (SByte, i8), (SShort, i16),             (SLong, i32),              (SLong8, i64));
     //     test_bufferedentry_into!(i32, test_i32_into_type,  (SByte, i8), (SShort, i16),             (SLong, i32),              (SLong8, i64));
     //     test_bufferedentry_into!(i64, test_i64_into_type,  (SByte, i8), (SShort, i16),             (SLong, i32),              (SLong8, i64));
-        
 
     //     // test_bufferedentry_into_wrongsize!(u8 , test_into_wrongsize_1, Byte , SByte , Undefined, Ascii);
     //     // test_bufferedentry_into_wrongsize!(u16, test_into_wrongsize_2, Short, SShort);
     //     // test_bufferedentry_into_wrongsize!(u32, test_into_wrongsize_4, Long, SLong , Ifd , Float );
     //     // test_bufferedentry_into_wrongsize!(u64, test_into_wrongsize_8, Long8, SLong8, Ifd8, Double, Rational, SRational);
-        
+
     //     test_bufferedentry_into_no_int! (i8 , test_i8_into_noint    , Byte,  Short, Undefined, Ascii,  Long, Ifd, Long8, Ifd8, Rational, SRational, Float, Double);
     //     test_bufferedentry_into_no_uint!(u8 , test_u8_into_nouint   ,SByte, SShort, Undefined, Ascii, SLong,     SLong8,       Rational, SRational, Float, Double);
     //     test_bufferedentry_into_no_float!(f32, test_f32_into_nofloat, Byte,  Short, Undefined, Ascii,  Long, Ifd, Long8, Ifd8, Rational, SRational,        Double,
@@ -680,7 +730,7 @@ mod test_entry {
     // #[rustfmt::skip]
     // mod into_slice {
     //     use super::*;
-        
+
     //     test_bufferedentry_into_slice!(i8 , SBYTE , test_i8_slice     );
     //     test_bufferedentry_into_slice!(i16, SSHORT, test_i16_slice    );
     //     test_bufferedentry_into_slice!(i32, SLONG , test_i32_slice    );
@@ -906,7 +956,7 @@ mod test_entry {
         ];
         for (buf, byte_order, count, tag_type) in cases {
             let mut r = EndianReader::wrap(io::Cursor::new(buf), byte_order);
-            assert_eq!(IfdEntry::from_reader(&mut r, false).unwrap(), IfdEntry::Offset { tag_type, count, offset: 42 });
+            assert_eq!(IfdEntry::from_reader(&mut r, false).unwrap(), IfdEntry::Offset(Offset { tag_type, count, offset: 42 }));
         }
     }
 
@@ -958,7 +1008,7 @@ mod test_entry {
         ];
         for (buf, byte_order, count, tag_type) in cases {
             let mut r = EndianReader::wrap(io::Cursor::new(buf), byte_order);
-            assert_eq!(IfdEntry::from_reader(&mut r, true).unwrap(), IfdEntry::Offset { tag_type, count, offset: 42 });
+            assert_eq!(IfdEntry::from_reader(&mut r, true).unwrap(), IfdEntry::Offset(Offset { tag_type, count, offset: 42 }));
         }
     }
 }
