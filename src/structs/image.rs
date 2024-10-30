@@ -5,7 +5,7 @@ use crate::{
             CompressionMethod, PhotometricInterpretation, PlanarConfiguration, Predictor,
             SampleFormat, Tag,
         },
-        Ifd, IfdEntry, ProcessedEntry,
+        Ifd, IfdEntry, TagData,
     },
     ByteOrder, ChunkType, ColorType,
 };
@@ -540,7 +540,7 @@ impl Image {
         // it to be a single value that applies to all samples.
         if bits_per_sample.len() != usize::from(samples) && bits_per_sample.len() != 1 {
             return Err(
-                TiffFormatError::InconsistentSizesEncountered(ProcessedEntry::from(
+                TiffFormatError::InconsistentSizesEncountered(TagData::from(
                     bits_per_sample,
                 ))
                 .into(),
@@ -583,7 +583,7 @@ impl Image {
                         != (image_height.saturating_sub(1) / rows_per_strip + 1) * planes as u32
                 {
                     return Err(TiffFormatError::InconsistentSizesEncountered(
-                        ProcessedEntry::from(chunk_offsets),
+                        TagData::from(chunk_offsets),
                     )
                     .into());
                 }
@@ -622,7 +622,7 @@ impl Image {
                         != tile.tiles_down() * tile.tiles_across() * planes as usize
                 {
                     return Err(TiffFormatError::InconsistentSizesEncountered(
-                        ProcessedEntry::from(chunk_bytes),
+                        TagData::from(chunk_bytes),
                     )
                     .into());
                 }
@@ -665,15 +665,15 @@ mod test {
         let mut dir = Directory::new();
         dir.insert(
             Tag::ImageWidth,
-            IfdEntry::Value(ProcessedEntry::from(42u32)),
+            IfdEntry::Value(TagData::from(42u32)),
         );
         dir.insert(
             Tag::ImageLength,
-            IfdEntry::Value(ProcessedEntry::from(42u32)),
+            IfdEntry::Value(TagData::from(42u32)),
         );
         dir.insert(
             Tag::PhotometricInterpretation,
-            IfdEntry::Value(ProcessedEntry::from(
+            IfdEntry::Value(TagData::from(
                 PhotometricInterpretation::RGB.to_u16(),
             )),
         );
@@ -685,11 +685,11 @@ mod test {
         // conditional tags: single strip, no byte counts
         dir.insert(
             Tag::StripByteCounts,
-            IfdEntry::Value(ProcessedEntry::from(vec![42u32 * 42])),
+            IfdEntry::Value(TagData::from(vec![42u32 * 42])),
         );
         dir.insert(
             Tag::StripOffsets,
-            IfdEntry::Value(ProcessedEntry::from(vec![42u32])),
+            IfdEntry::Value(TagData::from(vec![42u32])),
         );
         dir
     }
@@ -697,19 +697,19 @@ mod test {
         let mut dir = build_dir();
         dir.insert(
             Tag::TileByteCounts,
-            IfdEntry::Value(ProcessedEntry::from(vec![42u32 * 42])),
+            IfdEntry::Value(TagData::from(vec![42u32 * 42])),
         );
         dir.insert(
             Tag::TileOffsets,
-            IfdEntry::Value(ProcessedEntry::from(vec![42u32])),
+            IfdEntry::Value(TagData::from(vec![42u32])),
         );
         dir.insert(
             Tag::TileLength,
-            IfdEntry::Value(ProcessedEntry::from(vec![42u32])),
+            IfdEntry::Value(TagData::from(vec![42u32])),
         );
         dir.insert(
             Tag::TileWidth,
-            IfdEntry::Value(ProcessedEntry::from(vec![42u32])),
+            IfdEntry::Value(TagData::from(vec![42u32])),
         );
         dir
     }
@@ -788,7 +788,7 @@ mod test {
             // let offset = Offset {tag_type: TagType::LONG, count: 1, offset: 42};
 
             let mut d = build_strip_dir();
-            d.insert(opt_tag, IfdEntry::Value(ProcessedEntry::from(vec![42u32])));
+            d.insert(opt_tag, IfdEntry::Value(TagData::from(vec![42u32])));
 
             assert_eq!(BTreeMap::new(), Image::check_ifd(&Ifd::from(d)).unwrap());
         }
@@ -918,7 +918,7 @@ mod test {
         let mut d = build_strip_dir();
         d.insert(
             Tag::ImageWidth,
-            IfdEntry::Value(ProcessedEntry::from(vec![0u32])),
+            IfdEntry::Value(TagData::from(vec![0u32])),
         );
         let TiffError::FormatError(e) =
             Image::from_ifd(Ifd::from(d), ByteOrder::LittleEndian).unwrap_err()
@@ -933,7 +933,7 @@ mod test {
         let mut d = build_strip_dir();
         d.insert(
             Tag::ImageLength,
-            IfdEntry::Value(ProcessedEntry::from(vec![0u32])),
+            IfdEntry::Value(TagData::from(vec![0u32])),
         );
         let TiffError::FormatError(e) =
             Image::from_ifd(Ifd::from(d), ByteOrder::LittleEndian).unwrap_err()
@@ -950,7 +950,7 @@ mod test {
             let mut d = case();
             d.insert(
                 Tag::PhotometricInterpretation,
-                IfdEntry::Value(ProcessedEntry::from(vec![42u16])),
+                IfdEntry::Value(TagData::from(vec![42u16])),
             );
             let TiffError::UnsupportedError(e) =
                 Image::from_ifd(Ifd::from(d), ByteOrder::LittleEndian).unwrap_err()
@@ -967,7 +967,7 @@ mod test {
     //     let cases = [build_strip_dir, build_tile_dir];
     //     for case in cases {
     //         let mut d = case();
-    //         d.insert(Tag::Compression, IfdEntry::Value(ProcessedEntry::Short(vec![42])));
+    //         d.insert(Tag::Compression, IfdEntry::Value(TagData::Short(vec![42])));
     //         let TiffError::UnsupportedError(e) = Image::from_ifd(Ifd::from(d), ByteOrder::LittleEndian).unwrap_err() else {unreachable!()};
     //         assert_eq!(e, TiffUnsupportedError::UnknownCompressionMethod);
     //     }
@@ -980,7 +980,7 @@ mod test {
             let mut d = case();
             d.insert(
                 Tag::SamplesPerPixel,
-                IfdEntry::Value(ProcessedEntry::from(vec![0u16])),
+                IfdEntry::Value(TagData::from(vec![0u16])),
             );
             let TiffError::FormatError(e) =
                 Image::from_ifd(Ifd::from(d), ByteOrder::LittleEndian).unwrap_err()
@@ -998,7 +998,7 @@ mod test {
             let mut d = case();
             d.insert(
                 Tag::Predictor,
-                IfdEntry::Value(ProcessedEntry::from(vec![42u16])),
+                IfdEntry::Value(TagData::from(vec![42u16])),
             );
             let TiffError::FormatError(e) =
                 Image::from_ifd(Ifd::from(d), ByteOrder::LittleEndian).unwrap_err()
@@ -1016,7 +1016,7 @@ mod test {
             let mut d = case();
             d.insert(
                 Tag::PlanarConfiguration,
-                IfdEntry::Value(ProcessedEntry::from(vec![42u16])),
+                IfdEntry::Value(TagData::from(vec![42u16])),
             );
             let TiffError::FormatError(e) =
                 Image::from_ifd(Ifd::from(d), ByteOrder::LittleEndian).unwrap_err()
@@ -1034,11 +1034,11 @@ mod test {
             let mut d = case();
             d.insert(
                 Tag::Compression,
-                IfdEntry::Value(ProcessedEntry::from(CompressionMethod::ModernJPEG.to_u16())),
+                IfdEntry::Value(TagData::from(CompressionMethod::ModernJPEG.to_u16())),
             );
             d.insert(
                 Tag::JPEGTables,
-                IfdEntry::Value(ProcessedEntry::from(vec![42u16])),
+                IfdEntry::Value(TagData::from(vec![42u16])),
             );
             let TiffError::FormatError(e) =
                 Image::from_ifd(Ifd::from(d), ByteOrder::LittleEndian).unwrap_err()
@@ -1057,7 +1057,7 @@ mod test {
         let cases = [build_strip_dir, build_tile_dir];
         for case in cases {
             let mut d = case();
-            let spp = ProcessedEntry::from(vec![2u8, 4]);
+            let spp = TagData::from(vec![2u8, 4]);
             d.insert(Tag::BitsPerSample, IfdEntry::Value(spp.clone()));
             let TiffError::FormatError(e) =
                 Image::from_ifd(Ifd::from(d), ByteOrder::LittleEndian).unwrap_err()
@@ -1073,8 +1073,8 @@ mod test {
         let cases = [build_strip_dir, build_tile_dir];
         for case in cases {
             let mut d = case();
-            let bits_per_sample = ProcessedEntry::from(vec![8u8; 4]);
-            let samples_per_pixel = ProcessedEntry::from(vec![3u16]);
+            let bits_per_sample = TagData::from(vec![8u8; 4]);
+            let samples_per_pixel = TagData::from(vec![3u16]);
             d.insert(Tag::BitsPerSample, IfdEntry::Value(bits_per_sample.clone()));
             d.insert(Tag::SamplesPerPixel, IfdEntry::Value(samples_per_pixel));
             println!(
@@ -1102,10 +1102,10 @@ mod test {
         for case in cases {
             let mut d = case();
             let bits_per_sample: Vec<u8> = vec![2, 4, 8];
-            let samples_per_pixel = ProcessedEntry::from(vec![3u16]);
+            let samples_per_pixel = TagData::from(vec![3u16]);
             d.insert(
                 Tag::BitsPerSample,
-                IfdEntry::Value(ProcessedEntry::from(bits_per_sample.clone())),
+                IfdEntry::Value(TagData::from(bits_per_sample.clone())),
             );
             d.insert(Tag::SamplesPerPixel, IfdEntry::Value(samples_per_pixel));
             println!(
@@ -1133,10 +1133,10 @@ mod test {
         for case in cases {
             let mut d = case();
             let bits_per_sample: Vec<u8> = vec![0, 0, 0];
-            let samples_per_pixel = ProcessedEntry::from(vec![3u16]);
+            let samples_per_pixel = TagData::from(vec![3u16]);
             d.insert(
                 Tag::BitsPerSample,
-                IfdEntry::Value(ProcessedEntry::from(bits_per_sample.clone())),
+                IfdEntry::Value(TagData::from(bits_per_sample.clone())),
             );
             d.insert(Tag::SamplesPerPixel, IfdEntry::Value(samples_per_pixel));
             println!(

@@ -15,7 +15,7 @@ use crate::{
             CompressionMethod, PhotometricInterpretation, PlanarConfiguration, SampleFormat, Tag,
             TagType,
         },
-        Offset, ProcessedEntry,
+        Offset, TagData,
     },
     ChunkType, ColorType,
 };
@@ -68,7 +68,7 @@ pub enum TiffFormatError {
     #[error("Image file directory not found.")]
     ImageFileDirectoryNotFound,
     #[error("Inconsistent sizes encountered. {0:?}")]
-    InconsistentSizesEncountered(ProcessedEntry),
+    InconsistentSizesEncountered(TagData),
     #[error("Decompression returned different amount of bytes than expected: got {actual_bytes}, expected {required_bytes}.")]
     UnexpectedCompressedData {
         actual_bytes: usize,
@@ -92,23 +92,23 @@ pub enum TiffFormatError {
     #[error("Unknown planar configuration `{0}` encountered")]
     UnknownPlanarConfiguration(u16),
     // #[error("Expected byte, {0:?} found.")]
-    // ByteExpected(ProcessedEntry),
+    // ByteExpected(TagData),
     // #[error("Expected signed byte, {0:?} found.")]
-    // SignedByteExpected(ProcessedEntry),
+    // SignedByteExpected(TagData),
     // #[error("Expected signed short, {0:?} found.")]
-    // SignedShortExpected(ProcessedEntry),
+    // SignedShortExpected(TagData),
     #[error("Expected unsigned integer, {0:?} found.")]
-    UnsignedIntegerExpected(ProcessedEntry),
+    UnsignedIntegerExpected(TagData),
     #[error("Expected signed integer, {0:?} found.")]
-    SignedIntegerExpected(ProcessedEntry),
+    SignedIntegerExpected(TagData),
     #[error("Expected float or double, {0:?} found")]
-    FloatExpected(ProcessedEntry),
+    FloatExpected(TagData),
     #[error("Expected Ascii, Byte or Undefined, {0:?} found")]
-    AsciiExpected(ProcessedEntry),
+    AsciiExpected(TagData),
     #[error("Expected Rational, {0:?} found")]
-    RationalExpected(ProcessedEntry),
+    RationalExpected(TagData),
     #[error("Expected signed rational, {0:?} found")]
-    SignedRationalExpected(ProcessedEntry),
+    SignedRationalExpected(TagData),
     #[error("Invalid format: {0:?}.")]
     Format(String),
     #[error("Required tag {0:?} was empty.")]

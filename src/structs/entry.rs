@@ -22,6 +22,8 @@ use std::{
 };
 
 pub type Directory = BTreeMap<Tag, IfdEntry>;
+/// public type for tag data. Will probably change soon
+pub type TagData = ProcessedEntry;
 
 /// an offset into the field
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -134,7 +136,7 @@ impl IfdEntry {
 /// ```
 #[derive(Debug, PartialEq, Clone)]
 #[non_exhaustive]
-pub enum ProcessedEntry {
+pub(crate) enum ProcessedEntry {
     Byte(Vec<u8>),
     SByte(Vec<i8>),
     Undefined(Vec<u8>),
@@ -184,6 +186,7 @@ impl ProcessedEntry {
     }
 
 
+    /// Get the underlying data as an `&mut [u8]`
     #[rustfmt::skip]
     pub fn buf_mut<'a>(&'a mut self) -> &'a mut [u8] {
         match self {
