@@ -25,6 +25,13 @@ impl<R: io::Read> io::Read for EndianReader<R> {
     }
 }
 
+impl<R: io::Seek> io::Seek for EndianReader<R> {
+    #[inline]
+    fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
+        self.reader.seek(pos)
+    }
+}
+
 macro_rules! read_fn {
     ($name:ident, $type:ty) => {
         /// reads an $type, respecting byte order
