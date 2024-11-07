@@ -1,37 +1,91 @@
-use std::{collections::BTreeMap, io::{self, Read}, ops::Range};
+use crate::{
+    error::TiffResult,
+    structs::{Offset, Tag, TagData},
+    util::fix_endianness,
+    ByteOrder,
+};
 use bytes::Bytes;
-use crate::{error::TiffResult, structs::{Offset, TagData, Tag}, util::fix_endianness, ByteOrder};
+use std::{
+    collections::BTreeMap,
+    io::{self, BufRead, BufReader, Read, Take},
+    ops::Range,
+};
 
 use async_trait::async_trait;
 
 /// Trait for a CogReader to implement.
-/// 
+///
 /// In fact these functions can be all the same, but caching can be optimized based on which part of the tiff we're reading in.
 #[async_trait]
 pub trait CogReader {
+    const IFD_REQ_SIZE: u64;
     // https://blog.rust-lang.org/2023/12/21/async-fn-rpit-in-traits.html#where-the-gaps-lie
-    async fn read_ifd(&self, byte_start: u64, n_bytes: u64) -> Vec<u8>;
-    async fn read_tag_data(&self, byte_start: u64, n_bytes: u64) -> Vec<u8>;
-    async fn read_image_data(&self, byte_start: u64, n_bytes: u64) -> Vec<u8>;
-    async fn get_ranges(&self, ranges: Vec<Range<u64>>) -> Vec<Bytes>;
-    async fn get_tags(&self, tags: BTreeMap<Tag, Offset>, byte_order: ByteOrder) -> TiffResult<BTreeMap<Tag, TagData>> {
+    /// Read an ifd. Ideally, this would
+    async fn read_ifd(&self, byte_start: u64) -> TiffResult<Bytes> {
+        // Bytes is cheaply cloneable
+        self.get_ranges(&[byte_start..byte_start + Self::IFD_REQ_SIZE])
+            .await
+            .map(|v| v[0].clone())
+    }
+    async fn read_tag_data(&self, byte_start: u64, n_bytes: u64) -> TiffResult<Bytes> {
+        // Bytes is cheaply cloneable
+        self.get_ranges(&[byte_start..byte_start + n_bytes])
+            .await
+            .map(|v| v[0].clone())
+    }
+    async fn read_image_data(&self, byte_start: u64, n_bytes: u64) -> TiffResult<Bytes> {
+        // Bytes is cheaply cloneable
+        self.get_ranges(&[byte_start..byte_start + n_bytes])
+            .await
+            .map(|v| v[0].clone())
+    }
+    async fn get_ranges(&self, ranges: &[Range<u64>]) -> TiffResult<Vec<Bytes>>;
+    /// get tags _and fix endianness_
+    ///
+    /// TODO: should we move endianness-fixing downstream, so this is easier to implement?
+    async fn get_tags(
+        &self,
+        tags: BTreeMap<Tag, Offset>,
+        byte_order: ByteOrder,
+    ) -> TiffResult<BTreeMap<Tag, TagData>> {
         let mut ranges = Vec::new();
         for (_, offset) in &tags {
-            ranges.push(offset.offset..offset.offset + offset.count * u64::try_from(offset.tag_type.size())?);
+            ranges.push(
+                offset.offset
+                    ..offset.offset + offset.count * u64::try_from(offset.tag_type.size())?,
+            );
         }
-        let resp = self.get_ranges(ranges).await;
+        let resp = self.get_ranges(&ranges).await?;
         let mut res = BTreeMap::new();
         // BTreeMap keeps order, so we can safely iterate over that again
         for (i, (tag, offset)) in tags.iter().enumerate() {
             let mut e = TagData::new(offset.tag_type, usize::try_from(offset.count)?);
             e.buf_mut().copy_from_slice(&resp[i][..]);
-            fix_endianness(e.buf_mut(), byte_order, offset.tag_type.primitive_size() * 8);
+            fix_endianness(
+                e.buf_mut(),
+                byte_order,
+                offset.tag_type.primitive_size() * 8,
+            );
             res.insert(*tag, e);
         }
         println!("{tags:?}");
         Ok(res)
     }
+    /// get compressed chunks of data
+    ///
+    /// actually a bit redundant, since we have get_ranges, which is the same
+    async fn get_chunks(&self, chunks: &[Range<u64>]) -> TiffResult<Vec<Bytes>> {
+        self.get_ranges(chunks).await
+    }
 }
+
+// #[cfg(feature="object_store")]
+// #[async_trait]
+// impl<T: object_store::ObjectStore> CogReader for T {
+//     async fn get_ranges(&self, ranges: &[Range<u64>]) -> TiffResult<Vec<Bytes>> {
+//         object_store::ObjectStore::get_ranges(self, &ranges)
+//     }
+// }
 
 /// Reader that is aware of the byte order  
 /// TODO: **deprecate** in favour of chunk-based approach in `Entry` and `Ifd`
@@ -90,4 +144,166 @@ impl<R: io::Read> EndianReader<R> {
 
     read_fn!(read_f32, f32);
     read_fn!(read_f64, f64);
+}
+
+///
+/// # READERS
+///
+
+///
+/// ## Deflate Reader
+///
+
+pub type DeflateReader<R> = flate2::read::ZlibDecoder<R>;
+
+///
+/// ## LZW Reader
+///
+
+/// Reader that decompresses LZW streams
+pub struct LZWReader<R: Read> {
+    reader: BufReader<Take<R>>,
+    decoder: weezl::decode::Decoder,
+}
+
+impl<R: Read> LZWReader<R> {
+    /// Wraps a reader
+    pub fn new(reader: R, compressed_length: usize) -> LZWReader<R> {
+        Self {
+            reader: BufReader::with_capacity(
+                (32 * 1024).min(compressed_length),
+                reader.take(u64::try_from(compressed_length).unwrap()),
+            ),
+            decoder: weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8),
+        }
+    }
+}
+
+impl<R: Read> Read for LZWReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        loop {
+            let result = self.decoder.decode_bytes(self.reader.fill_buf()?, buf);
+            self.reader.consume(result.consumed_in);
+
+            match result.status {
+                Ok(weezl::LzwStatus::Ok) => {
+                    if result.consumed_out == 0 {
+                        continue;
+                    } else {
+                        return Ok(result.consumed_out);
+                    }
+                }
+                Ok(weezl::LzwStatus::NoProgress) => {
+                    assert_eq!(result.consumed_in, 0);
+                    assert_eq!(result.consumed_out, 0);
+                    assert!(self.reader.buffer().is_empty());
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "no lzw end code found",
+                    ));
+                }
+                Ok(weezl::LzwStatus::Done) => {
+                    return Ok(result.consumed_out);
+                }
+                Err(err) => return Err(io::Error::new(io::ErrorKind::InvalidData, err)),
+            }
+        }
+    }
+}
+
+///
+/// ## PackBits Reader
+///
+
+enum PackBitsReaderState {
+    Header,
+    Literal,
+    Repeat { value: u8 },
+}
+
+/// Reader that unpacks Apple's `PackBits` format
+pub struct PackBitsReader<R: Read> {
+    reader: Take<R>,
+    state: PackBitsReaderState,
+    count: usize,
+}
+
+impl<R: Read> PackBitsReader<R> {
+    /// Wraps a reader
+    pub fn new(reader: R, length: u64) -> Self {
+        Self {
+            reader: reader.take(length),
+            state: PackBitsReaderState::Header,
+            count: 0,
+        }
+    }
+}
+
+impl<R: Read> Read for PackBitsReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        while let PackBitsReaderState::Header = self.state {
+            if self.reader.limit() == 0 {
+                return Ok(0);
+            }
+            let mut header: [u8; 1] = [0];
+            self.reader.read_exact(&mut header)?;
+            let h = header[0] as i8;
+            if (-127..=-1).contains(&h) {
+                let mut data: [u8; 1] = [0];
+                self.reader.read_exact(&mut data)?;
+                self.state = PackBitsReaderState::Repeat { value: data[0] };
+                self.count = (1 - h as isize) as usize;
+            } else if h >= 0 {
+                self.state = PackBitsReaderState::Literal;
+                self.count = h as usize + 1;
+            } else {
+                // h = -128 is a no-op.
+            }
+        }
+
+        let length = buf.len().min(self.count);
+        let actual = match self.state {
+            PackBitsReaderState::Literal => self.reader.read(&mut buf[..length])?,
+            PackBitsReaderState::Repeat { value } => {
+                for b in &mut buf[..length] {
+                    *b = value;
+                }
+
+                length
+            }
+            PackBitsReaderState::Header => unreachable!(),
+        };
+
+        self.count -= actual;
+        if self.count == 0 {
+            self.state = PackBitsReaderState::Header;
+        }
+        Ok(actual)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_packbits() {
+        let encoded = vec![
+            0xFE, 0xAA, 0x02, 0x80, 0x00, 0x2A, 0xFD, 0xAA, 0x03, 0x80, 0x00, 0x2A, 0x22, 0xF7,
+            0xAA,
+        ];
+        let encoded_len = encoded.len();
+
+        let buff = io::Cursor::new(encoded);
+        let mut decoder = PackBitsReader::new(buff, encoded_len as u64);
+
+        let mut decoded = Vec::new();
+        decoder.read_to_end(&mut decoded).unwrap();
+
+        let expected = vec![
+            0xAA, 0xAA, 0xAA, 0x80, 0x00, 0x2A, 0xAA, 0xAA, 0xAA, 0xAA, 0x80, 0x00, 0x2A, 0x22,
+            0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA,
+        ];
+        assert_eq!(decoded, expected);
+    }
 }

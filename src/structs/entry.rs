@@ -3,7 +3,7 @@ use crate::{
     error::{
         TiffError,
         TiffFormatError::{self, FloatExpected, SignedIntegerExpected, UnsignedIntegerExpected},
-        TiffResult, UsageError,
+        TiffResult,
     },
     structs::{
         Tag,
@@ -130,13 +130,13 @@ impl IfdEntry {
 /// Therefore, it is an enum over all possible tag types, to also be able to
 /// easily distinguish them (not needing to keep [`TagType`] around)
 /// ```
-/// // / let tag_type = ;
-/// let mut entry = ProcessedEntry::new(TagType::FLOAT, 42);
+/// # let mut reader = std::io::Cursor::new(vec![42u8;42]);
+/// let mut entry = TagData::new(TagType::FLOAT, 42);
 /// reader.read_exact((&mut entry).into())
 /// ```
 #[derive(Debug, PartialEq, Clone)]
 #[non_exhaustive]
-pub(crate) enum ProcessedEntry {
+pub enum ProcessedEntry {
     Byte(Vec<u8>),
     SByte(Vec<i8>),
     Undefined(Vec<u8>),
@@ -160,6 +160,10 @@ pub(crate) enum ProcessedEntry {
 
 impl ProcessedEntry {
     /// Create a new, zero-initialized version of Self.
+    ///
+    /// DEPRECATION WARNING
+    /// will probably deprecate soon, in favour of a `Bytes`-type container,
+    /// which should be managed externally.
     #[rustfmt::skip]
     pub fn new(tag_type: TagType, count: usize) -> Self {
         // from the comment [on this
@@ -185,8 +189,9 @@ impl ProcessedEntry {
         }
     }
 
-
-    /// Get the underlying data as an `&mut [u8]`
+    /// Get the underlying data as a `&mut [u8]`
+    ///
+    ///
     #[rustfmt::skip]
     pub fn buf_mut<'a>(&'a mut self) -> &'a mut [u8] {
         match self {

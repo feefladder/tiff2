@@ -17,8 +17,14 @@ thiserror = "1.0"
 weezl = "0.1.8"
 
 [dev-dependencies]
+criterion = "0.5.1"
+rand = "0.8.5"
 tokio = { version = "1.41", features = ["rt", "macros"] }
 
 [features]
-default = ["object_store"]
+# default = ["object_store"]
 object_store = ["dep:object_store"]
+
+[[bench]]
+name = "horizontal_predict"
+harness = false

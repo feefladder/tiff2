@@ -5,14 +5,12 @@ use crate::{
             CompressionMethod, PhotometricInterpretation, PlanarConfiguration, Predictor,
             SampleFormat, Tag,
         },
-        Ifd, IfdEntry, TagData,
+        Ifd, IfdEntry, Offset, TagData,
     },
     ByteOrder, ChunkType, ColorType,
 };
 
 use std::{collections::BTreeMap, sync::Arc};
-
-use super::{Directory, Offset};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct StripDecodeState {
@@ -90,11 +88,15 @@ pub struct ChunkOpts {
     /// - `Deflate`
     /// - `PackBits``
     pub compression_method: CompressionMethod,
-    /// horizontal predictor
+    /// horizontal predictor type
     ///
     /// Allows for more efficient compression
     pub predictor: Predictor,
-    /// Jpeg tables, still an Arc, because we want to do error sharing.
+    /// Jpeg tables
+    ///
+    /// In case of ModernJPEG compression, the compression infomation _can_ be
+    /// in this tag, where it is prepended to chunks before decoding.
+    /// still an Arc, because we want to do error sharing.
     pub jpeg_tables: Option<Arc<Vec<u8>>>,
     /// Planar configuration:
     ///
@@ -126,17 +128,21 @@ impl ChunkOpts {
             PlanarConfiguration::Planar => 1,
         }
     }
-    /// The length of a chunk row in bytes
+    /// The length of a chunk row in bytes, taking padding into account.
     ///
-    pub fn output_row_stride(&self, chunk_index: u32) -> TiffResult<u64> {
+    pub fn output_row_stride(&self, chunk_index: u32) -> TiffResult<usize> {
         let output_width = self.chunk_data_dimensions(chunk_index)?.0;
-        Ok((output_width as u64)
-            .saturating_mul(self.samples_per_pixel() as u64)
-            .saturating_mul(self.bits_per_sample as u64)
-            / 8)
+        usize::try_from(
+            (output_width as u64)
+                .saturating_mul(self.samples_per_pixel() as u64)
+                .saturating_mul(self.bits_per_sample as u64)
+                / 8,
+        )
+        .map_err(TiffError::from)
     }
-    /// dimensions of a chunk
-    /// Maybe add as field in ChunkOpts
+    /// dimensions of a chunk, not taking padding into account.
+    ///
+    /// Can be directly deduced from ChunkType and corresponding data
     pub fn chunk_dimensions(&self) -> TiffResult<(u32, u32)> {
         match self.chunk_type {
             ChunkType::Strip => {
@@ -189,6 +195,11 @@ impl ChunkOpts {
     }
 
     /// Derive colortype from info
+    ///
+    /// ## TODO: fix:
+    /// - RGB++
+    /// - TransparencyMask
+    /// - [CIELab](https://en.wikipedia.org/wiki/CIELAB_color_space)
     pub fn colortype(&self) -> TiffResult<ColorType> {
         match self.photometric_interpretation {
             PhotometricInterpretation::RGB => match self.samples {
@@ -314,18 +325,18 @@ pub struct Image {
 }
 
 const REQUIRED_TAGS: [Tag; 3] = [
-    Tag::ImageWidth,
-    Tag::ImageLength,
-    Tag::PhotometricInterpretation,
+    Tag::ImageWidth,                // fits in offset (1  SHORT or LONG)
+    Tag::ImageLength,               // fits in offset (1 SHORT or LONG)
+    Tag::PhotometricInterpretation, // fits in offset (1 SHORT)
 ];
 const OPTIONAL_TAGS: [Tag; 7] = [
-    Tag::BitsPerSample,
-    Tag::SamplesPerPixel,
-    Tag::SampleFormat,
-    Tag::Compression,
-    Tag::Predictor,
-    Tag::PlanarConfiguration,
-    Tag::JPEGTables,
+    Tag::BitsPerSample,       // may not fit  (SamplesPerPixel SHORT)
+    Tag::SamplesPerPixel,     // fits in offset (1 SHORT)
+    Tag::SampleFormat,        // may not fit SamplesPerPixel SHORT
+    Tag::Compression,         // fits (1 SHORT)
+    Tag::Predictor,           // fits (1 SHORT)
+    Tag::PlanarConfiguration, // fits (1 SHORT)
+    Tag::JPEGTables,          // may not fit
 ];
 // these we special-case:
 // - Tag::StripByteCounts,
@@ -361,6 +372,8 @@ impl Image {
     /// returns a dictionary of tags that are present, but whose values need to
     /// be loaded from the given offsets.  
     /// Doesn't check for tag values, only for presence/absence conflicts in tags
+    ///
+    /// TODO: check which tags _always_ - by the spec - fit inside the offset field.
     pub fn check_ifd(ifd: &Ifd) -> TiffResult<BTreeMap<Tag, Offset>> {
         let mut res = BTreeMap::<Tag, Offset>::new();
 
@@ -373,6 +386,20 @@ impl Image {
                 res.insert(tag, *o);
             }
         }
+        let image_height = u32::try_from(ifd.require_tag_value(&Tag::ImageLength)?)?;
+        let image_width = u32::try_from(ifd.require_tag_value(&Tag::ImageWidth)?)?;
+        if image_width == 0 || image_height == 0 {
+            return Err(TiffFormatError::InvalidDimensions(image_width, image_height).into());
+        }
+        if PhotometricInterpretation::from_u16(
+            ifd.require_tag_value(&Tag::PhotometricInterpretation)?
+                .try_into()?,
+        )
+        .is_none()
+        {
+            return Err(TiffUnsupportedError::UnknownInterpretation.into());
+        };
+
         // optional tags: These we can supply with a default value if not present
         // - Compression: None=no compression
         //   - JPEGTables: if CompressionMethod = ModernJPEG, still check if we
@@ -539,12 +566,10 @@ impl Image {
         // Technically bits_per_sample.len() should be *equal* to samples, but libtiff also allows
         // it to be a single value that applies to all samples.
         if bits_per_sample.len() != usize::from(samples) && bits_per_sample.len() != 1 {
-            return Err(
-                TiffFormatError::InconsistentSizesEncountered(TagData::from(
-                    bits_per_sample,
-                ))
-                .into(),
-            );
+            return Err(TiffFormatError::InconsistentSizesEncountered(TagData::from(
+                bits_per_sample,
+            ))
+            .into());
         }
 
         // This library (and libtiff) do not support mixed sample formats and zero bits per sample
@@ -582,9 +607,9 @@ impl Image {
                     || u32::try_from(chunk_offsets.len())?
                         != (image_height.saturating_sub(1) / rows_per_strip + 1) * planes as u32
                 {
-                    return Err(TiffFormatError::InconsistentSizesEncountered(
-                        TagData::from(chunk_offsets),
-                    )
+                    return Err(TiffFormatError::InconsistentSizesEncountered(TagData::from(
+                        chunk_offsets,
+                    ))
                     .into());
                 }
             }
@@ -621,9 +646,9 @@ impl Image {
                     || chunk_offsets.len()
                         != tile.tiles_down() * tile.tiles_across() * planes as usize
                 {
-                    return Err(TiffFormatError::InconsistentSizesEncountered(
-                        TagData::from(chunk_bytes),
-                    )
+                    return Err(TiffFormatError::InconsistentSizesEncountered(TagData::from(
+                        chunk_bytes,
+                    ))
                     .into());
                 }
             }
@@ -656,26 +681,18 @@ impl Image {
     }
 }
 
+#[cfg(test)]
 mod test {
-    use crate::structs::{tags::TagType, tiff::Tiff};
+    use crate::structs::{ifd::Directory, tags::TagType};
 
     use super::*;
-
     fn build_dir() -> Directory {
         let mut dir = Directory::new();
-        dir.insert(
-            Tag::ImageWidth,
-            IfdEntry::Value(TagData::from(42u32)),
-        );
-        dir.insert(
-            Tag::ImageLength,
-            IfdEntry::Value(TagData::from(42u32)),
-        );
+        dir.insert(Tag::ImageWidth, IfdEntry::Value(TagData::from(42u32)));
+        dir.insert(Tag::ImageLength, IfdEntry::Value(TagData::from(42u32)));
         dir.insert(
             Tag::PhotometricInterpretation,
-            IfdEntry::Value(TagData::from(
-                PhotometricInterpretation::RGB.to_u16(),
-            )),
+            IfdEntry::Value(TagData::from(PhotometricInterpretation::RGB.to_u16())),
         );
         dir
     }
@@ -703,14 +720,8 @@ mod test {
             Tag::TileOffsets,
             IfdEntry::Value(TagData::from(vec![42u32])),
         );
-        dir.insert(
-            Tag::TileLength,
-            IfdEntry::Value(TagData::from(vec![42u32])),
-        );
-        dir.insert(
-            Tag::TileWidth,
-            IfdEntry::Value(TagData::from(vec![42u32])),
-        );
+        dir.insert(Tag::TileLength, IfdEntry::Value(TagData::from(vec![42u32])));
+        dir.insert(Tag::TileWidth, IfdEntry::Value(TagData::from(vec![42u32])));
         dir
     }
 
@@ -916,10 +927,7 @@ mod test {
     #[test]
     fn test_image_from_ifd_no_width() {
         let mut d = build_strip_dir();
-        d.insert(
-            Tag::ImageWidth,
-            IfdEntry::Value(TagData::from(vec![0u32])),
-        );
+        d.insert(Tag::ImageWidth, IfdEntry::Value(TagData::from(vec![0u32])));
         let TiffError::FormatError(e) =
             Image::from_ifd(Ifd::from(d), ByteOrder::LittleEndian).unwrap_err()
         else {
@@ -931,10 +939,7 @@ mod test {
     #[test]
     fn test_image_from_ifd_no_height() {
         let mut d = build_strip_dir();
-        d.insert(
-            Tag::ImageLength,
-            IfdEntry::Value(TagData::from(vec![0u32])),
-        );
+        d.insert(Tag::ImageLength, IfdEntry::Value(TagData::from(vec![0u32])));
         let TiffError::FormatError(e) =
             Image::from_ifd(Ifd::from(d), ByteOrder::LittleEndian).unwrap_err()
         else {
@@ -996,10 +1001,7 @@ mod test {
         let cases = [build_strip_dir, build_tile_dir];
         for case in cases {
             let mut d = case();
-            d.insert(
-                Tag::Predictor,
-                IfdEntry::Value(TagData::from(vec![42u16])),
-            );
+            d.insert(Tag::Predictor, IfdEntry::Value(TagData::from(vec![42u16])));
             let TiffError::FormatError(e) =
                 Image::from_ifd(Ifd::from(d), ByteOrder::LittleEndian).unwrap_err()
             else {
@@ -1036,10 +1038,7 @@ mod test {
                 Tag::Compression,
                 IfdEntry::Value(TagData::from(CompressionMethod::ModernJPEG.to_u16())),
             );
-            d.insert(
-                Tag::JPEGTables,
-                IfdEntry::Value(TagData::from(vec![42u16])),
-            );
+            d.insert(Tag::JPEGTables, IfdEntry::Value(TagData::from(vec![42u16])));
             let TiffError::FormatError(e) =
                 Image::from_ifd(Ifd::from(d), ByteOrder::LittleEndian).unwrap_err()
             else {

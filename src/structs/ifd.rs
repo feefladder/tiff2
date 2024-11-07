@@ -1,7 +1,7 @@
 use crate::{
-    decoder::{CogReader, EndianReader},
+    decoder::EndianReader,
     error::{TiffError, TiffFormatError, TiffResult, UsageError},
-    structs::{IfdEntry, TagData, Tag},
+    structs::{IfdEntry, Tag, TagData},
     ByteOrder,
 };
 

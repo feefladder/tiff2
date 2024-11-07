@@ -13,7 +13,6 @@ use crate::{
     structs::{
         tags::{
             CompressionMethod, PhotometricInterpretation, PlanarConfiguration, SampleFormat, Tag,
-            TagType,
         },
         Offset, TagData,
     },
@@ -121,6 +120,8 @@ pub enum TiffFormatError {
     JpegDecoder(#[from] JpegDecoderError),
     #[error("Samples per pixel is zero")]
     SamplesPerPixelIsZero,
+    #[error("output row stride is larger than chunk width (in bits")]
+    RowStrideLargerThanWidth(usize, usize),
 }
 
 /// The Decoder does not support features required by the image.

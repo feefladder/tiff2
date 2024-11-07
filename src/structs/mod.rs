@@ -12,6 +12,7 @@ pub use tags::{Tag, TagType};
 /// Tiff struct that can hold multiple images. This should be thin and ideally
 /// re-implemented for more specific tiff types
 pub mod tiff;
+pub use tiff::Tiff;
 /// Tag Value type and convenience functions
 /// to be deprecated in favour of `BufferedEntry`
 pub mod value;

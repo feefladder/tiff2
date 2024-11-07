@@ -393,4 +393,6 @@ pub struct Image {
   - [answer to my question on SO]()
 - [rkyv `AlignedVec` source](https://docs.rs/rkyv/latest/src/rkyv/util/alloc/aligned_vec.rs.html#31-35)
 
+## other notes
 
+- use [rangemap](https://docs.rs/rangemap/1.5.1/rangemap/map/index.html#) for keeping track of data locations for writing?

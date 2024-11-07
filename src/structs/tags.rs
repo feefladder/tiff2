@@ -72,11 +72,13 @@ pub enum Tag(u16) unknown("A private or extension tag") {
     // Baseline tags:
     Artist = 315,
     // grayscale images PhotometricInterpretation 1 or 3
+    /// SamplesPerPixel SHORT
     BitsPerSample = 258,
     CellLength = 265, // TODO add support
     CellWidth = 264, // TODO add support
     // palette-color images (PhotometricInterpretation 3)
     ColorMap = 320, // TODO add support
+    /// 1 SHORT
     Compression = 259, // TODO add support for 2 and 32773
     Copyright = 33_432,
     DateTime = 306,
@@ -88,18 +90,36 @@ pub enum Tag(u16) unknown("A private or extension tag") {
     GrayResponseUnit = 290, // TODO add support
     HostComputer = 316,
     ImageDescription = 270,
+    /// 1 SHORT or LONG
     ImageLength = 257,
+    /// 1 SHORT or LONG
     ImageWidth = 256,
     Make = 271,
     MaxSampleValue = 281, // TODO add support
     MinSampleValue = 280, // TODO add support
     Model = 272,
+    /// bitflags for what this IFD represents
+    ///
+    /// - Bit 0 is 1 if the image is a reduced-resolution version of another
+    ///   image in this TIFF file; else the bit is 0.
+    /// - Bit 1 is 1 if the image is a single page of a multi-page image (see
+    ///   the PageNumber field description); else the bit is 0.
+    /// - Bit 2 is 1 if the image defines a transparency mask for another image
+    ///   in this TIFF file. The PhotometricInterpretation value must be 4, designating a transparency mask.
+    ///
+    /// These values are defined as bit flags because they are independent of each other.
+    /// Default is 0.
+    ///
+    /// 1 LONG
     NewSubfileType = 254, // TODO add support
     Orientation = 274, // TODO add support
+    /// 1 SHORT
     PhotometricInterpretation = 262,
+    /// 1 SHORT
     PlanarConfiguration = 284,
     ResolutionUnit = 296, // TODO add support
     RowsPerStrip = 278,
+    /// 1 SHORT
     SamplesPerPixel = 277,
     Software = 305,
     StripByteCounts = 279,
@@ -109,16 +129,19 @@ pub enum Tag(u16) unknown("A private or extension tag") {
     XResolution = 282,
     YResolution = 283,
     // Advanced tags
+    /// 1 SHORT
     Predictor = 317,
     TileWidth = 322,
     TileLength = 323,
     TileOffsets = 324,
     TileByteCounts = 325,
     // Data Sample Format
+    /// SamplesPerPixel SHORT
     SampleFormat = 339,
     SMinSampleValue = 340, // TODO add support
     SMaxSampleValue = 341, // TODO add support
     // JPEG
+    /// [don't know](https://stackoverflow.com/a/5749550/14681457) the type, multiple BYTE
     JPEGTables = 347,
     // GeoTIFF
     ModelPixelScaleTag = 33550, // (SoftDesk)
