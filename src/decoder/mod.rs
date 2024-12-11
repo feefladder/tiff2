@@ -1,5 +1,3 @@
-use std::usize;
-
 use crate::{
     structs::tags::{Predictor, SampleFormat},
     util::fix_endianness,
@@ -10,6 +8,8 @@ mod reader;
 pub use reader::{CogReader, EndianReader};
 mod chunk_decoder;
 pub use chunk_decoder::ChunkDecoder;
+// see [clippy issue](https://github.com/rust-lang/rust-clippy/issues/13259)
+#[allow(clippy::module_inception)]
 mod decoder;
 pub use decoder::Decoder;
 
@@ -53,7 +53,8 @@ fn rev_hpredict_nsamp(buf: &mut [u8], bit_depth: u8, samples: usize) {
 
 /// Reverse floating point prediction
 ///
-/// floating point prediction first shuffles the bytes and then uses horizontal differencing
+/// floating point prediction first shuffles the bytes and then uses horizontal
+/// differencing  
 /// also performs byte-order conversion if needed.
 ///
 /// ```
@@ -149,6 +150,11 @@ pub fn predict_f32(input: &mut [u8], output: &mut [u8], samples: usize) {
     }
 }
 
+/// Reverse floating point prediction
+///
+/// floating point prediction first shuffles the bytes and then uses horizontal
+/// differencing  
+/// Also fixes byte order if needed (tiff's->native)
 fn predict_f64(input: &mut [u8], output: &mut [u8], samples: usize) {
     for i in samples..input.len() {
         input[i] = input[i].wrapping_add(input[i - samples]);
@@ -237,6 +243,7 @@ fn invert_colors(buf: &mut [u8], color_type: ColorType, sample_format: SampleFor
 
 /// Decoding limits
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct Limits {
     /// The maximum size of any `DecodingResult` in bytes, the default is
     /// 256MiB. If the entire image is decoded at once, then this will
@@ -249,10 +256,6 @@ pub struct Limits {
     /// Maximum size for intermediate buffer which may be used to limit the amount of data read per
     /// segment even if the entire image is decoded at once.
     pub intermediate_buffer_size: usize,
-    /// The purpose of this is to prevent all the fields of the struct from
-    /// being public, as this would make adding new fields a major version
-    /// bump.
-    _non_exhaustive: (),
 }
 
 impl Limits {
@@ -268,18 +271,20 @@ impl Limits {
             decoding_buffer_size: usize::MAX,
             ifd_value_size: usize::MAX,
             intermediate_buffer_size: usize::MAX,
-            _non_exhaustive: (),
         }
     }
 }
 
 impl Default for Limits {
+    /// Default limits for reading an image
+    /// - 256 MiB for decoding buffer
+    /// - 128 MiB for intermediate buffer
+    /// - 64 MiB for ifd values
     fn default() -> Limits {
         Limits {
             decoding_buffer_size: 256 * 1024 * 1024,
             intermediate_buffer_size: 128 * 1024 * 1024,
-            ifd_value_size: 1024 * 1024,
-            _non_exhaustive: (),
+            ifd_value_size: 64 * 1024 * 1024,
         }
     }
 }

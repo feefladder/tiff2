@@ -33,7 +33,9 @@ pub struct Offset {
     pub offset: u64,
 }
 
+/// an IFD entry
 ///
+/// Can be either an offset to the Entry's value, or the value itself
 #[derive(Debug, PartialEq, Clone)]
 pub enum IfdEntry {
     Offset(Offset),
@@ -193,7 +195,7 @@ impl ProcessedEntry {
     ///
     ///
     #[rustfmt::skip]
-    pub fn buf_mut<'a>(&'a mut self) -> &'a mut [u8] {
+    pub fn buf_mut(&mut self) -> &mut [u8] {
         match self {
             Self::Byte     (v) => bytemuck::cast_slice_mut(&mut v[..]),
             Self::SByte    (v) => bytemuck::cast_slice_mut(&mut v[..]),

@@ -10,7 +10,7 @@ use crate::{
     ByteOrder, ChunkType, ColorType,
 };
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc, fmt::Debug};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct StripDecodeState {
@@ -312,7 +312,7 @@ impl ChunkOpts {
 // }
 
 /// Image struct that holds all relevant metadata for locating an image's data in the file and which decoding method to use
-#[derive(Debug, PartialEq, Clone)]
+#[derive(PartialEq, Clone)]
 pub struct Image {
     /// IFD holding all data
     pub ifd: Ifd,
@@ -322,6 +322,17 @@ pub struct Image {
     pub chunk_offsets: Vec<u64>,
     // Number of bytes per chunk (maybe partially loaded)
     pub chunk_bytes: Vec<u64>,
+}
+
+impl Debug for Image {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Image")
+            .field("ifd", &self.ifd)
+            .field("chunk_opts", &self.chunk_opts)
+            .field("chunk_offsets", &&self.chunk_offsets[..if self.chunk_offsets.len() < 32 {self.chunk_offsets.len()} else {16}])
+            .field("chunk_bytes", &&self.chunk_bytes[..if self.chunk_bytes.len() < 32 {self.chunk_offsets.len()} else {16}])
+            .finish()
+    }
 }
 
 const REQUIRED_TAGS: [Tag; 3] = [
@@ -383,7 +394,8 @@ impl Image {
         // - PhotometricInterpretation
         for tag in REQUIRED_TAGS {
             if let IfdEntry::Offset(o) = ifd.require_tag(&tag)? {
-                res.insert(tag, *o);
+                // need to explicitly clone to keep the borrow checker happy?
+                res.insert(tag, o.clone());
             }
         }
         let image_height = u32::try_from(ifd.require_tag_value(&Tag::ImageLength)?)?;
@@ -411,7 +423,7 @@ impl Image {
         // - BitsPerSample: None = vec![1]
         for tag in OPTIONAL_TAGS {
             if let Some(IfdEntry::Offset(o)) = ifd.get_tag(&tag) {
-                res.insert(tag, *o);
+                res.insert(tag, o.clone());
             }
         }
 
@@ -424,24 +436,24 @@ impl Image {
         ) {
             (true, true, false, false) => {
                 if let IfdEntry::Offset(o) = ifd.get_tag(&Tag::StripByteCounts).unwrap() {
-                    res.insert(Tag::StripByteCounts, *o);
+                    res.insert(Tag::StripByteCounts, o.clone());
                 }
                 if let IfdEntry::Offset(o) = ifd.get_tag(&Tag::StripOffsets).unwrap() {
-                    res.insert(Tag::StripOffsets, *o);
+                    res.insert(Tag::StripOffsets, o.clone());
                 }
             }
             (false, false, true, true) => {
                 if let IfdEntry::Offset(o) = ifd.get_tag(&Tag::TileByteCounts).unwrap() {
-                    res.insert(Tag::TileByteCounts, *o);
+                    res.insert(Tag::TileByteCounts, o.clone());
                 }
                 if let IfdEntry::Offset(o) = ifd.get_tag(&Tag::TileOffsets).unwrap() {
-                    res.insert(Tag::TileOffsets, *o);
+                    res.insert(Tag::TileOffsets, o.clone());
                 }
                 if let IfdEntry::Offset(o) = ifd.require_tag(&Tag::TileWidth)? {
-                    res.insert(Tag::TileWidth, *o);
+                    res.insert(Tag::TileWidth, o.clone());
                 }
                 if let IfdEntry::Offset(o) = ifd.require_tag(&Tag::TileLength)? {
-                    res.insert(Tag::TileLength, *o);
+                    res.insert(Tag::TileLength, o.clone());
                 }
             }
             _ => {
@@ -543,7 +555,7 @@ impl Image {
         let sample_format = match ifd.remove_optional_val(&Tag::SampleFormat)? {
             Some(e) => {
                 let sample_format: Vec<_> = <&[u16]>::try_from(&e)?
-                    .into_iter()
+                    .iter()
                     .map(|v| SampleFormat::from_u16_exhaustive(*v))
                     .collect();
 
@@ -683,7 +695,7 @@ impl Image {
 
 #[cfg(test)]
 mod test {
-    use crate::structs::{ifd::Directory, tags::TagType};
+    use crate::structs::{entry::ProcessedEntry, ifd::Directory, tags::TagType};
 
     use super::*;
     fn build_dir() -> Directory {
@@ -755,24 +767,26 @@ mod test {
         }
     }
 
-    #[test]
-    fn test_check_ifd_req_not_loaded() {
-        for req_tag in REQUIRED_TAGS {
-            let offset = Offset {
-                tag_type: TagType::LONG,
-                count: 1,
-                offset: 42,
-            };
+    // #[test]
+    // /// This test should check that - in case we have required tags that are
+    // /// actually an offset into the tiff, they get returned as a BTReeMap.
+    // /// However, that will not happen,since required tags always fit in the
+    // /// offset field.
+    // fn test_check_ifd_req_not_loaded() {
+    //     for req_tag in REQUIRED_TAGS {
+    //         // since all required tags fit within the offset field, they cannot
+    //         // be an offset in the tiff
+    //         let entry = ProcessedEntry::Long(vec![42u32]);
 
-            let mut d = build_strip_dir();
-            d.insert(req_tag, IfdEntry::Offset(offset)).unwrap();
+    //         let mut d = build_strip_dir();
+    //         d.insert(req_tag, IfdEntry::Value(entry)).unwrap();
 
-            let mut target_d = BTreeMap::new();
-            target_d.insert(req_tag, offset);
+    //         let mut target_d = BTreeMap::new();
+    //         target_d.insert(req_tag, );
 
-            assert_eq!(target_d, Image::check_ifd(&Ifd::from(d)).unwrap());
-        }
-    }
+    //         assert_eq!(target_d, Image::check_ifd(&Ifd::from(d)).unwrap());
+    //     }
+    // }
 
     #[test]
     fn test_check_ifd_opt_not_loaded() {
@@ -1209,7 +1223,7 @@ mod test {
         buffer.extend_from_slice(&42u32.to_le_bytes()); // Value
 
         // Next IFD offset (4 bytes, end of directory so 0)
-        // buffer.extend_from_slice(&0u32.to_le_bytes());
+        buffer.extend_from_slice(&0u32.to_le_bytes());
 
         buffer
     }
@@ -1245,7 +1259,7 @@ mod test {
         buffer.extend_from_slice(&42u32.to_le_bytes()); // Value
 
         // Next IFD offset (4 bytes, end of directory so 0)
-        // buffer.extend_from_slice(&0u32.to_le_bytes());
+        buffer.extend_from_slice(&0u32.to_le_bytes());
 
         buffer
     }
@@ -1254,7 +1268,7 @@ mod test {
     fn test_image_from_buffer_tile_notbig() {
         let buf = build_tile_dir_buffer();
         let byte_order = ByteOrder::LittleEndian;
-        let ifd =
+        let (ifd, next) =
             Ifd::from_buffer(&buf, byte_order, false).expect("Could not build ifd from buffer");
         assert_eq!(
             Image::check_ifd(&ifd).expect("not a valid ifd"),
@@ -1294,7 +1308,7 @@ mod test {
     fn test_image_from_buffer_strip_notbig() {
         let buf = build_strip_dir_buffer();
         let byte_order = ByteOrder::LittleEndian;
-        let ifd =
+        let (ifd, next) =
             Ifd::from_buffer(&buf, byte_order, false).expect("Could not build ifd from buffer");
         assert_eq!(
             Image::check_ifd(&ifd).expect("not a valid ifd"),

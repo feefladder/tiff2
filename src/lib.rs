@@ -1,5 +1,12 @@
+//! Decoding and Encoding of TIFF Images, specifically made extensible,
+//! well-tested an asynchronous (for COGs)
 //!
+//! TIFF (Tagged Image File Format) is a versatile image format that supports
+//! lossless and lossy compression.
 //!
+//! # Related Links
+//! * <https://web.archive.org/web/20210108073850/https://www.adobe.io/open/standards/TIFF.html> - The TIFF specification
+//! * <https://download.osgeo.org/libtiff/doc/TIFF6.pdf> - Tiff spec as PDF
 
 /// for byte casting. Not sure if we can actually stomp in bytemuck as dependency.
 pub mod bytecast;

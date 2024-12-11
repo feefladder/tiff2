@@ -1,3 +1,4 @@
+#![allow(clippy::no_effect)]
 macro_rules! tags {
     {
         // Permit arbitrary meta items, which include documentation.

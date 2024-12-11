@@ -120,7 +120,7 @@ impl Value {
             Value::Ascii(_) => TagType::ASCII,
             Value::Undefined(_) => TagType::UNDEFINED,
             Value::List(v) => {
-                if v.len() == 0 {
+                if v.is_empty() {
                     TagType::UNDEFINED
                 } else {
                     let first = &v[0];

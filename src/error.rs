@@ -1,3 +1,4 @@
+use std::error::Error;
 use std::fmt;
 use std::fmt::Display;
 use std::io;
@@ -48,6 +49,10 @@ pub enum TiffError {
     /// The image does not support the requested operation
     #[error("Usage error: {0}")]
     UsageError(#[from] UsageError),
+
+    /// Error from transport
+    #[error("Transport error: {0}")]
+    TransportError(Box<dyn Error + Send + Sync + 'static>),
 }
 
 /// The image is not formatted properly.
@@ -187,8 +192,14 @@ pub enum UsageError {
     PredictorUnavailable,
     #[error("Tried loading tag data into an IFD, while it was already present")]
     DuplicateTagData,
+    #[error("Tried to add data to an IFD that didn't have this tag: {0:?}")]
+    TagOfDataNotPresent(Tag),
     #[error("Required tag {0:?} with type {:?} and count {} not loaded from {}", .1.tag_type, .1.count, .1.offset)]
     RequiredTagNotLoaded(Tag, Offset),
+    #[error("Overview {0} not loaded or not in image")]
+    OverviewNotLoaded(usize),
+    #[error("Ifd at offset {0} is not an image or not fully loaded")]
+    NotAnImage(u64),
 }
 
 impl From<str::Utf8Error> for TiffError {

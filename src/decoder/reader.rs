@@ -10,13 +10,14 @@ use std::{
     io::{self, BufRead, BufReader, Read, Take},
     ops::Range,
 };
-
+use log::debug;
 use async_trait::async_trait;
 
 /// Trait for a CogReader to implement.
 ///
 /// In fact these functions can be all the same, but caching can be optimized based on which part of the tiff we're reading in.
 #[async_trait]
+#[allow(clippy::single_range_in_vec_init)]
 pub trait CogReader {
     const IFD_REQ_SIZE: u64;
     // https://blog.rust-lang.org/2023/12/21/async-fn-rpit-in-traits.html#where-the-gaps-lie
@@ -49,13 +50,14 @@ pub trait CogReader {
         byte_order: ByteOrder,
     ) -> TiffResult<BTreeMap<Tag, TagData>> {
         let mut ranges = Vec::new();
-        for (_, offset) in &tags {
+        for offset in tags.values() {
             ranges.push(
                 offset.offset
                     ..offset.offset + offset.count * u64::try_from(offset.tag_type.size())?,
             );
         }
         let resp = self.get_ranges(&ranges).await?;
+        debug!("received data: {:?}", resp.iter().map(|v| v.len()).collect::<Vec<_>>());
         let mut res = BTreeMap::new();
         // BTreeMap keeps order, so we can safely iterate over that again
         for (i, (tag, offset)) in tags.iter().enumerate() {
@@ -68,7 +70,7 @@ pub trait CogReader {
             );
             res.insert(*tag, e);
         }
-        println!("{tags:?}");
+        debug!("Received tags: {tags:?}");
         Ok(res)
     }
     /// get compressed chunks of data

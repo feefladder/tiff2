@@ -1,24 +1,35 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt::Debug, io::Seek, ops::Range};
 
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
+use log::debug;
 
 use crate::{
-    error::{TiffFormatError, TiffResult},
+    error::{TiffError, TiffFormatError, TiffResult, UsageError},
     structs::{Ifd, Image},
     ByteOrder,
 };
 
-use super::{CogReader, Limits};
+use super::{CogReader, EndianReader, Limits};
+
+const HEADER_SIZE_SMALLTIFF: usize = 6;
+const HEADER_SIZE_BIGTIFF: usize = 14;
+const ENTRY_SIZE_SMALLTIFF: u64 = 12;
+const ENTRY_SIZE_BIGTIFF: u64 = 20;
+const NUM_ENTRIES_SIZE_SMALLTIFF: u64 = 2;
+const NUM_ENTRIES_SIZE_BIGTIFF: u64 = 8;
 
 // use object_store::ObjectStore;
 /// Async decoder
 ///
-#[derive(Debug, PartialEq)]
+#[derive(PartialEq)]
+#[non_exhaustive]
 pub struct Decoder<R: CogReader> {
-    reader: R,
+    /// Reader, implements CogReader
+    pub reader: R,
     /// buffer holding data that can be read synchronously
     /// if implementing your own decoder, this is the place to add smart things,
-    /// together with `buf_start`
+    /// such as a rangemap. However, for now I think this is simple and
+    /// efficient enough.
     buffer: Bytes,
     /// start location of the buffer
     buf_start: u64,
@@ -34,10 +45,22 @@ pub struct Decoder<R: CogReader> {
     limits: Limits,
     /// ifd offsets. Points to the nr_of_ifds field/tag
     ifd_offsets: Vec<u64>,
-    images: BTreeMap<u64, Image>,
-    /// Ifds that are not images.
-    /// These should not happen that often, but are included for completeness
+    pub images: BTreeMap<u64, Image>,
+    /// not-loaded image IFDs or IFDs that are not images.
     pub meta_ifds: BTreeMap<u64, Ifd>,
+}
+
+impl<R: Debug + CogReader> Debug for Decoder<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Decoder")
+            .field("reader", &self.reader)
+            .field("buffer", &&self.buffer[..if self.buffer.len() < 32 {self.buffer.len()} else {16}])
+            .field("buf_start", &self.buf_start)
+            .field("ifd_offsets", &self.ifd_offsets)
+            .field("images", &self.images)
+            .field("meta_ifds", &self.meta_ifds)
+            .finish()
+    }
 }
 
 impl<R: CogReader + Sync> Decoder<R> {
@@ -45,12 +68,13 @@ impl<R: CogReader + Sync> Decoder<R> {
     /// Will read an initial IFD chunk at offset zero
     pub async fn new(reader: R) -> TiffResult<Self> {
         // let buf = ;
-        let buffer = reader.read_ifd(0).await?; //match buf.try_into_mut() {
-                                                //     Ok(r) => r,
-                                                //     Err(b) => BytesMut::from(b),
-                                                // };
-                                                // let mut endianness = [0u8;2];
-                                                // (&buffer[..]).read_exact(&mut endianness[..])?;
+        let mut buffer = reader.read_ifd(0).await?; //match buf.try_into_mut() {
+                                                    //     Ok(r) => r,
+                                                    //     Err(b) => BytesMut::from(b),
+                                                    // };
+                                                    // let mut endianness = [0u8;2];
+                                                    // (&buffer[..]).read_exact(&mut
+                                                    // endianness[..])?;
         let byte_order = match <&[u8; 2]>::try_from(&buffer[0..2]).unwrap() {
             b"II" => ByteOrder::LittleEndian,
             b"MM" => ByteOrder::BigEndian,
@@ -58,13 +82,14 @@ impl<R: CogReader + Sync> Decoder<R> {
                 return Err(TiffFormatError::TiffSignatureNotFound.into());
             }
         };
-        let bigtiff = match byte_order.u16(buffer[2..4].try_into().unwrap()) {
+        let mut r = EndianReader::wrap(std::io::Cursor::new(&buffer[2..]), byte_order);
+        let bigtiff = match r.read_u16()? {
             42 => false,
             43 => {
-                if byte_order.u16(buffer[4..6].try_into().unwrap()) != 8 {
+                if r.read_u16()? != 8 {
                     return Err(TiffFormatError::TiffSignatureNotFound.into());
                 }
-                if byte_order.u16(buffer[6..8].try_into().unwrap()) != 0 {
+                if r.read_u16()? != 0 {
                     return Err(TiffFormatError::TiffSignatureNotFound.into());
                 }
                 true
@@ -74,16 +99,19 @@ impl<R: CogReader + Sync> Decoder<R> {
             }
         };
         let ifd_offsets = vec![if bigtiff {
-            byte_order.u64(buffer[8..8 + 8].try_into().unwrap())
+            r.read_u64()?
         } else {
-            u64::from(byte_order.u32(buffer[4..4 + 4].try_into().unwrap()))
+            u64::from(r.read_u32()?)
         }];
+        let buf_start = r.stream_position()? + 2;
+        // this cannot possibly overflow usize
+        buffer.advance(usize::try_from(buf_start).unwrap());
         // remove the header from buffer, aka make the buffer point to the first offset
         // if ifd_offsets[0] < u64::try_from(buffer.len())? {
         //     buffer.split_to(usize::try_from(ifd_offsets[0])?);
         // }
         Ok(Self {
-            buf_start: 0,
+            buf_start,
             buffer,
             reader,
             byte_order,
@@ -94,12 +122,150 @@ impl<R: CogReader + Sync> Decoder<R> {
             meta_ifds: BTreeMap::new(),
         })
     }
+
+    /// get the range of the buffer
+    ///
+    /// # panics
+    ///
+    /// if buffer.len doesn't fit in u64
+    pub fn buf_range(&self) -> Range<u64> {
+        self.buf_start..self.buf_start + u64::try_from(self.buffer.len()).unwrap()
+    }
+
+    /// checks if the ifd at offset is contained in the buffer
+    ///
+    /// # panics
+    ///
+    /// if `offset - self.buf_start` doesn't fit in `usize`
+    #[inline]
+    fn ifd_is_in_buf(&self, offset: u64) -> bool {
+        if offset < self.buf_start
+            || offset + 8 > self.buf_start + u64::try_from(self.buffer.len()).unwrap()
+        {
+            return false;
+        }
+        let offset_in_buf = usize::try_from(offset - self.buf_start).unwrap();
+        let n_entries = if self.bigtiff {
+            self.byte_order.u64(
+                self.buffer[offset_in_buf..offset_in_buf + 8]
+                    .try_into()
+                    .unwrap(),
+            )
+        } else {
+            u64::from(
+                self.byte_order.u16(
+                    self.buffer[offset_in_buf..offset_in_buf + 2]
+                        .try_into()
+                        .unwrap(),
+                ),
+            )
+        };
+        let ifd_len = if self.bigtiff {
+            offset_in_buf
+                + usize::try_from(NUM_ENTRIES_SIZE_BIGTIFF + n_entries * ENTRY_SIZE_BIGTIFF)
+                    .unwrap()
+        } else {
+            offset_in_buf
+                + usize::try_from(NUM_ENTRIES_SIZE_SMALLTIFF + n_entries * ENTRY_SIZE_SMALLTIFF)
+                    .unwrap()
+        };
+        debug!("checking if ifd [{offset}..; {ifd_len}] fits in buffer {:?}", self.buffer.len());
+        self.buffer.len()
+            >= ifd_len
+    }
+
+    /// Scan and read IFDs
+    ///
+    /// Goes through the linked list of IFDs, starting from the last one in ifd_offsets.
+    ///  reading them in if they are in the buffer.
+    pub async fn scan_ifds(&mut self) -> TiffResult<()> {
+        loop {
+            // start with the last ifd in the list (assuming that all previous
+            // ones have been low)
+            let offset = self
+                .ifd_offsets
+                .last()
+                .ok_or(TiffError::from(TiffFormatError::ImageFileDirectoryNotFound))?;
+            // IFD num_entries field is 2 bytes if small and 8 bytes if bigtiff
+            // also create offset_in_buf here, so we don't panic in ifd_is_in_buf
+            
+            if !self.ifd_is_in_buf(*offset) {
+                // println!("offset ")
+                debug!("Offset {offset} not in buffer {:?}, {}, need to expand", self.buf_range(), self.buf_start);
+                self.buf_start = *offset;
+                let range = *offset..*offset + R::IFD_REQ_SIZE;
+                self.buffer = self.reader.get_ranges(&[range]).await?[0].clone();
+                debug!("new buffer start: {:?}; {:?}",self.buf_start, &self.buffer[..32]);
+            }
+            let offset_in_buf = usize::try_from(offset - self.buf_start)?;
+            let (ifd, pos) =
+                Ifd::from_buffer(&self.buffer[offset_in_buf..], self.byte_order, self.bigtiff)?;
+            if Image::check_ifd(&ifd).is_ok_and(|m| m.is_empty()) {
+                self.images
+                    .insert(*offset, Image::from_ifd(ifd, self.byte_order)?);
+            } else {
+                self.meta_ifds.insert(*offset, ifd);
+            }
+            // let next_offset = usize::try_from(pos)?;
+            // let r = EndianReader::wrap(std::io::Cursor(self.buffer[pos..]), self.byte_order);
+            // let next_offset = if self.bigtiff {
+            //     self.byte_order
+            //         .u64(self.buffer[pos..pos + 8].try_into().unwrap())
+            // } else {
+            //     self.byte_order
+            //         .u32(self.buffer[pos..pos + 4].try_into().unwrap())
+            //         .into()
+            // };
+            if pos == 0 {
+                break;
+            } else if self.ifd_offsets.contains(&pos) {
+                return Err(TiffFormatError::CycleInOffsets.into());
+            } else {
+                self.ifd_offsets.push(pos);
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn read_image_ifds(&mut self) -> TiffResult<()> {
+        let mut imgs = BTreeMap::new();
+        {
+            for (offset, ifd) in self.meta_ifds.iter() {
+                if let Ok(retr_tags) = Image::check_ifd(&ifd) {
+                    imgs.insert(
+                        offset.clone(),
+                        self.reader.get_tags(retr_tags, self.byte_order),
+                    );
+                }
+            }
+        }
+        for (offset, img_fut) in imgs {
+            // we checked that it was present before
+            let mut ifd = self.meta_ifds.remove(&offset).unwrap();
+            let tags = img_fut.await?;
+            ifd.insert_tag_data(tags)?;
+            self.images
+                .insert(offset, Image::from_ifd(ifd, self.byte_order)?);
+        }
+        Ok(())
+    }
+
+    pub fn get_overview(&self, index: usize) -> TiffResult<Image> {
+        let ifd_offset = self
+            .ifd_offsets
+            .get(index)
+            .ok_or(UsageError::OverviewNotLoaded(index))?;
+        self.images
+            .get(ifd_offset)
+            .ok_or(UsageError::NotAnImage(*ifd_offset).into())
+            .map(|im| im.clone())
+    }
 }
 
 #[cfg(test)]
 mod test {
 
-    use super::Decoder;
+    use super::{Decoder, HEADER_SIZE_BIGTIFF, HEADER_SIZE_SMALLTIFF};
     use crate::{decoder::CogReader, error::TiffResult, ByteOrder};
     use async_trait::async_trait;
     use bytes::Bytes;
@@ -118,6 +284,13 @@ mod test {
             }
             Ok(res)
         }
+    }
+
+    #[test]
+    fn test_rangyness() {
+        let a = 0..42;
+        let b = 1..42;
+        assert_eq!(a.contains(&b.start), a.contains(&(b.end - 1)));
     }
 
     #[tokio::test]
@@ -144,7 +317,7 @@ mod test {
             Decoder::new(&data[..]).await.unwrap(),
             Decoder {
                 reader: &data[..],
-                buffer: Bytes::copy_from_slice(&data[..]),
+                buffer: Bytes::copy_from_slice(&data[HEADER_SIZE_SMALLTIFF..]),
                 buf_start: 0,
                 byte_order: ByteOrder::LittleEndian,
                 bigtiff: false,
@@ -182,7 +355,7 @@ mod test {
             Decoder::new(&data[..]).await.unwrap(),
             Decoder {
                 reader: &data[..],
-                buffer: Bytes::copy_from_slice(&data[..]),
+                buffer: Bytes::copy_from_slice(&data[HEADER_SIZE_BIGTIFF..]),
                 buf_start: 0,
                 byte_order: ByteOrder::LittleEndian,
                 bigtiff: true,
@@ -218,7 +391,7 @@ mod test {
             Decoder::new(&data[..]).await.unwrap(),
             Decoder {
                 reader: &data[..],
-                buffer: Bytes::copy_from_slice(&data[..]),
+                buffer: Bytes::copy_from_slice(&data[HEADER_SIZE_SMALLTIFF..]),
                 buf_start: 0,
                 bigtiff: false,
                 byte_order: ByteOrder::BigEndian,
@@ -256,7 +429,7 @@ mod test {
             Decoder::new(&data[..]).await.unwrap(),
             Decoder {
                 reader: &data[..],
-                buffer: Bytes::copy_from_slice(&data[..]),
+                buffer: Bytes::copy_from_slice(&data[HEADER_SIZE_BIGTIFF..]),
                 buf_start: 0,
                 byte_order: ByteOrder::BigEndian,
                 bigtiff: true,
