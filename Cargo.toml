@@ -9,7 +9,6 @@ async-trait = "0.1.83"
 bytemuck = { version = "1.19" }
 bytes = "1.8"
 flate2 = "1.0"
-futures-lite = "2.3"
 jpeg = { package = "jpeg-decoder", version = "0.3.0", default-features = false }
 log = "0.4.22"
 object_store = { version = "0.11.1", optional = true, features = ["http"] }
@@ -18,8 +17,12 @@ weezl = "0.1.8"
 
 [dev-dependencies]
 criterion = "0.5.1"
+env_logger = "0.11.5"
+futures = "0.3.31"
 rand = "0.8.5"
-tokio = { version = "1.41", features = ["rt", "macros"] }
+reqwest = "0.12.9"
+tokio = { version = "1.41", features = ["rt", "rt-multi-thread", "macros"] }
+
 
 [features]
 # default = ["object_store"]
