@@ -394,8 +394,7 @@ impl Image {
         // - PhotometricInterpretation
         for tag in REQUIRED_TAGS {
             if let IfdEntry::Offset(o) = ifd.require_tag(&tag)? {
-                // need to explicitly clone to keep the borrow checker happy?
-                res.insert(tag, o.clone());
+                res.insert(tag, *o);
             }
         }
         let image_height = u32::try_from(ifd.require_tag_value(&Tag::ImageLength)?)?;
@@ -423,7 +422,7 @@ impl Image {
         // - BitsPerSample: None = vec![1]
         for tag in OPTIONAL_TAGS {
             if let Some(IfdEntry::Offset(o)) = ifd.get_tag(&tag) {
-                res.insert(tag, o.clone());
+                res.insert(tag, *o);
             }
         }
 
@@ -436,24 +435,24 @@ impl Image {
         ) {
             (true, true, false, false) => {
                 if let IfdEntry::Offset(o) = ifd.get_tag(&Tag::StripByteCounts).unwrap() {
-                    res.insert(Tag::StripByteCounts, o.clone());
+                    res.insert(Tag::StripByteCounts, *o);
                 }
                 if let IfdEntry::Offset(o) = ifd.get_tag(&Tag::StripOffsets).unwrap() {
-                    res.insert(Tag::StripOffsets, o.clone());
+                    res.insert(Tag::StripOffsets, *o);
                 }
             }
             (false, false, true, true) => {
                 if let IfdEntry::Offset(o) = ifd.get_tag(&Tag::TileByteCounts).unwrap() {
-                    res.insert(Tag::TileByteCounts, o.clone());
+                    res.insert(Tag::TileByteCounts, *o);
                 }
                 if let IfdEntry::Offset(o) = ifd.get_tag(&Tag::TileOffsets).unwrap() {
-                    res.insert(Tag::TileOffsets, o.clone());
+                    res.insert(Tag::TileOffsets, *o);
                 }
                 if let IfdEntry::Offset(o) = ifd.require_tag(&Tag::TileWidth)? {
-                    res.insert(Tag::TileWidth, o.clone());
+                    res.insert(Tag::TileWidth, *o);
                 }
                 if let IfdEntry::Offset(o) = ifd.require_tag(&Tag::TileLength)? {
-                    res.insert(Tag::TileLength, o.clone());
+                    res.insert(Tag::TileLength, *o);
                 }
             }
             _ => {

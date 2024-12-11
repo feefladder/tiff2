@@ -19,6 +19,10 @@ use async_trait::async_trait;
 #[async_trait]
 #[allow(clippy::single_range_in_vec_init)]
 pub trait CogReader {
+    /// Default buffer/request size for fetching ifd data. Should be in the
+    /// order of 16-128 kB. ChatGPT says COGs' tag data generally fits within
+    /// the first 16 kB. other data is currently not checked for fitting in the
+    /// user-space buffer, so there's not much of a point in making this much larger.
     const IFD_REQ_SIZE: u64;
     // https://blog.rust-lang.org/2023/12/21/async-fn-rpit-in-traits.html#where-the-gaps-lie
     /// Read an ifd. Ideally, this would
