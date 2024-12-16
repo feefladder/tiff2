@@ -18,7 +18,7 @@ use async_trait::async_trait;
 /// In fact these functions can be all the same, but caching can be optimized based on which part of the tiff we're reading in.
 #[async_trait]
 #[allow(clippy::single_range_in_vec_init)]
-pub trait CogReader {
+pub trait CogReader: Sync {
     /// Default buffer/request size for fetching ifd data. Should be in the
     /// order of 16-128 kB. ChatGPT says COGs' tag data generally fits within
     /// the first 16 kB. other data is currently not checked for fitting in the
