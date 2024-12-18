@@ -1,0 +1,6 @@
+[book]
+authors = ["Fee Fladder"]
+language = "en"
+multilingual = false
+src = "src"
+title = "Tiff2 implementation"
