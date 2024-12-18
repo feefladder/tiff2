@@ -1,9 +1,11 @@
-use std::{collections::BTreeMap, fmt::Debug, io::{Seek, Read}, ops::Range};
+use std::{collections::BTreeMap, fmt::Debug, ops::Range, sync::Arc};
 
+use async_trait::async_trait;
 use bytes::{Buf, Bytes};
-use log::debug;
+use log::{debug, error};
 
 use crate::{
+    decoder::ImageDecoder,
     error::{TiffError, TiffFormatError, TiffResult, UsageError},
     structs::{Ifd, Image},
     ByteOrder,
@@ -12,24 +14,33 @@ use crate::{
 use super::{CogReader, EndianReader, Limits};
 
 const HEADER_SIZE_SMALLTIFF: usize = 6;
-const HEADER_SIZE_BIGTIFF: usize = 14;
+const HEADER_SIZE_BIGTIFF: usize = 16;
 const ENTRY_SIZE_SMALLTIFF: u64 = 12;
 const ENTRY_SIZE_BIGTIFF: u64 = 20;
 const NUM_ENTRIES_SIZE_SMALLTIFF: u64 = 2;
 const NUM_ENTRIES_SIZE_BIGTIFF: u64 = 8;
 
-
 /// cache for reading ifds, since their size is not known from the header. Also
 /// allows for creating a reader at a specific location
-#[async_trait::async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait IfdCache: Send {
     /// check if a given range is contained in the cache and give it if it exists
     fn try_get_range(&self, range: &Range<u64>) -> Option<Bytes>; // or Result
     /// add the range to the cache and return it
-    async fn fetch_range<R: CogReader>(&mut self, range: &Range<u64>, reader: &R) -> TiffResult<Bytes>;
+    /// SHOULD return an error if
+    async fn fetch_range<R: CogReader>(
+        &mut self,
+        range: &Range<u64>,
+        reader: &R,
+    ) -> TiffResult<Bytes>;
     /// get the desired range, fetch if needed
     #[inline]
-    async fn get_range<R:CogReader>(&mut self, range: Range<u64>, reader: &R) -> TiffResult<Bytes> {
+    async fn get_range<R: CogReader>(
+        &mut self,
+        range: Range<u64>,
+        reader: &R,
+    ) -> TiffResult<Bytes> {
         if let Some(res) = self.try_get_range(&range) {
             Ok(res)
         } else {
@@ -53,13 +64,20 @@ impl Debug for IfdBuffer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IfdBuffer")
             .field("buf_start", &self.buf_start)
-            .field("buffer", &&self.buffer[..if self.buffer.len() < 32 {self.buffer.len()} else {32}])
-
+            .field(
+                "buffer",
+                &&self.buffer[..if self.buffer.len() < 32 {
+                    self.buffer.len()
+                } else {
+                    32
+                }],
+            )
             .finish()
     }
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl IfdCache for IfdBuffer {
     fn try_get_range(&self, range: &Range<u64>) -> Option<Bytes> {
         // Ensure the range is within the buffer
@@ -75,14 +93,17 @@ impl IfdCache for IfdBuffer {
         Some(self.buffer.slice(offset_in_buf..offset_in_buf + len_in_buf))
     }
 
-    async fn fetch_range<R: CogReader>(&mut self, range: &Range<u64>, reader: &R) -> TiffResult<Bytes> {
+    async fn fetch_range<R: CogReader>(
+        &mut self,
+        range: &Range<u64>,
+        reader: &R,
+    ) -> TiffResult<Bytes> {
         // Fetch and store the new range in the buffer
         self.buf_start = range.start;
         self.buffer = reader.get_ranges(&[range.clone()]).await?[0].clone();
         Ok(self.buffer.clone())
     }
 }
-
 
 // use object_store::ObjectStore;
 /// Async decoder
@@ -106,6 +127,7 @@ pub struct Decoder<R: CogReader, C: IfdCache = IfdBuffer> {
     limits: Limits,
     /// ifd offsets. Points to the nr_of_ifds field/tag
     ifd_offsets: Vec<u64>,
+    /// Images, sorted by offset location
     pub images: BTreeMap<u64, Image>,
     /// not-loaded image IFDs or IFDs that are not images.
     pub meta_ifds: BTreeMap<u64, Ifd>,
@@ -122,15 +144,23 @@ impl<R: CogReader + Sync, C: IfdCache> Decoder<R, C> {
     /// Will read an initial IFD chunk at offset zero
     pub async fn new_generic(reader: R, mut ifd_cache: C) -> TiffResult<Self> {
         // let buf = ;
-        let buffer = ifd_cache.get_range(0..R::IFD_REQ_SIZE, &reader).await?;
-        let byte_order = match <&[u8; 2]>::try_from(&buffer[0..2]).unwrap() {
-            b"II" => ByteOrder::LittleEndian,
-            b"MM" => ByteOrder::BigEndian,
-            _ => {
-                return Err(TiffFormatError::TiffSignatureNotFound.into());
-            }
-        };
-        let mut r = EndianReader::wrap(std::io::Cursor::new(&buffer[2..]), byte_order);
+        // let buffer = ifd_cache.get_range(0..R::IFD_REQ_SIZE, &reader).await?;
+        debug!(
+            "reading file header: {:?}",
+            &ifd_cache.get_range(0..16, &reader).await?[..]
+        );
+        let byte_order =
+            match <&[u8; 2]>::try_from(&ifd_cache.get_range(0..2, &reader).await?[..]).unwrap() {
+                b"II" => ByteOrder::LittleEndian,
+                b"MM" => ByteOrder::BigEndian,
+                _ => {
+                    return Err(TiffFormatError::TiffSignatureNotFound.into());
+                }
+            };
+        debug!("byte order: {byte_order:?}");
+        let buf = ifd_cache.get_range(2..32, &reader).await?;
+        debug!("buf: {:?}", &buf[..]);
+        let mut r = EndianReader::wrap(std::io::Cursor::new(buf), byte_order);
         let bigtiff = match r.read_u16()? {
             42 => false,
             43 => {
@@ -142,7 +172,11 @@ impl<R: CogReader + Sync, C: IfdCache> Decoder<R, C> {
                 }
                 true
             }
-            _ => {
+            v => {
+                error!(
+                    "Tiff signature {v:?} invalid: {:?}",
+                    &ifd_cache.get_range(2..32, &reader).await?[..]
+                );
                 return Err(TiffFormatError::TiffSignatureInvalid.into());
             }
         };
@@ -185,7 +219,7 @@ impl<R: CogReader + Sync, C: IfdCache> Decoder<R, C> {
     //     {
     //         return false;
     //     }
-        
+
     //     let n_entries = if self.bigtiff {
     //         self.byte_order.u64(
     //             self.buffer[offset_in_buf..offset_in_buf + 8] // size of n_entries field
@@ -215,7 +249,6 @@ impl<R: CogReader + Sync, C: IfdCache> Decoder<R, C> {
     //         >= ifd_len
     // }
 
-
     /// Scan and read IFDs
     ///
     /// Goes through the linked list of IFDs, starting from the last one in ifd_offsets.
@@ -231,17 +264,26 @@ impl<R: CogReader + Sync, C: IfdCache> Decoder<R, C> {
             // IFD num_entries field is 2 bytes if small and 8 bytes if bigtiff
             let end;
             if self.bigtiff {
-                let n_tags_bytes = self.ifd_cache.get_range(offset..offset+NUM_ENTRIES_SIZE_BIGTIFF, &self.reader).await?;
+                let n_tags_bytes = self
+                    .ifd_cache
+                    .get_range(offset..offset + NUM_ENTRIES_SIZE_BIGTIFF, &self.reader)
+                    .await?;
                 let n_tags = self.byte_order.u64(n_tags_bytes[..].try_into().unwrap()); // 8 BYTES
-                end = offset + NUM_ENTRIES_SIZE_BIGTIFF + n_tags * ENTRY_SIZE_BIGTIFF;
+                end = offset + NUM_ENTRIES_SIZE_BIGTIFF + n_tags * ENTRY_SIZE_BIGTIFF + 8;
             } else {
-                let n_tags_bytes = self.ifd_cache.get_range(offset..offset+NUM_ENTRIES_SIZE_SMALLTIFF, &self.reader).await?;
+                let n_tags_bytes = self
+                    .ifd_cache
+                    .get_range(offset..offset + NUM_ENTRIES_SIZE_SMALLTIFF, &self.reader)
+                    .await?;
                 let n_tags = u64::from(self.byte_order.u16(n_tags_bytes[..].try_into().unwrap())); // 2 BYTES
-                end = offset + NUM_ENTRIES_SIZE_SMALLTIFF + n_tags * ENTRY_SIZE_SMALLTIFF;
+                end = offset + NUM_ENTRIES_SIZE_SMALLTIFF + n_tags * ENTRY_SIZE_SMALLTIFF + 4;
             }
 
-            let (ifd, pos) =
-                Ifd::from_buffer(&self.ifd_cache.get_range(offset..end, &self.reader).await?, self.byte_order, self.bigtiff)?;
+            let (ifd, pos) = Ifd::from_buffer(
+                &self.ifd_cache.get_range(offset..end, &self.reader).await?,
+                self.byte_order,
+                self.bigtiff,
+            )?;
             if Image::check_ifd(&ifd).is_ok_and(|m| m.is_empty()) {
                 self.images
                     .insert(offset, Image::from_ifd(ifd, self.byte_order)?);
@@ -289,8 +331,12 @@ impl<R: CogReader + Sync, C: IfdCache> Decoder<R, C> {
             .ok_or(UsageError::OverviewNotLoaded(index))?;
         self.images
             .get(ifd_offset)
-            .ok_or(UsageError::NotAnImage(*ifd_offset).into())
+            .ok_or(UsageError::NotAnImage(*ifd_offset).into()) //?
             .map(|im| im.clone())
+        //     .map(|im| Ok(ImageDecoder {
+        //         image: im.clone(),
+        //         reader: &self.reader
+        // }))
     }
 }
 
@@ -298,25 +344,9 @@ impl<R: CogReader + Sync, C: IfdCache> Decoder<R, C> {
 mod test {
 
     use super::*;
-    use crate::{decoder::CogReader, error::TiffResult, ByteOrder};
-    use async_trait::async_trait;
+    use crate::ByteOrder;
     use bytes::Bytes;
-    use std::{cmp::min, collections::BTreeMap, ops::Range, thread};
-
-    #[async_trait]
-    impl CogReader for &[u8] {
-        const IFD_REQ_SIZE: u64 = 16 * 1024;
-        async fn get_ranges(&self, ranges: &[Range<u64>]) -> TiffResult<Vec<Bytes>> {
-            let mut res = Vec::with_capacity(ranges.len());
-            for range in ranges {
-                let end = min(usize::try_from(range.end)?, self.len());
-                res.push(Bytes::copy_from_slice(
-                    &self[usize::try_from(range.start)?..end],
-                ));
-            }
-            Ok(res)
-        }
-    }
+    use std::{collections::BTreeMap, thread};
 
     #[test]
     fn test_rangyness() {
@@ -331,27 +361,23 @@ mod test {
             // TIFF Header (8 bytes)
             b'I', b'I', // Byte order: "II" for little-endian
             42, 0, // Magic number: 42 (0x2A00)
-            8, 0, 0,
-            0, // Offset to first IFD: 8
-
-               // // First IFD (12 + 2 + 4 = 18 bytes total)
-               // 1, 0,              // Number of directory entries: 1
-
-               // // IFD Entry for ImageWidth
-               // 0x00, 0x01,        // Tag for ImageWidth: 256 (0x0100)
-               // 4, 0,              // Type: LONG (4 bytes per value)
-               // 1, 0, 0, 0,        // Count: 1
-               // 42, 0, 0, 0,       // Value: 42 (ImageWidth)
-
-               // 0, 0, 0, 0         // Next IFD offset: 0 (no more IFDs)
+            8, 0, 0, 0, // Offset to first IFD: 8
+            // First IFD (12 + 2 + 4 = 18 bytes total)
+            1, 0, // Number of directory entries: 1
+            // IFD Entry for ImageWidth
+            0x00, 0x01, // Tag for ImageWidth: 256 (0x0100)
+            4, 0, // Type: LONG (4 bytes per value)
+            1, 0, 0, 0, // Count: 1
+            42, 0, 0, 0, // Value: 42 (ImageWidth)
+            0, 0, 0, 0, // Next IFD offset: 0 (no more IFDs)
         ];
         assert_eq!(
             Decoder::new(&data[..]).await.unwrap(),
             Decoder {
                 reader: &data[..],
                 ifd_cache: IfdBuffer {
-                    buffer: Bytes::copy_from_slice(&data[..]),
-                    buf_start: 0,
+                    buffer: Bytes::copy_from_slice(&data[2..HEADER_SIZE_BIGTIFF]),
+                    buf_start: 2,
                 },
                 byte_order: ByteOrder::LittleEndian,
                 bigtiff: false,
@@ -371,27 +397,23 @@ mod test {
             43, 0, // Magic number for BigTIFF: 43 (0x2B00)
             8, 0, // Offset size (8 bytes) and count size (8 bytes)
             0, 0, // Reserved bytes (2 bytes, set to 0)
-            16, 0, 0, 0, 0, 0, 0,
-            0, // Offset to first IFD (16)
-
-               // // First IFD
-               // 1, 0, 0, 0, 0, 0, 0, 0,  // Number of directory entries (8 bytes): 1
-
-               // // IFD Entry for ImageWidth (20 bytes)
-               // 0x00, 0x01, 0, 0,        // Tag for ImageWidth: 256 (0x0100)
-               // 4, 0, 0, 0,              // Type: LONG (4 bytes per value)
-               // 1, 0, 0, 0, 0, 0, 0, 0,  // Count: 1 (8 bytes)
-               // 42, 0, 0, 0, 0, 0, 0, 0, // Value: 42 (8 bytes for BigTIFF)
-
-               // 0, 0, 0, 0, 0, 0, 0, 0   // Next IFD offset: 0 (indicating no more IFDs)
+            16, 0, 0, 0, 0, 0, 0, 0, // Offset to first IFD (16)
+            // First IFD
+            1, 0, 0, 0, 0, 0, 0, 0, // Number of directory entries (8 bytes): 1
+            // IFD Entry for ImageWidth (20 bytes)
+            0x00, 0x01, 0, 0, // Tag for ImageWidth: 256 (0x0100)
+            4, 0, 0, 0, // Type: LONG (4 bytes per value)
+            1, 0, 0, 0, 0, 0, 0, 0, // Count: 1 (8 bytes)
+            42, 0, 0, 0, 0, 0, 0, 0, // Value: 42 (8 bytes for BigTIFF)
+            0, 0, 0, 0, 0, 0, 0, 0, // Next IFD offset: 0 (indicating no more IFDs)
         ];
         assert_eq!(
             Decoder::new(&data[..]).await.unwrap(),
             Decoder {
                 reader: &data[..],
-                ifd_cache: IfdBuffer { 
-                buffer: Bytes::copy_from_slice(&data[..]),
-                buf_start: 0,
+                ifd_cache: IfdBuffer {
+                    buffer: Bytes::copy_from_slice(&data[2..HEADER_SIZE_BIGTIFF]),
+                    buf_start: 2,
                 },
                 byte_order: ByteOrder::LittleEndian,
                 bigtiff: true,
@@ -409,27 +431,23 @@ mod test {
             // TIFF Header (8 bytes)
             b'M', b'M', // Byte order: "II" for little-endian
             0, 42, // Magic number: 42 (0x2A00)
-            0, 0, 0,
-            8, // Offset to first IFD: 8
-
-               // // First IFD (12 + 2 + 4 = 18 bytes total)
-               // 1, 0,              // Number of directory entries: 1
-
-               // // IFD Entry for ImageWidth
-               // 0x00, 0x01,        // Tag for ImageWidth: 256 (0x0100)
-               // 4, 0,              // Type: LONG (4 bytes per value)
-               // 1, 0, 0, 0,        // Count: 1
-               // 42, 0, 0, 0,       // Value: 42 (ImageWidth)
-
-               // 0, 0, 0, 0         // Next IFD offset: 0 (no more IFDs)
+            0, 0, 0, 8, // Offset to first IFD: 8
+            // First IFD (12 + 2 + 4 = 18 bytes total)
+            1, 0, // Number of directory entries: 1
+            // IFD Entry for ImageWidth
+            0x00, 0x01, // Tag for ImageWidth: 256 (0x0100)
+            4, 0, // Type: LONG (4 bytes per value)
+            1, 0, 0, 0, // Count: 1
+            42, 0, 0, 0, // Value: 42 (ImageWidth)
+            0, 0, 0, 0, // Next IFD offset: 0 (no more IFDs)
         ];
         assert_eq!(
             Decoder::new(&data[..]).await.unwrap(),
             Decoder {
                 reader: &data[..],
                 ifd_cache: IfdBuffer {
-                buffer: Bytes::copy_from_slice(&data[..]),
-                buf_start: 0,
+                    buffer: Bytes::copy_from_slice(&data[2..HEADER_SIZE_BIGTIFF]),
+                    buf_start: 2,
                 },
                 bigtiff: false,
                 byte_order: ByteOrder::BigEndian,
@@ -449,27 +467,23 @@ mod test {
             0, 43, // Magic number for BigTIFF: 43 (0x2B00)
             0, 8, // Offset size (8 bytes) and count size (8 bytes)
             0, 0, // Reserved bytes (2 bytes, set to 0)
-            0, 0, 0, 0, 0, 0, 0,
-            16, // Offset to first IFD (16)
-
-                // // First IFD
-                // 1, 0, 0, 0, 0, 0, 0, 0,  // Number of directory entries (8 bytes): 1
-
-                // // IFD Entry for ImageWidth (20 bytes)
-                // 0x00, 0x01, 0, 0,        // Tag for ImageWidth: 256 (0x0100)
-                // 4, 0, 0, 0,              // Type: LONG (4 bytes per value)
-                // 1, 0, 0, 0, 0, 0, 0, 0,  // Count: 1 (8 bytes)
-                // 42, 0, 0, 0, 0, 0, 0, 0, // Value: 42 (8 bytes for BigTIFF)
-
-                // 0, 0, 0, 0, 0, 0, 0, 0   // Next IFD offset: 0 (indicating no more IFDs)
+            0, 0, 0, 0, 0, 0, 0, 16, // Offset to first IFD (16)
+            // First IFD
+            1, 0, 0, 0, 0, 0, 0, 0, // Number of directory entries (8 bytes): 1
+            // IFD Entry for ImageWidth (20 bytes)
+            0x00, 0x01, 0, 0, // Tag for ImageWidth: 256 (0x0100)
+            4, 0, 0, 0, // Type: LONG (4 bytes per value)
+            1, 0, 0, 0, 0, 0, 0, 0, // Count: 1 (8 bytes)
+            42, 0, 0, 0, 0, 0, 0, 0, // Value: 42 (8 bytes for BigTIFF)
+            0, 0, 0, 0, 0, 0, 0, 0, // Next IFD offset: 0 (indicating no more IFDs)
         ];
         assert_eq!(
             Decoder::new(&data[..]).await.unwrap(),
             Decoder {
                 reader: &data[..],
                 ifd_cache: IfdBuffer {
-                buffer: Bytes::copy_from_slice(&data[..]),
-                buf_start: 0,
+                    buffer: Bytes::copy_from_slice(&data[2..HEADER_SIZE_BIGTIFF]),
+                    buf_start: 2,
                 },
                 byte_order: ByteOrder::BigEndian,
                 bigtiff: true,

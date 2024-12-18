@@ -1,3 +1,5 @@
+use async_trait::async_trait;
+
 use crate::{
     structs::tags::{Predictor, SampleFormat},
     util::fix_endianness,
@@ -12,7 +14,10 @@ pub use chunk_decoder::ChunkDecoder;
 #[allow(clippy::module_inception)]
 mod decoder;
 pub use decoder::Decoder;
+mod image_decoder;
+pub use image_decoder::ImageDecoder;
 
+mod cogreader_impls;
 /// reverse horizontal prediction
 ///
 /// Horizontal prediction uses a horizontal differencing scheme (on full values)

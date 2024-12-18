@@ -10,7 +10,7 @@ use crate::{
     ByteOrder, ChunkType, ColorType,
 };
 
-use std::{collections::BTreeMap, sync::Arc, fmt::Debug};
+use std::{collections::BTreeMap, fmt::Debug, ops::Range, sync::Arc};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct StripDecodeState {
@@ -122,7 +122,7 @@ impl ChunkOpts {
     /// Example with `bits_per_sample = [8, 8, 8]` and `PhotometricInterpretation::RGB`:
     /// * `PlanarConfiguration::Chunky` -> 3 (RGBRGBRGB...)
     /// * `PlanarConfiguration::Planar` -> 1 (RRR...) (GGG...) (BBB...)
-    pub(crate) fn samples_per_pixel(&self) -> usize {
+    pub fn samples_per_pixel(&self) -> usize {
         match self.planar_config {
             PlanarConfiguration::Chunky => self.samples.into(),
             PlanarConfiguration::Planar => 1,
@@ -167,12 +167,33 @@ impl ChunkOpts {
 
         match self.chunk_type {
             ChunkType::Strip => {
+                // image ordering in case of planar configuration:
+                // > The components are stored in separate “component planes.” The
+                // > values in StripOffsets and StripByteCounts are then arranged as a 2-dimensional
+                // > array, with SamplesPerPixel rows and StripsPerImage columns. (All of the col-
+                // > umns for row 0 are stored first, followed by the columns of row 1, and so on.)
+                // > PhotometricInterpretation describes the type of data stored in each component
+                // > plane. For example, RGB data is stored with the Red components in one compo-
+                // > nent plane, the Green in another, and the Blue in another.
+                // so:
+                // spp
+                // ^
+                // |
+                // +--> chunks
+                //       ___col0___________col2_______________colN______
+                // row1 | Chunk0[RED]  , Chunk1[RED]  , ... ChunkN[RED]
+                // row2 | Chunk0[GREEN], Chunk1[GREEN], ... ChunkN[GREEN]
+                // row3 | Chunk0[BLUE] , Chunk1[BLUE] , ... ChunkN[BLUE]
+                // "in memory": [Chunk1[RED],Chunk2[RED],...ChunkN[RED],Chunk1[GREEN]...]
+                // let's say we have a 42x42 RGBA image with 8 rows_per_chunk
+                // that's ceil(42/8)=6 strips_per_band, where the last chunk has 2 rows
                 let strip_attrs = self.strip_decoder.as_ref().unwrap();
-                let strips_per_band =
-                    self.image_height.saturating_sub(1) / strip_attrs.rows_per_strip + 1;
-                let strip_height_without_padding = (chunk_index % strips_per_band)
-                    .checked_mul(dims.1)
-                    .and_then(|x| self.image_height.checked_sub(x))
+                // follow through, where we want to get chunk 5
+                let strips_per_band = // the N of ChunkN
+                    self.image_height.div_ceil(strip_attrs.rows_per_strip);
+                let strip_height_without_padding = (chunk_index % strips_per_band)// 5
+                    .checked_mul(dims.1)// 5*8=40
+                    .and_then(|x| self.image_height.checked_sub(x)) // 2
                     .ok_or(TiffError::UsageError(UsageError::InvalidChunkIndex(
                         chunk_index,
                     )))?;
@@ -329,8 +350,22 @@ impl Debug for Image {
         f.debug_struct("Image")
             .field("ifd", &self.ifd)
             .field("chunk_opts", &self.chunk_opts)
-            .field("chunk_offsets", &&self.chunk_offsets[..if self.chunk_offsets.len() < 32 {self.chunk_offsets.len()} else {16}])
-            .field("chunk_bytes", &&self.chunk_bytes[..if self.chunk_bytes.len() < 32 {self.chunk_offsets.len()} else {16}])
+            .field(
+                "chunk_offsets",
+                &&self.chunk_offsets[..if self.chunk_offsets.len() < 32 {
+                    self.chunk_offsets.len()
+                } else {
+                    16
+                }],
+            )
+            .field(
+                "chunk_bytes",
+                &&self.chunk_bytes[..if self.chunk_bytes.len() < 32 {
+                    self.chunk_offsets.len()
+                } else {
+                    16
+                }],
+            )
             .finish()
     }
 }
@@ -372,6 +407,11 @@ impl Image {
     /// number of (compressed) bytes of chunk
     pub fn chunk_bytes(&self, index: usize) -> TiffResult<&u64> {
         self.chunk_bytes.get(index).ok_or(TiffError::LimitsExceeded)
+    }
+
+    /// the range within the file where the compressed chunk bytes are
+    pub fn chunk_file_range(&self, index: usize) -> TiffResult<Range<u64>> {
+        Ok(*self.chunk_offset(index)?..*self.chunk_offset(index)? + self.chunk_bytes(index)?)
     }
 
     /// get [`ChunkOpts`] of image

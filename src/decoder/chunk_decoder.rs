@@ -1,3 +1,4 @@
+use log::{debug, error};
 use std::io::{Cursor, Read};
 
 use crate::{
@@ -148,10 +149,15 @@ impl ChunkDecoder {
     /// - make it work on a subview that possibly has top-bot/left-right padding
     pub fn expand_chunk(
         compressed_data: &[u8],
-        buf: &mut [u8],
-        chunk_opts: ChunkOpts,
+        buf: &mut [&mut [u8]],
+        chunk_opts: &ChunkOpts,
         chunk_index: u32,
     ) -> TiffResult<()> {
+        debug!(
+            "Expanding chunk {chunk_index:?} with shape {:?}x{:?}",
+            buf.len(),
+            buf[0].len()
+        );
         // Validate that the color type is supported.
         let color_type = chunk_opts.colortype()?;
         match color_type {
@@ -191,7 +197,8 @@ impl ChunkDecoder {
         // Validate that the predictor is supported for the sample type.
         match (chunk_opts.predictor, chunk_opts.sample_format) {
             (Predictor::Horizontal, SampleFormat::Int | SampleFormat::Uint) => {}
-            (Predictor::Horizontal, _) => {
+            (Predictor::Horizontal, sample_format) => {
+                error!("Unsupported horizontal prediction for {sample_format:?}");
                 return Err(TiffError::UnsupportedError(
                     TiffUnsupportedError::HorizontalPredictor(color_type),
                 ));
@@ -228,14 +235,13 @@ impl ChunkDecoder {
         let chunk_row_bits = (u64::from(chunk_dims.0) * u64::from(chunk_opts.bits_per_sample))
             .checked_mul(samples as u64)
             .ok_or(TiffError::LimitsExceeded)?;
-        let chunk_row_bytes: usize = ((chunk_row_bits + 7) / 8).try_into()?;
+        let chunk_row_bytes: usize = chunk_row_bits.div_ceil(8).try_into()?;
 
         let data_row_bits = (u64::from(data_dims.0) * u64::from(chunk_opts.bits_per_sample))
             .checked_mul(samples as u64)
             .ok_or(TiffError::LimitsExceeded)?;
-        let data_row_bytes: usize = ((data_row_bits + 7) / 8).try_into()?;
+        let data_row_bytes: usize = data_row_bits.div_ceil(8).try_into()?;
 
-        // TODO: Should these return errors instead? => YES
         if output_row_stride < data_row_bytes {
             return Err(TiffFormatError::RowStrideLargerThanWidth(
                 output_row_stride,
@@ -254,20 +260,19 @@ impl ChunkDecoder {
         )?;
 
         if output_row_stride == chunk_row_bytes {
-            let tile = &mut buf[..chunk_row_bytes * data_dims.1 as usize];
-            reader.read_exact(tile)?;
-
-            for row in tile.chunks_mut(chunk_row_bytes) {
+            // let tile = &mut buf[..chunk_row_bytes];
+            for row in buf {
+                reader.read_exact(*row)?;
                 super::fix_endianness_and_predict(
-                    row,
+                    *row,
                     color_type.bit_depth(),
                     samples,
                     chunk_opts.byte_order,
                     predictor,
                 );
-            }
-            if photometric_interpretation == PhotometricInterpretation::WhiteIsZero {
-                super::invert_colors(tile, color_type, chunk_opts.sample_format);
+                if photometric_interpretation == PhotometricInterpretation::WhiteIsZero {
+                    super::invert_colors(*row, color_type, chunk_opts.sample_format);
+                }
             }
         } else if chunk_row_bytes > data_row_bytes
             && chunk_opts.predictor == Predictor::FloatingPoint
@@ -276,7 +281,8 @@ impl ChunkDecoder {
             // this case is handled specially when needed.
             let mut encoded = vec![0u8; chunk_row_bytes];
             // create row as reference to buffer chunk
-            for row in buf.chunks_mut(output_row_stride).take(data_dims.1 as usize) {
+            for row in buf {
+                //.chunks_mut(output_row_stride).take(data_dims.1 as usize) {
                 reader.read_exact(&mut encoded)?;
 
                 let row = &mut row[..data_row_bytes];
@@ -290,15 +296,13 @@ impl ChunkDecoder {
                 }
             }
         } else {
-            for (i, row) in buf
-                .chunks_mut(output_row_stride)
-                .take(data_dims.1 as usize)
-                .enumerate()
+            for (i, row) in buf.iter_mut().enumerate()
+            // .chunks_mut(output_row_stride)
+            // .take(data_dims.1 as usize)
+            // .enumerate()
             {
-                let row = &mut row[..data_row_bytes];
-                reader.read_exact(row)?;
-
-                println!("chunk={chunk_index}, index={i}");
+                let row = &mut &mut row[..data_row_bytes];
+                reader.read_exact(*row)?;
 
                 // Skip horizontal padding
                 if chunk_row_bytes > data_row_bytes {
@@ -307,14 +311,14 @@ impl ChunkDecoder {
                 }
 
                 super::fix_endianness_and_predict(
-                    row,
+                    *row,
                     color_type.bit_depth(),
                     samples,
                     chunk_opts.byte_order,
                     predictor,
                 );
                 if photometric_interpretation == PhotometricInterpretation::WhiteIsZero {
-                    super::invert_colors(row, color_type, chunk_opts.sample_format);
+                    super::invert_colors(*row, color_type, chunk_opts.sample_format);
                 }
             }
         }

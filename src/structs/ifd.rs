@@ -48,16 +48,20 @@ impl Ifd {
             let tag = Tag::from_u16_exhaustive(r.read_u16()?);
             ifd.data
                 .insert(tag, IfdEntry::from_reader(&mut r, bigtiff)?);
-            debug!("Added {tag:?} with value {:?}, now at pos: {:?}", ifd.data[&tag], r.stream_position());
+            debug!("Added {:26} {:?}", format!("{:?}", tag), ifd.data[&tag]);
         }
         let p = usize::try_from(r.stream_position()?)?;
-        debug!("Last bytes: {:?},{:?}", &buf[p-20..p], &buf[p..p+16]);
+        debug!(
+            "Last bytes: {:?},{:?}",
+            &buf[p - 16..p],
+            &buf[p..p + if bigtiff { 8 } else { 4 }]
+        );
         let next = if bigtiff {
             r.read_u64()?
         } else {
             r.read_u32()?.into()
         };
-        debug!("next: {next}");
+        debug!("next ifd: {next}");
         Ok((ifd, next))
     }
 

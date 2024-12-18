@@ -4,19 +4,21 @@ use crate::{
     util::fix_endianness,
     ByteOrder,
 };
+
+use async_trait::async_trait;
 use bytes::Bytes;
+use log::debug;
 use std::{
     collections::BTreeMap,
     io::{self, BufRead, BufReader, Read, Take},
     ops::Range,
 };
-use log::debug;
-use async_trait::async_trait;
 
 /// Trait for a CogReader to implement.
 ///
 /// In fact these functions can be all the same, but caching can be optimized based on which part of the tiff we're reading in.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[allow(clippy::single_range_in_vec_init)]
 pub trait CogReader: Sync {
     /// Default buffer/request size for fetching ifd data. Should be in the
@@ -26,24 +28,24 @@ pub trait CogReader: Sync {
     const IFD_REQ_SIZE: u64;
     // https://blog.rust-lang.org/2023/12/21/async-fn-rpit-in-traits.html#where-the-gaps-lie
     /// Read an ifd. Ideally, this would
-    async fn read_ifd(&self, byte_start: u64) -> TiffResult<Bytes> {
-        // Bytes is cheaply cloneable
-        self.get_ranges(&[byte_start..byte_start + Self::IFD_REQ_SIZE])
-            .await
-            .map(|v| v[0].clone())
-    }
-    async fn read_tag_data(&self, byte_start: u64, n_bytes: u64) -> TiffResult<Bytes> {
-        // Bytes is cheaply cloneable
-        self.get_ranges(&[byte_start..byte_start + n_bytes])
-            .await
-            .map(|v| v[0].clone())
-    }
-    async fn read_image_data(&self, byte_start: u64, n_bytes: u64) -> TiffResult<Bytes> {
-        // Bytes is cheaply cloneable
-        self.get_ranges(&[byte_start..byte_start + n_bytes])
-            .await
-            .map(|v| v[0].clone())
-    }
+    // async fn read_ifd(&self, byte_start: u64) -> TiffResult<Bytes> {
+    //     // Bytes is cheaply cloneable
+    //     self.get_ranges(&[byte_start..byte_start + Self::IFD_REQ_SIZE])
+    //         .await
+    //         .map(|v| v[0].clone())
+    // }
+    // async fn read_tag_data(&self, byte_start: u64, n_bytes: u64) -> TiffResult<Bytes> {
+    //     // Bytes is cheaply cloneable
+    //     self.get_ranges(&[byte_start..byte_start + n_bytes])
+    //         .await
+    //         .map(|v| v[0].clone())
+    // }
+    // async fn read_image_data(&self, byte_start: u64, n_bytes: u64) -> TiffResult<Bytes> {
+    //     // Bytes is cheaply cloneable
+    //     self.get_ranges(&[byte_start..byte_start + n_bytes])
+    //         .await
+    //         .map(|v| v[0].clone())
+    // }
     async fn get_ranges(&self, ranges: &[Range<u64>]) -> TiffResult<Vec<Bytes>>;
     /// get tags _and fix endianness_
     ///
@@ -61,7 +63,10 @@ pub trait CogReader: Sync {
             );
         }
         let resp = self.get_ranges(&ranges).await?;
-        debug!("received data: {:?}", resp.iter().map(|v| v.len()).collect::<Vec<_>>());
+        debug!(
+            "received data, lengths: {:?}",
+            resp.iter().map(|v| v.len()).collect::<Vec<_>>()
+        );
         let mut res = BTreeMap::new();
         // BTreeMap keeps order, so we can safely iterate over that again
         for (i, (tag, offset)) in tags.iter().enumerate() {
@@ -74,7 +79,7 @@ pub trait CogReader: Sync {
             );
             res.insert(*tag, e);
         }
-        debug!("Received tags: {tags:?}");
+        debug!("Received tags: {res:?}");
         Ok(res)
     }
     /// get compressed chunks of data
@@ -86,7 +91,8 @@ pub trait CogReader: Sync {
 }
 
 // #[cfg(feature="object_store")]
-// #[async_trait]
+// #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+// #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 // impl<T: object_store::ObjectStore> CogReader for T {
 //     async fn get_ranges(&self, ranges: &[Range<u64>]) -> TiffResult<Vec<Bytes>> {
 //         object_store::ObjectStore::get_ranges(self, &ranges)
