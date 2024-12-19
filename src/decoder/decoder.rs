@@ -140,6 +140,9 @@ impl<R: CogReader + Sync> Decoder<R, IfdBuffer> {
 }
 
 impl<R: CogReader + Sync, C: IfdCache> Decoder<R, C> {
+    pub fn ifd_offsets(&self) -> &[u64] {
+        &self.ifd_offsets
+    }
     /// Create a new decoder from the source
     /// Will read an initial IFD chunk at offset zero
     pub async fn new_generic(reader: R, mut ifd_cache: C) -> TiffResult<Self> {

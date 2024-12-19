@@ -1,43 +1,56 @@
+use async_trait::async_trait;
+use log::{debug, info};
 use reqwest::header::RANGE;
-use tiff2::{decoder::{CogReader, Decoder}, error::{TiffError, TiffResult}};
-use log::{info, debug};
 use std::time::{Duration, Instant};
+use tiff2::{
+    decoder::{CogReader, Decoder},
+    error::{TiffError, TiffResult},
+};
 use tokio;
 
 #[derive(Debug, Clone)]
-struct CogClient{
+struct CogClient {
     client: reqwest::Client,
     url: String,
 }
 
 impl CogClient {
     fn new(url: &str) -> Self {
-        CogClient { client: reqwest::Client::new(), url: url.to_string() }
+        CogClient {
+            client: reqwest::Client::new(),
+            url: url.to_string(),
+        }
     }
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl CogReader for CogClient {
-    const IFD_REQ_SIZE:u64 = 1024*64;
+    const IFD_REQ_SIZE: u64 = 1024 * 64;
 
-    async fn get_ranges(&self,ranges: &[std::ops::Range<u64>]) ->  TiffResult<Vec<bytes::Bytes> > {
+    async fn get_ranges(&self, ranges: &[std::ops::Range<u64>]) -> TiffResult<Vec<bytes::Bytes>> {
         let mut v = Vec::with_capacity(ranges.len());
         for r in ranges {
-            v.push(self.client.get(&self.url).header(RANGE, format!("bytes={}-{}",r.start,r.end-1)).send());
+            v.push(
+                self.client
+                    .get(&self.url)
+                    .header(RANGE, format!("bytes={}-{}", r.start, r.end - 1))
+                    .send(),
+            );
         }
         futures::future::join_all(
             futures::future::join_all(v)
                 .await
                 .into_iter()
-                .collect::<Result<Vec<_>, _>>().map_err(|e| TiffError::TransportError(Box::new(e)))
-                ?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| TiffError::TransportError(Box::new(e)))?
                 .into_iter()
-                .map(|resp| resp.bytes())
-            )
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| TiffError::TransportError(Box::new(e))) //is there such a function?
+                .map(|resp| resp.bytes()),
+        )
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| TiffError::TransportError(Box::new(e))) //is there such a function?
     }
 }
 
@@ -62,7 +75,11 @@ async fn main() -> TiffResult<()> {
     decoder.read_image_ifds().await?;
     let t3 = start.elapsed();
     info!("decoder: {:#?}", decoder.images);
-    info!("initialization: {t1:?}, scan_ifds: {:?}, read_image_ifds: {:?}", t2-t1, t3-t2);
+    info!(
+        "initialization: {t1:?}, scan_ifds: {:?}, read_image_ifds: {:?}",
+        t2 - t1,
+        t3 - t2
+    );
 
     Ok(())
 }

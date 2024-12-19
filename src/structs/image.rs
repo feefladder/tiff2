@@ -29,10 +29,10 @@ pub struct TileAttributes {
 
 impl TileAttributes {
     pub fn tiles_across(&self) -> usize {
-        (self.image_width + self.tile_width - 1) / self.tile_width
+        self.image_width.div_ceil(self.tile_width)
     }
     pub fn tiles_down(&self) -> usize {
-        (self.image_height + self.tile_length - 1) / self.tile_length
+        self.image_height.div_ceil(self.tile_length)
     }
     fn padding_right(&self) -> usize {
         (self.tile_width - self.image_width % self.tile_width) % self.tile_width
