@@ -24,6 +24,7 @@ env_logger = "0.11.5"
 futures = "0.3.31"
 image = { version = "0.25", default-features = false } # make this match viuer?
 rand = "0.8.5"
+rayon = "1.10.0"
 reqwest = "0.12.9"
 test-log = "0.2.16"
 tokio = { version = "1.41", features = ["rt", "rt-multi-thread", "fs", "macros"] }

@@ -1867,6 +1867,7 @@ dependencies = [
  "log",
  "object_store",
  "rand",
+ "rayon",
  "reqwest",
  "test-log",
  "thiserror",
