@@ -6,7 +6,7 @@ use rand::{Rng, SeedableRng};
 ///   \--2 |          i=0; i=-2%2=0; in[i].wrapping_sub(prev[i%n_samp])
 ///   [3 2]|          prev[i%n_samp]=in[i]
 ///      \-2          i=1; i-n_samp%n_samp=-1%2=1;
-/// this seems horribly inefficient...
+/// this seems horribly memory inefficient...
 fn hdiff_ssamp_buf(input: &mut [u8], n_samp: usize) {
     let mut prev = input[..n_samp].to_vec();
     for i in n_samp..input.len() {

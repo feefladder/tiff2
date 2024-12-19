@@ -3,6 +3,7 @@
 Similar in function and planned lifespan as arrow2 crate:
 - Async support
 - seprarate IO- and CPU-intensive work
+- lots of debugging info
 - delegates parallelism downstream
 - delegates io downstream using a trait
 - primary decoder impl is geared towards COGs, but doesn't have the geo stuff
@@ -45,9 +46,10 @@ This crate is not meant for reading tiff files, but rather for building more spe
 The following use-cases were taken as example in the design:
 1. Reading a specific set of tiles at a given overview level as quickly as possible
 2. Mapping application: Reading overlapping tiles of a bbox at given overview level
-3. bevy_terrain: acting as a tile server over multiple overview levels
+3. bevy_terrain: acting as a tile server over multiple overview levels using a quadtree
 
 ```
+COG layout
 |Ifd1|Ifd2|Ifd3|-Ifd1TagData-|-Ifd2TagData-|-Ifd3TagData-|--Image1Data--|--Image2Data--|--Image3Data--|
    \--->points to--->/\---------------->points to-------------->/
 ```
