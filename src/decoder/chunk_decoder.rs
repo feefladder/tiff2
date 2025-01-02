@@ -21,8 +21,8 @@ pub struct ChunkDecoder; //<'r> {
                          // }
 
 impl ChunkDecoder {
-    /// Create this decoder to decode compressed_data into out_bufs
-    ///
+    // /// Create this decoder to decode compressed_data into out_bufs
+    // ///
     // fn spawn(compressed_data: &[u8], out_bufs: &[&mut [u8]], chunk_opts: ChunkOpts, chunk_index: u32) -> TiffResult<()>{
     //     let reader = ChunkDecoder::create_reader(
     //         compressed_data,
@@ -262,16 +262,16 @@ impl ChunkDecoder {
         if output_row_stride == chunk_row_bytes {
             // let tile = &mut buf[..chunk_row_bytes];
             for row in buf {
-                reader.read_exact(*row)?;
+                reader.read_exact(row)?;
                 super::fix_endianness_and_predict(
-                    *row,
+                    row,
                     color_type.bit_depth(),
                     samples,
                     chunk_opts.byte_order,
                     predictor,
                 );
                 if photometric_interpretation == PhotometricInterpretation::WhiteIsZero {
-                    super::invert_colors(*row, color_type, chunk_opts.sample_format);
+                    super::invert_colors(row, color_type, chunk_opts.sample_format);
                 }
             }
         } else if chunk_row_bytes > data_row_bytes
@@ -296,13 +296,13 @@ impl ChunkDecoder {
                 }
             }
         } else {
-            for (i, row) in buf.iter_mut().enumerate()
+            for row in buf.iter_mut()
             // .chunks_mut(output_row_stride)
             // .take(data_dims.1 as usize)
             // .enumerate()
             {
                 let row = &mut &mut row[..data_row_bytes];
-                reader.read_exact(*row)?;
+                reader.read_exact(row)?;
 
                 // Skip horizontal padding
                 if chunk_row_bytes > data_row_bytes {
@@ -311,14 +311,14 @@ impl ChunkDecoder {
                 }
 
                 super::fix_endianness_and_predict(
-                    *row,
+                    row,
                     color_type.bit_depth(),
                     samples,
                     chunk_opts.byte_order,
                     predictor,
                 );
                 if photometric_interpretation == PhotometricInterpretation::WhiteIsZero {
-                    super::invert_colors(*row, color_type, chunk_opts.sample_format);
+                    super::invert_colors(row, color_type, chunk_opts.sample_format);
                 }
             }
         }

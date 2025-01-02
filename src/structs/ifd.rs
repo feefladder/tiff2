@@ -184,7 +184,7 @@ impl From<Directory> for Ifd {
     }
 }
 
-#[allow(unused_imports)]
+#[allow(unused_imports, clippy::useless_conversion)]
 mod test_ifd {
     use super::*;
     use crate::structs::{value::Value, Offset, TagData, TagType};
@@ -261,7 +261,7 @@ mod test_ifd {
         for (buf, byte_order, res) in cases {
             println!("Trying {buf:?}, with {byte_order:?} should become {res:?}");
             let mut dir = Directory::new();
-            dir.insert(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Value(res.try_into().unwrap()));
+            dir.insert(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Value(res));
             assert_eq!(Ifd::from_buffer(&buf, byte_order, false).unwrap(), (Ifd{
                 sub_ifds: Vec::new(),
                 data: dir

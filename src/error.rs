@@ -196,7 +196,7 @@ pub enum UsageError {
     TagOfDataNotPresent(Tag),
     #[error("Required tag {0:?} with type {:?} and count {} not loaded from {}", .1.tag_type, .1.count, .1.offset)]
     RequiredTagNotLoaded(Tag, Offset),
-    #[error("Overview {0} not loaded or not in image")]
+    #[error("Overview level {0} not in tiff")]
     OverviewNotLoaded(usize),
     #[error("Ifd at offset {0} is not an image or not fully loaded")]
     NotAnImage(u64),

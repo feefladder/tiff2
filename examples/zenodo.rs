@@ -1,12 +1,14 @@
 use async_trait::async_trait;
-use log::{debug, info};
+use image::{DynamicImage, ImageBuffer, Luma};
+use log::{error, info};
 use reqwest::header::RANGE;
 use std::time::{Duration, Instant};
 use tiff2::{
-    decoder::{CogReader, Decoder},
+    decoder::{CogReader, Decoder, DecodingResult},
     error::{TiffError, TiffResult},
 };
-use tokio;
+use tokio::time::sleep;
+use viuer::ViuError;
 
 #[derive(Debug, Clone)]
 struct CogClient {
@@ -23,34 +25,62 @@ impl CogClient {
     }
 }
 
+async fn fetch_with_retry(
+    client: &reqwest::Client,
+    url: &str,
+    range: &std::ops::Range<u64>,
+    max_retries: usize,
+) -> TiffResult<bytes::Bytes> {
+    let mut attempts = 0;
+
+    loop {
+        let response = client
+            .get(url)
+            .header(RANGE, format!("bytes={}-{}", range.start, range.end - 1))
+            .send()
+            .await;
+
+        match response {
+            Ok(resp) if resp.status().is_success() => {
+                return resp
+                    .bytes()
+                    .await
+                    .map_err(|e| TiffError::TransportError(Box::new(e)))
+            }
+            Ok(resp) if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS => {
+                if attempts >= max_retries {
+                    error!("max retries reached");
+                    return Err(TiffError::LimitsExceeded);
+                }
+                info!("retrying, waiting {:?}", &resp.headers().get("Retry-After"));
+                // Exponential backoff
+                let retry_after = resp
+                    .headers()
+                    .get("Retry-After")
+                    .and_then(|h| h.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .map(Duration::from_secs)
+                    .unwrap_or_else(|| Duration::from_secs(1 << attempts));
+
+                attempts += 1;
+                sleep(retry_after).await;
+            }
+            Err(e) => return Err(TiffError::TransportError(Box::new(e))),
+            _ => {
+                // Handle other HTTP errors
+                return Err(TiffError::LimitsExceeded);
+            }
+        }
+    }
+}
+
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl CogReader for CogClient {
     const IFD_REQ_SIZE: u64 = 1024 * 64;
 
-    async fn get_ranges(&self, ranges: &[std::ops::Range<u64>]) -> TiffResult<Vec<bytes::Bytes>> {
-        let mut v = Vec::with_capacity(ranges.len());
-        for r in ranges {
-            v.push(
-                self.client
-                    .get(&self.url)
-                    .header(RANGE, format!("bytes={}-{}", r.start, r.end - 1))
-                    .send(),
-            );
-        }
-        futures::future::join_all(
-            futures::future::join_all(v)
-                .await
-                .into_iter()
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| TiffError::TransportError(Box::new(e)))?
-                .into_iter()
-                .map(|resp| resp.bytes()),
-        )
-        .await
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| TiffError::TransportError(Box::new(e))) //is there such a function?
+    async fn get_range(&self, range: std::ops::Range<u64>) -> TiffResult<bytes::Bytes> {
+        fetch_with_retry(&self.client, &self.url, &range, 15).await
     }
 }
 
@@ -65,7 +95,8 @@ async fn main() -> TiffResult<()> {
     let href = "https://zenodo.org/records/4087905/files/sol_db_od_m_30m_0..20cm_2001..2017_v0.13_wgs84.tif";
     // let href = "https://zenodo.org/records/4091154/files/sol_log.wpg2_m_30m_0..20cm_2001..2017_v0.13_wgs84.tif";
 
-    let cog_client = CogClient::new(&href);
+    // let cog_client = HttpBuilder::new().with_url(href).build().map_err(|e|TiffError::TransportError(Box::new(e)))?;
+    let cog_client = CogClient::new(href);
 
     let start = Instant::now();
     let mut decoder = Decoder::new(cog_client).await?;
@@ -80,6 +111,49 @@ async fn main() -> TiffResult<()> {
         t2 - t1,
         t3 - t2
     );
+    // let img = &decoder.images[&decoder.ifd_offsets()[]];
+    let img_buf = decoder
+        .decode_image(decoder.ifd_offsets().len() - 3)
+        .await
+        .expect("could not decode image");
+    let chopts =
+        &decoder.images[&decoder.ifd_offsets()[decoder.ifd_offsets().len() - 3]].chunk_opts;
+    let _ = match img_buf {
+        DecodingResult::F32(v) => viuer::print(
+            &DynamicImage::from(
+                ImageBuffer::<Luma<_>, _>::from_raw(chopts.image_width, chopts.image_height, v)
+                    .expect("could not create image"),
+            ),
+            &viuer::Config::default(),
+        ),
+        // DecodingResult::F64(v) => viuer::print(&DynamicImage::from(ImageBuffer::<Luma<_>,_>::from_raw(chopts.image_width, chopts.image_height, v).expect("could not create image")), &viuer::Config::default()),
+        // DecodingResult::I8 (v)  => viuer::print(&DynamicImage::from(ImageBuffer::<Luma<_>,_>::from_raw(chopts.image_width, chopts.image_height, v).expect("could not create image")), &viuer::Config::default()),
+        // DecodingResult::I16(v) => viuer::print(&DynamicImage::from(ImageBuffer::<Luma<_>,_>::from_raw(chopts.image_width, chopts.image_height, v).expect("could not create image")), &viuer::Config::default()),
+        // DecodingResult::I32(v) => viuer::print(&DynamicImage::from(ImageBuffer::<Luma<_>,_>::from_raw(chopts.image_width, chopts.image_height, v).expect("could not create image")), &viuer::Config::default()),
+        // DecodingResult::I64(v) => viuer::print(&DynamicImage::from(ImageBuffer::<Luma<_>,_>::from_raw(chopts.image_width, chopts.image_height, v).expect("could not create image")), &viuer::Config::default()),
+        DecodingResult::U8(v) => viuer::print(
+            &DynamicImage::from(
+                ImageBuffer::<Luma<_>, _>::from_raw(chopts.image_width, chopts.image_height, v)
+                    .expect("could not create image"),
+            ),
+            &viuer::Config::default(),
+        ),
+        DecodingResult::U16(v) => viuer::print(
+            &DynamicImage::from(
+                ImageBuffer::<Luma<_>, _>::from_raw(chopts.image_width, chopts.image_height, v)
+                    .expect("could not create image"),
+            ),
+            &viuer::Config::default(),
+        ),
+        // DecodingResult::U32(v) => viuer::print(&DynamicImage::from(ImageBuffer::<Luma<_>,_>::from_raw(chopts.image_width, chopts.image_height, v).expect("could not create image")), &viuer::Config::default()),
+        // DecodingResult::U64(v) => viuer::print(&DynamicImage::from(ImageBuffer::<Luma<_>,_>::from_raw(chopts.image_width, chopts.image_height, v).expect("could not create image")), &viuer::Config::default()),
+        _ => Err(ViuError::KittyNotSupported),
+    };
 
+    info!(
+        "{:?}, {:?}, {:?}",
+        chopts.photometric_interpretation, chopts.sample_format, chopts.bits_per_sample
+    );
+    // viuer::print(&DynamicImage::from(ImageBuffer::<Luma<u8>, _>::from_raw(chopts.image_width, chopts.image_height, img_buf).unwrap()), &viuer::Config::default());
     Ok(())
 }

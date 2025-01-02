@@ -1,4 +1,4 @@
-use tiff2::error::{TiffError, TiffFormatError, TiffResult};
+use tiff2::error::{TiffError, TiffResult};
 
 fn row_major_to_col_major<T>(
     data: &mut [Option<T>],
@@ -41,7 +41,7 @@ fn row_major_to_col_major<T>(
 fn main() -> TiffResult<()> {
     let height = 4;
     let width = 5;
-    let mut data: Vec<Option<usize>> = (0..width * height).map(|v| Some(v)).collect(); // Example input: [0..19]
+    let mut data: Vec<Option<usize>> = (0..width * height).map(Some).collect(); // Example input: [0..19]
 
     println!("Original:");
     for chunk in data.chunks(width) {

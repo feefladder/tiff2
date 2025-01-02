@@ -53,7 +53,7 @@ fn hdiff_copy(input: &[u8], n_samp: usize) -> Vec<u8> {
 
     res.extend(
         input
-            .into_iter()
+            .iter()
             .zip(rest)
             .map(|(prev, current)| current.wrapping_sub(*prev)),
     );

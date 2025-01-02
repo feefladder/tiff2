@@ -1,18 +1,15 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use image::{DynamicImage, ImageBuffer, Luma, Rgb, Rgba};
-use log::{debug, error, info};
-use std::{fs, ops::Range, path::Path, time::Duration};
+use log::{error, info};
+use std::{fs, ops::Range, path::Path};
 use tiff2::{
     decoder::{ChunkDecoder, CogReader, Decoder},
     error::{TiffError, TiffResult},
-    structs::Tag,
 };
 use tokio::{
     fs::File,
     io::{AsyncReadExt, AsyncSeekExt},
-    task::JoinError,
-    time::sleep,
 };
 
 struct TokioFile(std::path::PathBuf);
@@ -35,33 +32,20 @@ impl TokioFile {
 impl CogReader for TokioFile {
     const IFD_REQ_SIZE: u64 = 16 * 1024;
 
-    async fn get_ranges(&self, ranges: &[Range<u64>]) -> TiffResult<Vec<Bytes>> {
-        let mut tasks = Vec::with_capacity(ranges.len());
-        for range in ranges {
-            //create local variables so we don't use self or range in the move block
-            let p = self.0.clone();
-            let r = range.clone();
-            let task = tokio::spawn(async move {
-                let mut f = File::open(p).await?;
-                f.seek(std::io::SeekFrom::Start(r.start)).await?;
-                let len = usize::try_from(r.end - r.start)?;
-                let mut buffer = vec![0u8; len];
+    async fn get_range(&self, range: Range<u64>) -> TiffResult<Bytes> {
+        //create local variables so we don't use self or range in the move block
+        let p = self.0.clone();
+        let r = range.clone();
+        let mut f = File::open(p).await?;
+        f.seek(std::io::SeekFrom::Start(r.start)).await?;
+        let len = usize::try_from(r.end - r.start)?;
+        let mut buffer = vec![0u8; len];
 
-                // Read the data into the buffer
-                f.read_exact(&mut buffer)
-                    .await
-                    .map_err(|e| TiffError::TransportError(Box::new(e)))?;
-                Ok(Bytes::copy_from_slice(&buffer))
-            });
-            tasks.push(task);
-        }
-        futures::future::join_all(tasks)
+        // Read the data into the buffer
+        f.read_exact(&mut buffer)
             .await
-            .into_iter()
-            .collect::<Result<Vec<_>, JoinError>>()
-            .map_err(|e| TiffError::TransportError(Box::new(e)))?
-            .into_iter()
-            .collect::<TiffResult<Vec<Bytes>>>()
+            .map_err(|e| TiffError::TransportError(Box::new(e)))?;
+        Ok(Bytes::copy_from_slice(&buffer))
     }
 }
 

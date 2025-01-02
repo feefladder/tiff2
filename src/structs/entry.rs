@@ -509,7 +509,7 @@ impl<'a> TryFrom<&'a ProcessedEntry> for &'a str {
 //     }
 // }
 
-#[allow(unused_imports)]
+#[allow(unused_imports, clippy::useless_conversion)]
 mod test_entry {
     use super::*;
     use crate::ByteOrder;

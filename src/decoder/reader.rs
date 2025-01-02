@@ -7,10 +7,12 @@ use crate::{
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use futures::{stream::StreamExt, TryStreamExt};
 use log::debug;
 use std::{
     collections::BTreeMap,
     io::{self, BufRead, BufReader, Read, Take},
+    num::TryFromIntError,
     ops::Range,
 };
 
@@ -46,7 +48,15 @@ pub trait CogReader: Sync {
     //         .await
     //         .map(|v| v[0].clone())
     // }
-    async fn get_ranges(&self, ranges: &[Range<u64>]) -> TiffResult<Vec<Bytes>>;
+    async fn get_range(&self, range: Range<u64>) -> TiffResult<Bytes>;
+    async fn get_ranges(&self, ranges: &[Range<u64>]) -> TiffResult<Vec<Bytes>> {
+        coalesce_ranges(
+            ranges,
+            |range| self.get_range(range),
+            OBJECT_STORE_COALESCE_DEFAULT,
+        )
+        .await
+    }
     /// get tags _and fix endianness_
     ///
     /// TODO: should we move endianness-fixing downstream, so this is easier to implement?
@@ -79,7 +89,7 @@ pub trait CogReader: Sync {
             );
             res.insert(*tag, e);
         }
-        debug!("Received tags: {res:?}");
+        // debug!("Received tags: {res:?}");
         Ok(res)
     }
     /// get compressed chunks of data
@@ -88,6 +98,92 @@ pub trait CogReader: Sync {
     async fn get_chunks(&self, chunks: &[Range<u64>]) -> TiffResult<Vec<Bytes>> {
         self.get_ranges(chunks).await
     }
+}
+
+/// Range requests with a gap less than or equal to this,
+/// will be coalesced into a single request by [`coalesce_ranges`]
+pub const OBJECT_STORE_COALESCE_DEFAULT: u64 = 1024 * 1024;
+
+/// Up to this number of range requests will be performed in parallel by [`coalesce_ranges`]
+pub(crate) const OBJECT_STORE_COALESCE_PARALLEL: usize = 10;
+
+/// Takes a function `fetch` that can fetch a range of bytes and uses this to
+/// fetch the provided byte `ranges`
+///
+/// To improve performance it will:
+///
+/// * Combine ranges less than `coalesce` bytes apart into a single call to `fetch`
+/// * Make multiple `fetch` requests in parallel (up to maximum of 10)
+///
+pub async fn coalesce_ranges<F, E, Fut>(
+    ranges: &[Range<u64>],
+    fetch: F,
+    coalesce: u64,
+) -> Result<Vec<Bytes>, E>
+where
+    F: Send + FnMut(Range<u64>) -> Fut,
+    E: Send + From<TryFromIntError>,
+    Fut: std::future::Future<Output = Result<Bytes, E>> + Send,
+{
+    let fetch_ranges = merge_ranges(ranges, coalesce);
+
+    let fetched: Vec<_> = futures::stream::iter(fetch_ranges.iter().cloned())
+        .map(fetch)
+        .buffered(OBJECT_STORE_COALESCE_PARALLEL)
+        .try_collect()
+        .await?;
+
+    ranges
+        .iter()
+        .map(|range| {
+            let idx = fetch_ranges.partition_point(|v| v.start <= range.start) - 1;
+            let fetch_range = &fetch_ranges[idx];
+            let fetch_bytes = &fetched[idx];
+
+            let start = range.start - fetch_range.start;
+            let end = range.end - fetch_range.start;
+            Ok(fetch_bytes
+                .slice(usize::try_from(start)?..usize::try_from(end)?.min(fetch_bytes.len())))
+        })
+        .collect::<Result<_, _>>()
+}
+
+/// Returns a sorted list of ranges that cover `ranges`
+fn merge_ranges(ranges: &[Range<u64>], coalesce: u64) -> Vec<Range<u64>> {
+    if ranges.is_empty() {
+        return vec![];
+    }
+
+    let mut ranges = ranges.to_vec();
+    ranges.sort_unstable_by_key(|range| range.start);
+
+    let mut ret = Vec::with_capacity(ranges.len());
+    let mut start_idx = 0;
+    let mut end_idx = 1;
+
+    while start_idx != ranges.len() {
+        let mut range_end = ranges[start_idx].end;
+
+        while end_idx != ranges.len()
+            && ranges[end_idx]
+                .start
+                .checked_sub(range_end)
+                .map(|delta| delta <= coalesce)
+                .unwrap_or(true)
+        {
+            range_end = range_end.max(ranges[end_idx].end);
+            end_idx += 1;
+        }
+
+        let start = ranges[start_idx].start;
+        let end = range_end;
+        ret.push(start..end);
+
+        start_idx = end_idx;
+        end_idx += 1;
+    }
+
+    ret
 }
 
 // #[cfg(feature="object_store")]
@@ -158,20 +254,18 @@ impl<R: io::Read> EndianReader<R> {
     read_fn!(read_f64, f64);
 }
 
-///
-/// # READERS
-///
+// ///
+// /// # READERS
+// ///
 
 ///
 /// ## Deflate Reader
 ///
-
 pub type DeflateReader<R> = flate2::read::ZlibDecoder<R>;
 
-///
-/// ## LZW Reader
-///
-
+// ///
+// /// ## LZW Reader
+// ///
 /// Reader that decompresses LZW streams
 pub struct LZWReader<R: Read> {
     reader: BufReader<Take<R>>,
@@ -223,10 +317,9 @@ impl<R: Read> Read for LZWReader<R> {
     }
 }
 
-///
-/// ## PackBits Reader
-///
-
+// ///
+// /// ## PackBits Reader
+// ///
 enum PackBitsReaderState {
     Header,
     Literal,

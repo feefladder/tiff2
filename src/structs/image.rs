@@ -734,7 +734,7 @@ impl Image {
 
 #[cfg(test)]
 mod test {
-    use crate::structs::{entry::ProcessedEntry, ifd::Directory, tags::TagType};
+    use crate::structs::{ifd::Directory, tags::TagType};
 
     use super::*;
     fn build_dir() -> Directory {
@@ -1341,6 +1341,7 @@ mod test {
             chunk_bytes: vec![42 * 42 * 3],
         };
         assert_eq!(res_img, tg_img);
+        assert_eq!(next, 0);
     }
 
     #[test]
@@ -1376,5 +1377,6 @@ mod test {
             chunk_bytes: vec![42 * 42 * 3],
         };
         assert_eq!(res_img, tg_img);
+        assert_eq!(next, 0);
     }
 }

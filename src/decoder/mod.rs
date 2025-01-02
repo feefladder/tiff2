@@ -1,5 +1,3 @@
-use async_trait::async_trait;
-
 use crate::{
     structs::tags::{Predictor, SampleFormat},
     util::fix_endianness,
@@ -16,6 +14,8 @@ mod decoder;
 pub use decoder::Decoder;
 mod image_decoder;
 pub use image_decoder::ImageDecoder;
+mod decoding_result;
+pub use decoding_result::DecodingResult;
 
 mod cogreader_impls;
 /// reverse horizontal prediction

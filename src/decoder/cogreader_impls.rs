@@ -2,16 +2,10 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use log::error;
 use std::ops::Range;
-use std::vec::Vec;
-#[cfg(test)]
-use tokio::{
-    fs::File,
-    io::{AsyncReadExt, AsyncSeekExt},
-};
 
 use crate::{
     decoder::CogReader,
-    error::{TiffError, TiffResult},
+    error::TiffResult,
 };
 
 // #[cfg(test)]
@@ -59,22 +53,35 @@ use crate::{
 //             .into_iter().collect::<Result<Vec<Bytes>, _>>()
 //     }
 // }
+#[cfg(not(feature = "object_store"))]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl CogReader for &[u8] {
     const IFD_REQ_SIZE: u64 = 16 * 1024;
-    async fn get_ranges(&self, ranges: &[Range<u64>]) -> TiffResult<Vec<Bytes>> {
-        let mut res = Vec::with_capacity(ranges.len());
-        for range in ranges {
-            if range.end >= self.len().try_into().unwrap() {
-                error!("tried to get range {range:?} from {self:?}");
-                return Err(TiffError::LimitsExceeded);
-            }
-            let end = std::cmp::min(usize::try_from(range.end)?, self.len());
-            res.push(Bytes::copy_from_slice(
-                &self[usize::try_from(range.start)?..end],
-            ));
+    async fn get_range(&self, range: Range<u64>) -> TiffResult<Bytes> {
+        if range.end >= self.len().try_into().unwrap() {
+            error!("tried to get range {range:?} from {self:?}");
+            // return Err(TiffError::LimitsExceeded);
         }
-        Ok(res)
+        let end = std::cmp::min(usize::try_from(range.end)?, self.len());
+        Ok(Bytes::copy_from_slice(
+            &self[usize::try_from(range.start)?..end],
+        ))
+    }
+}
+
+#[cfg(feature = "object_store")]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+impl<T: object_store::ObjectStore> CogReader for T {
+    const IFD_REQ_SIZE: u64 = 16 * 1024;
+
+    async fn get_range(&self, range: Range<u64>) -> TiffResult<Bytes> {
+        self.get_range(
+            &object_store::path::Path::from(""),
+            range.start as usize..range.end as usize,
+        )
+        .await
+        .map_err(|e| TiffError::TransportError(Box::new(e)))
     }
 }

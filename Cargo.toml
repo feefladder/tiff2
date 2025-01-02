@@ -12,6 +12,7 @@ async-trait = "0.1.83"
 bytemuck = { version = "1.19" }
 bytes = "1.8"
 flate2 = "1.0"
+futures = "0.3.31"
 jpeg = { package = "jpeg-decoder", version = "0.3.0", default-features = false }
 log = "0.4.22"
 object_store = { version = "0.11.1", optional = true, features = ["http"] }
@@ -32,7 +33,7 @@ viuer = "0.9.1"
 
 
 [features]
-# default = ["object_store"]
+default = []
 object_store = ["dep:object_store"]
 
 [[bench]]

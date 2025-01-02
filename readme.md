@@ -9,7 +9,7 @@ Similar in function and planned lifespan as arrow2 crate:
 - primary decoder impl is geared towards COGs, but doesn't have the geo stuff
 - similar in structure to `image-tiff`, so code can be copied over easily
 
-Now one very big hurdle to overcome is the fact that we only want to fetch (and decode) the relevant parts of our tiff and not the irrelevant parts. That means that we will need to be able to deal with IFDs that are partially loaded. e.g:
+<!-- Now one very big hurdle to overcome is the fact that we only want to fetch (and decode) the relevant parts of our tiff and not the irrelevant parts. That means that we will need to be able to deal with IFDs that are partially loaded. e.g:
 ```rust
 pub enum IfdEntry {
     Offset(u64),
@@ -37,11 +37,11 @@ pub struct Ifd {
     pending_data: Vec<(Tag, Pin<Box<dyn Future>>)>
     data: BTreeMap<Tag, IfdEntry>
 }
-```
+``` -->
 
 ## API
 
-This crate is not meant for reading tiff files, but rather for building more specialized tiff readers on top of. However, a rudimentary tiff reader is still implemented to show how that would work.
+This crate is not meant for directly reading tiff files, but rather for building more specialized tiff readers on top of. However, a rudimentary tiff reader is still implemented to show how that would work.
 
 The following use-cases were taken as example in the design:
 1. Reading a specific set of tiles at a given overview level as quickly as possible
@@ -81,7 +81,7 @@ further hierarchial structure:
    {
      ifd: Ifd,
      opts: Arc<ChunkOpts>, // immutable since we should decide on those before starting the encoding/decoding process.
-     chunk_offsets: BufferedEntry, //mutable, since it could be partial or whatevs
+     chunk_offsets: BufferedEntry, //mutable, since it could be partial
      chunk_bytes: BufferedEntry,
    }
    ```
@@ -116,13 +116,31 @@ Adding another overview to the source makes it no longer read-only. Data require
 
 That is:
 ```rust
-struct CogDecoder {
+struct Decoder {
   /// OverviewLevel->Image map (could be a vec)
   images: HashMap<OverviewLevel, Arc<tiff2::Image>>,
   geo_data: Idk,
   reader: Arc<impl CogReader>
 }
 
+#[tokio::test]
+fn test_concurrency_recover_problem() {
+  let decoder = CogDecoder::from_url("https://enourmous-cog.com").await.expect("Decoder should build");
+  decoder.read_overviews(vec![0]).await.expect("decoder should read ifds");
+  // get a chunk from the highest resolution image
+  let chunk_1 = decoder.get_chunk(42, 0).unwrap();
+  // get a chunk from a lower resolution image
+  if let OverviewNotLoadedError(chunk_err) = decoder.get_chunk(42, 5).unwrap_err() {
+    // read_overviews changes state of the decoder to LoadingIfds
+    decoder.read_overviews(chunk_err); // no await
+  }
+  let chunk_2 = decoder.get_chunk(42,5);
+  let data = (chunk_1.await, chunk_2.await);
+}
+```
+
+
+```
 impl CogDecoder {
   /// requiring mutable access to self is suboptimal
   /// actually solved
