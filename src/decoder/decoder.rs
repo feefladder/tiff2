@@ -128,10 +128,11 @@ pub fn split_buffer<'a>(
 ) -> TiffResult<Vec<Vec<&'a mut [u8]>>> {
     let img_bytes = (u64::from(chopts.image_width)
         * u64::from(chopts.image_height)
-        * u64::from(chopts.samples)
+        * u64::try_from(chopts.samples_per_pixel())?
         * u64::from(chopts.bits_per_sample))
     .div_ceil(8);
     if buf.len() < img_bytes as usize {
+        error!("buffer {} smaller than image bytes {img_bytes}!", buf.len());
         return Err(TiffError::LimitsExceeded);
     }
     let chdims = chopts.chunk_dimensions().unwrap();
@@ -170,6 +171,7 @@ pub fn split_buffer<'a>(
     }
     Ok(chunks_v)
 }
+
 
 pub fn result_buffer(
     width: usize,

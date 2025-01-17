@@ -146,7 +146,7 @@ pub enum TiffUnsupportedError {
     HorizontalPredictor(ColorType),
     #[error("Inconsistent bits per sample: {0:?}.")]
     InconsistentBitsPerSample(Vec<u8>),
-    #[error("{0:?} with {0:?} bits per sample is unsupported")]
+    #[error("{0:?} with {1:?} bits per sample is unsupported")]
     InterpretationWithBits(PhotometricInterpretation, Vec<u8>),
     #[error("The image is using an unknown photometric interpretation.")]
     UnknownInterpretation,

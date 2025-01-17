@@ -1,54 +1,16 @@
-use async_trait::async_trait;
-use bytes::Bytes;
 use log::{error, info};
 use std::{
     collections::BTreeMap,
     fs,
-    ops::Range,
-    path::{Path, PathBuf},
     time::Instant,
 };
 use tiff2::{
-    decoder::{CogReader, Decoder},
-    error::{TiffError, TiffResult},
+    decoder::Decoder,
+    error::TiffResult,
 };
-use tokio::{
-    fs::File,
-    io::{AsyncReadExt, AsyncSeekExt},
-};
-struct TokioFile(PathBuf);
 
-impl TokioFile {
-    fn new(p: impl AsRef<Path>) -> TiffResult<Self> {
-        if p.as_ref().is_file() {
-            Ok(Self(p.as_ref().to_owned()))
-        } else {
-            Err(TiffError::IoError(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("File not found at path {:?}", p.as_ref()),
-            )))
-        }
-    }
-}
-
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-impl CogReader for TokioFile {
-    const IFD_REQ_SIZE: u64 = 16 * 1024;
-
-    async fn get_range(&self, range: Range<u64>) -> TiffResult<Bytes> {
-        let mut f = File::open(self.0.clone()).await?;
-        f.seek(std::io::SeekFrom::Start(range.start)).await?;
-        let len = usize::try_from(range.end - range.start)?;
-        let mut buffer = vec![0u8; len];
-
-        // Read the data into the buffer
-        f.read_exact(&mut buffer)
-            .await
-            .map_err(|e| TiffError::TransportError(Box::new(e)))?;
-        Ok(Bytes::copy_from_slice(&buffer))
-    }
-}
+mod common;
+use common::{img_print, TokioFile};
 
 #[tokio::main]
 async fn main() -> TiffResult<()> {
@@ -71,7 +33,7 @@ async fn main() -> TiffResult<()> {
 
         let fname = path.file_name().unwrap().to_str().unwrap().to_owned();
         //
-        // if !fname.contains("RGBA") {continue;}
+        if !fname.contains("RGBA") {continue;}
         if !fname.contains("PIXEL") {
             continue;
         }
@@ -106,11 +68,9 @@ async fn main() -> TiffResult<()> {
         d.scan_ifds().await.expect("can scan ifds");
         d.read_image_ifds().await.expect("can read images");
 
-        #[allow(unused)]
-        let img_res;
         match d.decode_image(0).await {
             #[allow(unused)]
-            Ok(res) => img_res = res,
+            Ok(res) => img_print(res, &d.get_overview(0)?.chunk_opts),
             Err(e) => error!("help! {e}"),
         }
         // image ordering in case of planar configuration:
