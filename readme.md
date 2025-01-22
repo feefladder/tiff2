@@ -39,6 +39,10 @@ pub struct Ifd {
 }
 ``` -->
 
+## License
+
+This project is largely derived from image-tiff and planned to be used in the georust ecosystem. Therefore, it is dual-licensed under Apache 2.0 and MIT. I would like to stress that I do not want it to be used for military purposes and in the agronomical sector only for the promotion or support of agroecological practices. However, the license does not offer such guidance. For more info, please read [this blog post (not mine)](https://www.boringcactus.com/2020/08/13/post-open-source.html) along with [the ethical subcommons starter kit](https://writing.kemitchell.com/2019/03/15/Ethical-Subcommons.html) and CARE principles (Caroll et. al., 2023)
+
 ## API
 
 This crate is not meant for directly reading tiff files, but rather for building more specialized tiff readers on top of. However, a rudimentary tiff reader is still implemented to show how that would work.
@@ -416,3 +420,8 @@ pub struct Image {
 ## other notes
 
 - use [rangemap](https://docs.rs/rangemap/1.5.1/rangemap/map/index.html#) for keeping track of data locations for writing?
+
+## references
+
+Carroll, S. R., Garba, I., Figueroa-Rodríguez, O. L., Holbrook, J., Lovett, R., Materechera, S., Parsons, M., Raseroka, K., Rodriguez-Lonebear, D., Rowe, R., Sara, R., Walker, J. D., Anderson, J., & Hudson, M. (2020). The CARE Principles for Indigenous Data Governance. Data Science Journal, 19, 43–43. https://doi.org/10.5334/dsj-2020-043
+
