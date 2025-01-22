@@ -11,7 +11,7 @@ pub use chunk_decoder::ChunkDecoder;
 // see [clippy issue](https://github.com/rust-lang/rust-clippy/issues/13259)
 #[allow(clippy::module_inception)]
 mod decoder;
-pub use decoder::Decoder;
+pub use decoder::{Decoder, IfdCache, IfdBuffer};
 mod image_decoder;
 pub use image_decoder::ImageDecoder;
 mod decoding_result;
