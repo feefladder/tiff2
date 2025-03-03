@@ -1,13 +1,6 @@
 use log::{error, info};
-use std::{
-    collections::BTreeMap,
-    fs,
-    time::Instant,
-};
-use tiff2::{
-    decoder::Decoder,
-    error::TiffResult,
-};
+use std::{collections::BTreeMap, fs, time::Instant};
+use tiff2::{decoder::Decoder, error::TiffResult};
 
 mod common;
 use common::{img_print, TokioFile};
@@ -33,7 +26,9 @@ async fn main() -> TiffResult<()> {
 
         let fname = path.file_name().unwrap().to_str().unwrap().to_owned();
         //
-        if !fname.contains("RGBA") {continue;}
+        if !fname.contains("RGBA") {
+            continue;
+        }
         if !fname.contains("PIXEL") {
             continue;
         }

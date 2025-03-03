@@ -172,7 +172,6 @@ pub fn split_buffer<'a>(
     Ok(chunks_v)
 }
 
-
 pub fn result_buffer(
     width: usize,
     height: usize,
@@ -762,7 +761,7 @@ mod test_no_objstore {
         assert_eq!(a.contains(&b.start), a.contains(&(b.end - 1)));
     }
 
-    fn cmp_decoder<R: PartialEq + Debug,C>(a: Decoder<R,C>, b: Decoder<R,C>) {
+    fn cmp_decoder<R: PartialEq + Debug, C>(a: Decoder<R, C>, b: Decoder<R, C>) {
         assert_eq!(a.bigtiff, b.bigtiff);
         assert_eq!(a.byte_order, b.byte_order);
         assert_eq!(a.ifd_offsets, b.ifd_offsets);
@@ -802,7 +801,7 @@ mod test_no_objstore {
                 ifd_offsets: vec![8],
                 images: BTreeMap::new(),
                 meta_ifds: BTreeMap::new(),
-            }
+            },
         );
     }
 
@@ -838,7 +837,7 @@ mod test_no_objstore {
                 ifd_offsets: vec![16],
                 images: BTreeMap::new(),
                 meta_ifds: BTreeMap::new(),
-            }
+            },
         )
     }
 
@@ -872,7 +871,7 @@ mod test_no_objstore {
                 ifd_offsets: vec![8],
                 images: BTreeMap::new(),
                 meta_ifds: BTreeMap::new(),
-            }
+            },
         );
     }
 
@@ -908,7 +907,7 @@ mod test_no_objstore {
                 ifd_offsets: vec![16],
                 images: BTreeMap::new(),
                 meta_ifds: BTreeMap::new(),
-            }
+            },
         )
     }
     // use crate::{

@@ -5,52 +5,36 @@ use std::ops::Range;
 
 use crate::{
     decoder::CogReader,
-    error::TiffResult,
+    error::{TiffError, TiffResult},
 };
+
+#[cfg(test)]
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 #[cfg(test)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl CogReader for tokio::fs::File {
-    const IFD_REQ_SIZE: u64 = 16 * 1024;  // Example buffer size, can be adjusted
+    const IFD_REQ_SIZE: u64 = 16 * 1024; // Example buffer size, can be adjusted
 
-    async fn get_ranges<'a>(&'a self, ranges: &[Range<u64>]) -> TiffResult<Vec<Bytes>> {
-        let mut tasks = Vec::with_capacity(ranges.len());
+    async fn get_range<'a>(&'a self, range: Range<u64>) -> TiffResult<Bytes> {
+        // Seek to the start position of the range
+        let mut file: tokio::fs::File = (*self).try_clone().await?;
+        file.seek(tokio::io::SeekFrom::Start(range.start))
+            .await
+            .map_err(|e| TiffError::TransportError(Box::new(e)))?;
 
-        for range in ranges {
-            // Open a new file handle for each range, allowing for parallelism
-            let file_clone = self.clone(); // File handles can be cloned
+        // Calculate the range's length and allocate buffer
+        let len = (range.end - range.start) as usize;
+        let mut buffer = vec![0u8; len];
 
-            let task = tokio::spawn(async move {
-                // Seek to the start position of the range
-                let mut file = file_clone;
-                file.seek(tokio::io::SeekFrom::Start(range.start))
-                    .await
-                    .map_err(|e| TiffError::TransportError(Box::new(e)))?;
+        // Read the data into the buffer
+        file.read_exact(&mut buffer)
+            .await
+            .map_err(|e| TiffError::TransportError(Box::new(e)))?;
 
-                // Calculate the range's length and allocate buffer
-                let len = (range.end - range.start) as usize;
-                let mut buffer = vec![0u8; len];
-
-                // Read the data into the buffer
-                file.read_exact(&mut buffer)
-                    .await
-                    .map_err(|e| TiffError::TransportError(Box::new(e)))?;
-
-                // Return the data as `Bytes`
-                Ok(Bytes::copy_from_slice(&buffer))
-            });
-
-            tasks.push(task);
-        }
-
-        // Wait for all tasks to complete
-        let results = futures::future::join_all(tasks).await;
-
-        // Handle the results, map errors, and return the final vector of Bytes
-        results.into_iter().collect::<Result<Vec<_>, _>>()
-            .map_err(|e| TiffError::TransportError(Box::new(e)))?
-            .into_iter().collect::<Result<Vec<Bytes>, _>>()
+        // Return the data as `Bytes`
+        Ok(Bytes::copy_from_slice(&buffer))
     }
 }
 

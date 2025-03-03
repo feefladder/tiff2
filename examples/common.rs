@@ -1,13 +1,21 @@
-use std::{ops::Range, path::{Path, PathBuf}};
-use image::{DynamicImage, ImageBuffer, Luma, LumaA, Rgb, Rgba};
-use tiff2::{
-    decoder::{CogReader, DecodingResult, DecodingResult::*}, error::{TiffError, TiffResult}, structs::{tags::PhotometricInterpretation::*, ChunkOpts}
-};
 use async_trait::async_trait;
 use bytes::Bytes;
-use tokio::{io::{AsyncSeekExt,AsyncReadExt},fs::File};
-use viuer::{Config, print};
+use image::{DynamicImage, ImageBuffer, Luma, LumaA, Rgb, Rgba};
 use log::error;
+use std::{
+    ops::Range,
+    path::{Path, PathBuf},
+};
+use tiff2::{
+    decoder::{CogReader, DecodingResult, DecodingResult::*},
+    error::{TiffError, TiffResult},
+    structs::{tags::PhotometricInterpretation::*, ChunkOpts},
+};
+use tokio::{
+    fs::File,
+    io::{AsyncReadExt, AsyncSeekExt},
+};
+use viuer::{print, Config};
 pub struct TokioFile(pub PathBuf);
 
 impl TokioFile {
