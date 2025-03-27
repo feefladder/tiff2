@@ -2,3 +2,5 @@
 flamegraph.svg
 perf.data*
 .aux.xml
+Cargo.lock
+.vscode/

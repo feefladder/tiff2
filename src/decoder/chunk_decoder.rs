@@ -1,18 +1,14 @@
 use log::{debug, error};
 use std::io::{Cursor, Read};
 
-use crate::{
-    decoder::{
-        predict_f32, predict_f64,
-        reader::{DeflateReader, LZWReader, PackBitsReader},
-    },
-    error::{TiffError, TiffFormatError, TiffResult, TiffUnsupportedError},
-    structs::{
-        tags::{CompressionMethod, PhotometricInterpretation, Predictor, SampleFormat, Tag},
-        ChunkOpts,
-    },
-    ColorType,
+use crate::decoder::reader::{DeflateReader, LZWReader, PackBitsReader};
+use crate::decoder::{unpredict_f32, unpredict_f64};
+use crate::error::{TiffError, TiffFormatError, TiffResult, TiffUnsupportedError};
+use crate::structs::tags::{
+    CompressionMethod, PhotometricInterpretation, Predictor, SampleFormat, Tag,
 };
+use crate::structs::ChunkOpts;
+use crate::ColorType;
 
 // /// Struct that decodes a single chunk
 pub struct ChunkDecoder; //<'r> {
@@ -34,95 +30,6 @@ impl ChunkDecoder {
     //     ChunkDecoder::expand_chunk(reader, out_bufs, chunk_opts.output_row_stride(chunk_index)?,chunk_opts);
     //     Ok(())
     // }
-
-    /// create a reader for the compression type of our image
-    fn create_reader<'r, R: 'r + Read>(
-        reader: R,
-        photometric_interpretation: PhotometricInterpretation,
-        compression_method: CompressionMethod,
-        compressed_length: u64,
-        jpeg_tables: Option<&[u8]>,
-    ) -> TiffResult<Box<dyn Read + 'r>> {
-        Ok(match compression_method {
-            CompressionMethod::None => Box::new(reader),
-            CompressionMethod::LZW => {
-                Box::new(LZWReader::new(reader, usize::try_from(compressed_length)?))
-            }
-            CompressionMethod::PackBits => Box::new(PackBitsReader::new(reader, compressed_length)),
-            CompressionMethod::Deflate | CompressionMethod::OldDeflate => {
-                Box::new(DeflateReader::new(reader))
-            }
-            CompressionMethod::ModernJPEG => {
-                if jpeg_tables.is_some() && compressed_length < 2 {
-                    return Err(TiffError::FormatError(
-                        TiffFormatError::InvalidTagValueType(Tag::JPEGTables.to_u16()),
-                    ));
-                }
-
-                // Construct new jpeg_reader wrapping a SmartReader.
-                //
-                // JPEG compression in TIFF allows saving quantization and/or huffman tables in one
-                // central location. These `jpeg_tables` are simply prepended to the remaining jpeg image data.
-                // Because these `jpeg_tables` start with a `SOI` (HEX: `0xFFD8`) or __start of image__ marker
-                // which is also at the beginning of the remaining JPEG image data and would
-                // confuse the JPEG renderer, one of these has to be taken off. In this case the first two
-                // bytes of the remaining JPEG data is removed because it follows `jpeg_tables`.
-                // Similary, `jpeg_tables` ends with a `EOI` (HEX: `0xFFD9`) or __end of image__ marker,
-                // this has to be removed as well (last two bytes of `jpeg_tables`).
-                let jpeg_reader = match jpeg_tables {
-                    Some(jpeg_tables) => {
-                        let mut reader = reader.take(compressed_length);
-                        reader.read_exact(&mut [0; 2])?;
-
-                        Box::new(
-                            Cursor::new(&jpeg_tables[..jpeg_tables.len() - 2])
-                                .chain(reader.take(compressed_length)),
-                        ) as Box<dyn Read>
-                    }
-                    None => Box::new(reader.take(compressed_length)),
-                };
-
-                let mut decoder = jpeg::Decoder::new(jpeg_reader);
-
-                match photometric_interpretation {
-                    PhotometricInterpretation::RGB => {
-                        decoder.set_color_transform(jpeg::ColorTransform::RGB)
-                    }
-                    PhotometricInterpretation::WhiteIsZero => {
-                        decoder.set_color_transform(jpeg::ColorTransform::None)
-                    }
-                    PhotometricInterpretation::BlackIsZero => {
-                        decoder.set_color_transform(jpeg::ColorTransform::None)
-                    }
-                    PhotometricInterpretation::TransparencyMask => {
-                        decoder.set_color_transform(jpeg::ColorTransform::None)
-                    }
-                    PhotometricInterpretation::CMYK => {
-                        decoder.set_color_transform(jpeg::ColorTransform::CMYK)
-                    }
-                    PhotometricInterpretation::YCbCr => {
-                        decoder.set_color_transform(jpeg::ColorTransform::YCbCr)
-                    }
-                    photometric_interpretation => {
-                        return Err(TiffError::UnsupportedError(
-                            TiffUnsupportedError::UnsupportedInterpretation(
-                                photometric_interpretation,
-                            ),
-                        ));
-                    }
-                }
-
-                let data = decoder.decode()?;
-
-                Box::new(Cursor::new(data))
-            }
-            method => {
-                return Err(TiffError::UnsupportedError(
-                    TiffUnsupportedError::UnsupportedCompressionMethod(method),
-                ))
-            }
-        })
-    }
 
     /// expand a chunk of compressed image data.
     ///
@@ -158,78 +65,14 @@ impl ChunkDecoder {
             buf.len(),
             buf[0].len()
         );
-        // Validate that the color type is supported.
-        let color_type = chunk_opts.colortype()?;
-        match color_type {
-            ColorType::RGB(n)
-            | ColorType::RGBA(n)
-            | ColorType::CMYK(n)
-            | ColorType::YCbCr(n)
-            | ColorType::Gray(n)
-            | ColorType::Multiband {
-                bit_depth: n,
-                num_samples: _,
-            } if n == 8 || n == 16 || n == 32 || n == 64 => {}
-            ColorType::Gray(n)
-            | ColorType::Multiband {
-                bit_depth: n,
-                num_samples: _,
-            } if n < 8 => match chunk_opts.predictor {
-                Predictor::None => {}
-                Predictor::Horizontal => {
-                    return Err(TiffError::UnsupportedError(
-                        TiffUnsupportedError::HorizontalPredictor(color_type),
-                    ));
-                }
-                Predictor::FloatingPoint => {
-                    return Err(TiffError::UnsupportedError(
-                        TiffUnsupportedError::FloatingPointPredictor(color_type),
-                    ));
-                }
-            },
-            type_ => {
-                return Err(TiffError::UnsupportedError(
-                    TiffUnsupportedError::UnsupportedColorType(type_),
-                ));
-            }
-        }
-
-        // Validate that the predictor is supported for the sample type.
-        match (chunk_opts.predictor, chunk_opts.sample_format) {
-            (Predictor::Horizontal, SampleFormat::Int | SampleFormat::Uint) => {}
-            (Predictor::Horizontal, sample_format) => {
-                error!("Unsupported horizontal prediction for {sample_format:?}");
-                return Err(TiffError::UnsupportedError(
-                    TiffUnsupportedError::HorizontalPredictor(color_type),
-                ));
-            }
-            (Predictor::FloatingPoint, SampleFormat::IEEEFP) => {}
-            (Predictor::FloatingPoint, _) => {
-                return Err(TiffError::UnsupportedError(
-                    TiffUnsupportedError::FloatingPointPredictor(color_type),
-                ));
-            }
-            _ => {}
-        }
-
-        // TODO: move this check somewhere upstream
-        // let compressed_bytes =
-        //     chunk_opts.chunk_bytes
-        //         .get(chunk_index as usize)
-        //         .ok_or(TiffError::FormatError(
-        //             TiffFormatError::InconsistentSizesEncountered(chunk_opts.chu),
-        //         ))?;
-        // if *compressed_bytes > limits.intermediate_buffer_size as u64 {
-        //     return Err(TiffError::LimitsExceeded);
-        // }
 
         let compression_method = chunk_opts.compression_method;
         let photometric_interpretation = chunk_opts.photometric_interpretation;
         let predictor = chunk_opts.predictor;
         let samples = chunk_opts.samples_per_pixel();
         // full chunk dimenseions
-        let chunk_dims = chunk_opts.chunk_dimensions()?;
-        let data_dims = chunk_opts.chunk_data_dimensions(chunk_index)?;
+        let chunk_dims = chunk_opts.chunk_dimensions();
+        let data_dims = chunk_opts.chunk_data_dimensions(chunk_index);
         let output_row_stride = chunk_opts.output_row_stride(chunk_index)?;
 
         let chunk_row_bits = (u64::from(chunk_dims.0) * u64::from(chunk_opts.bits_per_sample))
@@ -287,8 +130,8 @@ impl ChunkDecoder {
 
                 let row = &mut row[..data_row_bytes];
                 match color_type.bit_depth() {
-                    32 => predict_f32(&mut encoded, row, samples),
-                    64 => predict_f64(&mut encoded, row, samples),
+                    32 => unpredict_f32(&mut encoded, row, samples),
+                    64 => unpredict_f64(&mut encoded, row, samples),
                     _ => unreachable!(),
                 }
                 if photometric_interpretation == PhotometricInterpretation::WhiteIsZero {

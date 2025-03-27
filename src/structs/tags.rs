@@ -71,14 +71,18 @@ tags! {
 /// TIFF tags
 pub enum Tag(u16) unknown("A private or extension tag") {
     // Baseline tags:
+    /// The original creator of this file
     Artist = 315,
     // grayscale images PhotometricInterpretation 1 or 3
     /// SamplesPerPixel SHORT
     BitsPerSample = 258,
     CellLength = 265, // TODO add support
     CellWidth = 264, // TODO add support
-    // palette-color images (PhotometricInterpretation 3)
-    ColorMap = 320, // TODO add support
+    /// palette-color images (PhotometricInterpretation 3)
+    ///
+    /// SHORT SamplesPerPixel*2.pow(BitsPerSample)
+    /// I think only supported for RGB, but RGBA should also be possible?
+    ColorMap = 320,
     /// 1 SHORT
     Compression = 259, // TODO add support for 2 and 32773
     Copyright = 33_432,
@@ -91,8 +95,12 @@ pub enum Tag(u16) unknown("A private or extension tag") {
     GrayResponseUnit = 290, // TODO add support
     HostComputer = 316,
     ImageDescription = 270,
+    /// height of the image in pixels
+    ///
     /// 1 SHORT or LONG
     ImageLength = 257,
+    /// width of the image in pixels
+    ///
     /// 1 SHORT or LONG
     ImageWidth = 256,
     Make = 271,
@@ -114,27 +122,55 @@ pub enum Tag(u16) unknown("A private or extension tag") {
     /// 1 LONG
     NewSubfileType = 254, // TODO add support
     Orientation = 274, // TODO add support
-    /// 1 SHORT
+    // 1 SHORT
     PhotometricInterpretation = 262,
-    /// 1 SHORT
+    // 1 SHORT
     PlanarConfiguration = 284,
     ResolutionUnit = 296, // TODO add support
     RowsPerStrip = 278,
+    /// The number of samples in each pixel.
+    ///
+    /// For example, an RGB image has SamplesPerPixel = 3
+    /// and a 12-band satellite image has SamplesPerPixel = 12
+    ///
     /// 1 SHORT
     SamplesPerPixel = 277,
+    /// The software used to create this image
     Software = 305,
+    /// Byte counts of strips
+    ///
+    /// SHORT or LONG or (bigtiff) LONG8
     StripByteCounts = 279,
+    /// in-file offsets of strips
+    ///
+    /// SHORT or LONG or (bigtiff) LONG8
     StripOffsets = 273,
     SubfileType = 255, // TODO add support
     Threshholding = 263, // TODO add support
     XResolution = 282,
     YResolution = 283,
     // Advanced tags
-    /// 1 SHORT
+    // 1 SHORT
     Predictor = 317,
+    /// width of a tile,
+    ///
+    /// SHORT or LONG
     TileWidth = 322,
+    /// height of a tile
+    ///
+    /// SHORT or LONG
     TileLength = 323,
+    /// in-file offsets to tiles
+    ///
+    /// LONG for small and (additional) LONG8 for bigtiff
+    ///
+    ///
     TileOffsets = 324,
+    /// byte counts of each tile
+    ///
+    /// SHORT or LONG for small and (additional) LONG8 for bigtiff
+    ///
+    /// in practice, however, TileByteCounts for bigtiff is often LONG
     TileByteCounts = 325,
     // Data Sample Format
     /// SamplesPerPixel SHORT
@@ -241,6 +277,8 @@ pub enum CompressionMethod(u16) unknown("A custom compression method") {
     Deflate = 8,
     OldDeflate = 0x80B2,
     PackBits = 0x8005,
+    /// Self-assigned by libtiff
+    ZSTD = 0xC350,
 }
 }
 

@@ -3,10 +3,7 @@ use bytes::Bytes;
 use log::error;
 use std::ops::Range;
 
-use crate::{
-    decoder::CogReader,
-    error::{TiffError, TiffResult},
-};
+use crate::{decoder::CogReader, error::TiffResult};
 
 #[cfg(test)]
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
@@ -18,6 +15,7 @@ impl CogReader for tokio::fs::File {
     const IFD_REQ_SIZE: u64 = 16 * 1024; // Example buffer size, can be adjusted
 
     async fn get_range<'a>(&'a self, range: Range<u64>) -> TiffResult<Bytes> {
+        use crate::error::TiffError;
         // Seek to the start position of the range
         let mut file: tokio::fs::File = (*self).try_clone().await?;
         file.seek(tokio::io::SeekFrom::Start(range.start))

@@ -4,7 +4,7 @@ use log::{error, info};
 use reqwest::header::RANGE;
 use std::time::{Duration, Instant};
 use tiff2::{
-    decoder::{CogReader, Decoder, DecodingResult},
+    decoder::{CogReader, Decoder, TileData},
     error::{TiffError, TiffResult},
 };
 use tokio::time::sleep;
@@ -91,10 +91,14 @@ async fn main() -> TiffResult<()> {
     // a selection of different COGs. The ones on Zenodo don't all have their
     // IFDs tightly stacked
 
-    // let href = "https://isdasoil.s3.amazonaws.com/soil_data/bulk_density/bulk_density.tif";//covariates/dem_30m/dem_30m.tif";
-    let href = "https://zenodo.org/records/4087905/files/sol_db_od_m_30m_0..20cm_2001..2017_v0.13_wgs84.tif";
+    // let href = "https://isdasoil.s3.amazonaws.com/soil_data/bulk_density/bulk_density.tif";
+    // let href = "https://isdasoil.s3.amazonaws.com/covariates/dem_30m/dem_30m.tif";
+    // let href = "https://zenodo.org/records/4087905/files/sol_db_od_m_30m_0..20cm_2001..2017_v0.13_wgs84.tif";
     // let href = "https://zenodo.org/records/4091154/files/sol_log.wpg2_m_30m_0..20cm_2001..2017_v0.13_wgs84.tif";
-
+    // let href = "https://service.pdok.nl/rws/ahn/atom/downloads/dtm_05m/M_01GN2.tif";
+    // let href = "https://service.pdok.nl/rws/ahn/atom/downloads/dtm_05m/M_02DZ1.tif";
+    // let href = "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/16/T/CR/2025/3/S2A_16TCR_20250322_0_L2A/B02.tif";
+    let href = "https://ssh.datastations.nl/api/access/datafile/273106";
     // let cog_client = HttpBuilder::new().with_url(href).build().map_err(|e|TiffError::TransportError(Box::new(e)))?;
     let cog_client = CogClient::new(href);
 
@@ -105,48 +109,48 @@ async fn main() -> TiffResult<()> {
     let t2 = start.elapsed();
     decoder.read_image_ifds().await?;
     let t3 = start.elapsed();
-    info!("decoder: {:#?}", decoder.images);
+    // info!("decoder: {:#?}", decoder.images);
     info!(
         "initialization: {t1:?}, scan_ifds: {:?}, read_image_ifds: {:?}",
         t2 - t1,
         t3 - t2
     );
-    // let img = &decoder.images[&decoder.ifd_offsets()[]];
+    let ifd_idx = decoder.ifd_offsets().len() - 4;
+    // let img = &decoder.images[&decoder.ifd_offsets()[ifd_idx]];
     let img_buf = decoder
-        .decode_image(decoder.ifd_offsets().len() - 3)
+        .decode_image(ifd_idx)
         .await
         .expect("could not decode image");
-    let chopts =
-        &decoder.images[&decoder.ifd_offsets()[decoder.ifd_offsets().len() - 3]].chunk_opts;
+    let chopts = &decoder.images[&decoder.ifd_offsets()[ifd_idx]].chunk_opts;
     let _ = match img_buf {
-        DecodingResult::F32(v) => viuer::print(
+        TileData::F32(v) => viuer::print(
             &DynamicImage::from(
                 ImageBuffer::<Luma<_>, _>::from_raw(chopts.image_width, chopts.image_height, v)
                     .expect("could not create image"),
             ),
             &viuer::Config::default(),
         ),
-        // DecodingResult::F64(v) => viuer::print(&DynamicImage::from(ImageBuffer::<Luma<_>,_>::from_raw(chopts.image_width, chopts.image_height, v).expect("could not create image")), &viuer::Config::default()),
-        // DecodingResult::I8 (v)  => viuer::print(&DynamicImage::from(ImageBuffer::<Luma<_>,_>::from_raw(chopts.image_width, chopts.image_height, v).expect("could not create image")), &viuer::Config::default()),
-        // DecodingResult::I16(v) => viuer::print(&DynamicImage::from(ImageBuffer::<Luma<_>,_>::from_raw(chopts.image_width, chopts.image_height, v).expect("could not create image")), &viuer::Config::default()),
-        // DecodingResult::I32(v) => viuer::print(&DynamicImage::from(ImageBuffer::<Luma<_>,_>::from_raw(chopts.image_width, chopts.image_height, v).expect("could not create image")), &viuer::Config::default()),
-        // DecodingResult::I64(v) => viuer::print(&DynamicImage::from(ImageBuffer::<Luma<_>,_>::from_raw(chopts.image_width, chopts.image_height, v).expect("could not create image")), &viuer::Config::default()),
-        DecodingResult::U8(v) => viuer::print(
+        // TileData::F64(v) => viuer::print(&DynamicImage::from(ImageBuffer::<Luma<_>,_>::from_raw(chopts.image_width, chopts.image_height, v).expect("could not create image")), &viuer::Config::default()),
+        // TileData::I8 (v)  => viuer::print(&DynamicImage::from(ImageBuffer::<Luma<_>,_>::from_raw(chopts.image_width, chopts.image_height, v).expect("could not create image")), &viuer::Config::default()),
+        // TileData::I16(v) => viuer::print(&DynamicImage::from(ImageBuffer::<Luma<_>,_>::from_raw(chopts.image_width, chopts.image_height, v).expect("could not create image")), &viuer::Config::default()),
+        // TileData::I32(v) => viuer::print(&DynamicImage::from(ImageBuffer::<Luma<_>,_>::from_raw(chopts.image_width, chopts.image_height, v).expect("could not create image")), &viuer::Config::default()),
+        // TileData::I64(v) => viuer::print(&DynamicImage::from(ImageBuffer::<Luma<_>,_>::from_raw(chopts.image_width, chopts.image_height, v).expect("could not create image")), &viuer::Config::default()),
+        TileData::U8(v) => viuer::print(
             &DynamicImage::from(
                 ImageBuffer::<Luma<_>, _>::from_raw(chopts.image_width, chopts.image_height, v)
                     .expect("could not create image"),
             ),
             &viuer::Config::default(),
         ),
-        DecodingResult::U16(v) => viuer::print(
+        TileData::U16(v) => viuer::print(
             &DynamicImage::from(
                 ImageBuffer::<Luma<_>, _>::from_raw(chopts.image_width, chopts.image_height, v)
                     .expect("could not create image"),
             ),
             &viuer::Config::default(),
         ),
-        // DecodingResult::U32(v) => viuer::print(&DynamicImage::from(ImageBuffer::<Luma<_>,_>::from_raw(chopts.image_width, chopts.image_height, v).expect("could not create image")), &viuer::Config::default()),
-        // DecodingResult::U64(v) => viuer::print(&DynamicImage::from(ImageBuffer::<Luma<_>,_>::from_raw(chopts.image_width, chopts.image_height, v).expect("could not create image")), &viuer::Config::default()),
+        // TileData::U32(v) => viuer::print(&DynamicImage::from(ImageBuffer::<Luma<_>,_>::from_raw(chopts.image_width, chopts.image_height, v).expect("could not create image")), &viuer::Config::default()),
+        // TileData::U64(v) => viuer::print(&DynamicImage::from(ImageBuffer::<Luma<_>,_>::from_raw(chopts.image_width, chopts.image_height, v).expect("could not create image")), &viuer::Config::default()),
         _ => Err(ViuError::KittyNotSupported),
     };
 
@@ -154,6 +158,5 @@ async fn main() -> TiffResult<()> {
         "{:?}, {:?}, {:?}",
         chopts.photometric_interpretation, chopts.sample_format, chopts.bits_per_sample
     );
-    // viuer::print(&DynamicImage::from(ImageBuffer::<Luma<u8>, _>::from_raw(chopts.image_width, chopts.image_height, img_buf).unwrap()), &viuer::Config::default());
     Ok(())
 }

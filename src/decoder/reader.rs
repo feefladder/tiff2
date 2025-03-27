@@ -2,7 +2,7 @@ use crate::{
     error::TiffResult,
     structs::{Offset, Tag, TagData},
     util::fix_endianness,
-    ByteOrder,
+    ByteOrder, NATIVE_ENDIAN,
 };
 
 use async_trait::async_trait;
@@ -49,6 +49,11 @@ pub trait CogReader: Sync {
     //         .map(|v| v[0].clone())
     // }
     async fn get_range(&self, range: Range<u64>) -> TiffResult<Bytes>;
+}
+
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+pub trait CogReaderExt: CogReader {
     async fn get_ranges(&self, ranges: &[Range<u64>]) -> TiffResult<Vec<Bytes>> {
         coalesce_ranges(
             ranges,
@@ -85,6 +90,7 @@ pub trait CogReader: Sync {
             fix_endianness(
                 e.buf_mut(),
                 byte_order,
+                NATIVE_ENDIAN,
                 offset.tag_type.primitive_size() * 8,
             );
             res.insert(*tag, e);
@@ -99,6 +105,8 @@ pub trait CogReader: Sync {
         self.get_ranges(chunks).await
     }
 }
+
+impl<T: CogReader> CogReaderExt for T {}
 
 /// Range requests with a gap less than or equal to this,
 /// will be coalesced into a single request by [`coalesce_ranges`]
@@ -195,7 +203,7 @@ fn merge_ranges(ranges: &[Range<u64>], coalesce: u64) -> Vec<Range<u64>> {
 //     }
 // }
 
-/// Reader that is aware of the byte order  
+/// Reader that is aware of the byte order
 /// TODO: **deprecate** in favour of chunk-based approach in `Entry` and `Ifd`
 pub struct EndianReader<R> {
     pub(super) reader: R,
@@ -231,7 +239,21 @@ macro_rules! read_fn {
     };
 }
 
-impl<R: io::Read> EndianReader<R> {
+macro_rules! write_fn {
+    ($name:ident, $type:ty) => {
+        /// reads an $type, respecting byte order
+        #[inline(always)]
+        pub fn $name(&mut self, val: $type) -> Result<(), io::Error> {
+            let bytes = match self.byte_order() {
+                ByteOrder::LittleEndian => <$type>::to_le_bytes(val),
+                ByteOrder::BigEndian => <$type>::to_be_bytes(val),
+            };
+            self.reader.write_all(&bytes)
+        }
+    };
+}
+
+impl<R> EndianReader<R> {
     /// Wraps a reader
     pub fn wrap(reader: R, byte_order: ByteOrder) -> Self {
         EndianReader { reader, byte_order }
@@ -240,7 +262,8 @@ impl<R: io::Read> EndianReader<R> {
     fn byte_order(&self) -> ByteOrder {
         self.byte_order
     }
-
+}
+impl<R: std::io::Read> EndianReader<R> {
     read_fn!(read_u8, u8);
     read_fn!(read_i8, i8);
     read_fn!(read_u16, u16);
@@ -253,6 +276,29 @@ impl<R: io::Read> EndianReader<R> {
     read_fn!(read_f32, f32);
     read_fn!(read_f64, f64);
 }
+impl<R: io::Write> EndianReader<R> {
+    write_fn!(write_u8, u8);
+    write_fn!(write_i8, i8);
+    write_fn!(write_u16, u16);
+    write_fn!(write_i16, i16);
+    write_fn!(write_u32, u32);
+    write_fn!(write_i32, i32);
+    write_fn!(write_u64, u64);
+    write_fn!(write_i64, i64);
+
+    write_fn!(write_f32, f32);
+    write_fn!(write_f64, f64);
+}
+
+// impl<R: io::Write> EndianReader<R> {
+//     pub fn write_u64(&mut self, val: u64) -> io::Result<()> {
+//         let bytes = match self.byte_order {
+//             ByteOrder::LittleEndian => u64::to_le_bytes(val),
+//             ByteOrder::BigEndian => u64::to_be_bytes(val),
+//         };
+//         self.reader.write_all(&bytes)
+//     }
+// }
 
 // ///
 // /// # READERS

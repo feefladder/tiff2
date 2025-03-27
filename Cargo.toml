@@ -1,13 +1,13 @@
 [package]
 name = "tiff2"
-version = "0.0.3"
+version = "0.0.4"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "temporary async implementation of tiff - to be upstreamed into image-tiff"
 homepage = "https://github.com/feefladder/tiff2"
 repository = "https://app.radicle.xyz/nodes/ash.radicle.garden/rad:zV8XqcPhA2thndDYWeKkt3WGnqbT"
 keywords = ["tiff", "tif", "COG", "streaming"]
-category = ["wasm", "multimedia", "science", "encoding"]
+categories = ["wasm", "multimedia", "science", "encoding"]
 exclude = ["tests"]
 
 # for flamegraph
@@ -18,13 +18,17 @@ debug = true
 async-trait = "0.1.83"
 bytemuck = { version = "1.19" }
 bytes = "1.8"
+exn = "0.3.0"
 flate2 = "1.0"
 futures = "0.3.31"
-jpeg = { package = "jpeg-decoder", version = "0.3.0", default-features = false }
+jpeg = { package = "jpeg-decoder", version = "0.3.0", default-features = false, optional= true }
 log = "0.4.22"
 object_store = { version = "0.11.1", optional = true, features = ["http"] }
+rayon = "1.10.0"
+smallvec = "1.15.1"
 thiserror = "1.0"
 weezl = "0.1.8"
+zstd = { version = "0.13.3", optional = true }
 
 [dev-dependencies]
 criterion = "0.5.1"
@@ -33,16 +37,30 @@ futures = "0.3.31"
 image = { version = "0.25", default-features = false } # make this match viuer?
 rand = "0.8.5"
 rayon = "1.10.0"
-reqwest = { version = "0.12.9", default-features = false}
+reqwest = { version = "0.12.9", default-features = false, features = [
+    "rustls-tls",
+] }
 test-log = "0.2.16"
-tokio = { version = "1.41", features = ["rt", "rt-multi-thread", "fs", "macros", "io-util"] }
+tokio = { version = "1.41", features = [
+    "rt",
+    "rt-multi-thread",
+    "fs",
+    "macros",
+    "io-util",
+] }
 viuer = "0.9.1"
 
 
 [features]
-default = []
+default = ["zstd","jpeg"]
 object_store = ["dep:object_store"]
+zstd = ["dep:zstd"]
+jpeg = ["dep:jpeg"]
 
 [[bench]]
 name = "horizontal_predict"
+harness = false
+
+[[bench]]
+name = "parse_ifd"
 harness = false

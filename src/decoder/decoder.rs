@@ -4,13 +4,13 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use log::{debug, error};
 
-use crate::{
-    error::{TiffError, TiffFormatError, TiffResult, TiffUnsupportedError, UsageError},
-    structs::{tags::SampleFormat, ChunkOpts, Ifd, Image},
-    ByteOrder,
-};
+use crate::decoder::chunk::ChunkOpts;
+use crate::decoder::reader::CogReaderExt;
+use crate::error::{TiffError, TiffFormatError, TiffResult, TiffUnsupportedError, UsageError};
+use crate::structs::{tags::SampleFormat, Ifd, Image};
+use crate::ByteOrder;
 
-use super::{ChunkDecoder, CogReader, DecodingResult, EndianReader, Limits};
+use crate::decoder::{ChunkDecoder, CogReader, EndianReader, Limits, TileData};
 
 #[allow(unused)]
 const HEADER_SIZE_SMALLTIFF: usize = 6;
@@ -128,26 +128,26 @@ pub fn split_buffer<'a>(
 ) -> TiffResult<Vec<Vec<&'a mut [u8]>>> {
     let img_bytes = (u64::from(chopts.image_width)
         * u64::from(chopts.image_height)
-        * u64::try_from(chopts.samples_per_pixel())?
+        * u64::from(chopts.samples_per_pixel)
         * u64::from(chopts.bits_per_sample))
     .div_ceil(8);
     if buf.len() < img_bytes as usize {
         error!("buffer {} smaller than image bytes {img_bytes}!", buf.len());
         return Err(TiffError::LimitsExceeded);
     }
-    let chdims = chopts.chunk_dimensions().unwrap();
-    let chunks_across = chopts.image_width.div_ceil(chdims.0) as u64;
-    let chunks_down = chopts.image_height.div_ceil(chdims.1) as u64;
+    let chdims = chopts.chunk_dimensions();
+    let chunks_across = u64::from(chopts.chunks_across());
+    let chunks_down = u64::from(chopts.chunks_down());
 
     debug!("image of {img_bytes:?} bytes, with {chdims:?} chunks, {chunks_across:?} across, {chunks_down:?} down");
 
-    let img_bwidth: usize = (chopts.image_width as u64
-        * chopts.samples_per_pixel() as u64
-        * chopts.bits_per_sample as u64)
-        .div_ceil(8)
-        .try_into()?;
+    let img_bwidth: usize = (u64::from(chopts.image_width)
+        * u64::from(chopts.samples_per_pixel)
+        * u64::from(chopts.bits_per_sample))
+    .div_ceil(8)
+    .try_into()?;
     let chunk_bwidth: usize =
-        (chdims.0 as u64 * chopts.samples_per_pixel() as u64 * chopts.bits_per_sample as u64)
+        (chdims.0 as u64 * chopts.samples_per_pixel as u64 * chopts.bits_per_sample as u64)
             .div_ceil(8)
             .try_into()?;
 
@@ -177,39 +177,38 @@ pub fn result_buffer(
     height: usize,
     image: &Image,
     limits: &Limits,
-) -> TiffResult<DecodingResult> {
+) -> TiffResult<TileData> {
     let chopts = image.chunk_opts();
     let buffer_size = match width
         .checked_mul(height)
-        .and_then(|x| x.checked_mul(chopts.samples_per_pixel()))
+        .and_then(|x| x.checked_mul(chopts.samples_per_pixel.into()))
     {
         Some(s) => s,
         None => return Err(TiffError::LimitsExceeded),
     };
 
-    let max_sample_bits = chopts.bits_per_sample;
     match chopts.sample_format {
-        SampleFormat::Uint => match max_sample_bits {
-            n if n <= 8 => DecodingResult::new_u8(buffer_size, limits),
-            n if n <= 16 => DecodingResult::new_u16(buffer_size, limits),
-            n if n <= 32 => DecodingResult::new_u32(buffer_size, limits),
-            n if n <= 64 => DecodingResult::new_u64(buffer_size, limits),
+        SampleFormat::Uint => match chopts.bits_per_sample {
+            n if n <= 8 => TileData::new_u8(buffer_size, limits),
+            n if n <= 16 => TileData::new_u16(buffer_size, limits),
+            n if n <= 32 => TileData::new_u32(buffer_size, limits),
+            n if n <= 64 => TileData::new_u64(buffer_size, limits),
             n => Err(TiffError::UnsupportedError(
                 TiffUnsupportedError::UnsupportedBitsPerChannel(n),
             )),
         },
-        SampleFormat::IEEEFP => match max_sample_bits {
-            32 => DecodingResult::new_f32(buffer_size, limits),
-            64 => DecodingResult::new_f64(buffer_size, limits),
+        SampleFormat::Int => match chopts.bits_per_sample {
+            n if n <= 8 => TileData::new_i8(buffer_size, limits),
+            n if n <= 16 => TileData::new_i16(buffer_size, limits),
+            n if n <= 32 => TileData::new_i32(buffer_size, limits),
+            n if n <= 64 => TileData::new_i64(buffer_size, limits),
             n => Err(TiffError::UnsupportedError(
                 TiffUnsupportedError::UnsupportedBitsPerChannel(n),
             )),
         },
-        SampleFormat::Int => match max_sample_bits {
-            n if n <= 8 => DecodingResult::new_i8(buffer_size, limits),
-            n if n <= 16 => DecodingResult::new_i16(buffer_size, limits),
-            n if n <= 32 => DecodingResult::new_i32(buffer_size, limits),
-            n if n <= 64 => DecodingResult::new_i64(buffer_size, limits),
+        SampleFormat::IEEEFP => match chopts.bits_per_sample {
+            32 => TileData::new_f32(buffer_size, limits),
+            64 => TileData::new_f64(buffer_size, limits),
             n => Err(TiffError::UnsupportedError(
                 TiffUnsupportedError::UnsupportedBitsPerChannel(n),
             )),
@@ -246,21 +245,19 @@ pub struct Decoder<R, C> {
     pub meta_ifds: BTreeMap<u64, Ifd>,
 }
 
-impl<R: CogReader + Sync> Decoder<R, IfdBuffer> {
+impl<R: CogReaderExt + Sync> Decoder<R, IfdBuffer> {
     pub async fn new(reader: R) -> TiffResult<Decoder<R, IfdBuffer>> {
         Decoder::new_generic(reader, IfdBuffer::default()).await
     }
 }
 
-impl<R: CogReader + Sync, C: IfdCache> Decoder<R, C> {
+impl<R: CogReaderExt + Sync, C: IfdCache> Decoder<R, C> {
     pub fn ifd_offsets(&self) -> &[u64] {
         &self.ifd_offsets
     }
     /// Create a new decoder from the source
     /// Will read an initial IFD chunk at offset zero
     pub async fn new_generic(reader: R, mut ifd_cache: C) -> TiffResult<Self> {
-        // let buf = ;
-        // let buffer = ifd_cache.get_range(0..R::IFD_REQ_SIZE, &reader).await?;
         debug!(
             "reading file header: {:?}",
             &ifd_cache.get_range(0..16, &reader).await?[..]
@@ -453,7 +450,7 @@ impl<R: CogReader + Sync, C: IfdCache> Decoder<R, C> {
     }
 
     /// fetches data and decodes an entire image
-    pub async fn decode_image(&self, overview_level: usize) -> TiffResult<DecodingResult> {
+    pub async fn decode_image(&self, overview_level: usize) -> TiffResult<TileData> {
         let img_offset = self
             .ifd_offsets()
             .get(overview_level)
@@ -490,7 +487,7 @@ impl<R: CogReader + Sync, C: IfdCache> Decoder<R, C> {
         &self,
         overview_level: usize,
         chunk_index: usize,
-    ) -> TiffResult<DecodingResult> {
+    ) -> TiffResult<TileData> {
         let img_offset = self
             .ifd_offsets()
             .get(overview_level)
@@ -534,7 +531,7 @@ mod test {
     use super::*;
     use crate::structs::{
         tags::{CompressionMethod, PhotometricInterpretation, PlanarConfiguration, Predictor},
-        StripDecodeState, TileAttributes,
+        StripDecodeState,
     };
     use std::io::Read;
     use std::thread;
@@ -548,16 +545,15 @@ mod test {
             image_width: 5,
             image_height: 5,
             bits_per_sample: 64,
-            samples: 1,
+            samples_per_pixel: 1,
             sample_format: SampleFormat::Uint,
             photometric_interpretation: PhotometricInterpretation::BlackIsZero,
             compression_method: CompressionMethod::None,
             predictor: Predictor::None,
             jpeg_tables: None,
             planar_config: PlanarConfiguration::Chunky,
-            chunk_type: crate::ChunkType::Tile,
-            strip_decoder: None,
-            tile_attributes: Some(TileAttributes { image_width: 5, image_height: 5, tile_width: 2, tile_length: 2 })
+            chunk_width: 2,
+            chunk_height: 2,
         };
         let data = (0..25).collect::<Vec<u64>>();
         let mut fake_reader = std::io::Cursor::new(bytemuck::cast_slice(&data[..]));
@@ -612,7 +608,7 @@ mod test {
             ]];
         info!("{:?}", bytemuck::cast_slice_mut::<_,u8>(&mut buf[..]));
         let split = split_buffer(bytemuck::cast_slice_mut(&mut buf[..]), &chopts).expect("Could not split buffer");
-        
+
         info!("{split:?}");
         for (i,ch) in split.into_iter().enumerate()  {
             for (j,ch_row) in ch.into_iter().enumerate() {
@@ -932,7 +928,7 @@ mod test_no_objstore {
     //         &self,
     //         i_chunk: usize,
     //         zoom_level: OverviewLevel,
-    //     ) -> TiffResult<impl Future<Output = DecodingResult> /* + Send */> {
+    //     ) -> TiffResult<impl Future<Output = TileData> /* + Send */> {
     //         match self.images.get(&zoom_level) {
     //             None => panic!(), // in this piece of code, we'd have to await IFD retrieval+decoding
     //             Some(img) => {
@@ -963,7 +959,7 @@ mod test_no_objstore {
     // //         &self,
     // //         reader: R,
     // //         i_chunk: u64,
-    // //     ) -> impl Future<Output = DecodingResult> {
+    // //     ) -> impl Future<Output = TileData> {
     // //         ChunkDecoder::decode(
     // //             r,
     // //             self.chunk_offsets.get_u64(i_chunk),

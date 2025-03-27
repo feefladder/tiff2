@@ -14,14 +14,17 @@ use crate::{
         },
     },
     util::fix_endianness,
+    NATIVE_ENDIAN,
 };
 
 use std::{
-    collections::BTreeMap,
+    collections::HashMap,
     io::{Read, Seek, SeekFrom},
 };
 
-pub type Directory = BTreeMap<Tag, IfdEntry>;
+use smallvec::{smallvec, SmallVec};
+
+pub type Directory = HashMap<Tag, IfdEntry>;
 /// public type for tag data. Will probably change soon
 pub type TagData = ProcessedEntry;
 
@@ -120,6 +123,7 @@ impl IfdEntry {
             fix_endianness(
                 offset.buf_mut(),
                 r.byte_order,
+                NATIVE_ENDIAN,
                 8 * tag_type.primitive_size(),
             );
             Ok(IfdEntry::Value(offset))
@@ -139,25 +143,25 @@ impl IfdEntry {
 #[derive(Debug, PartialEq, Clone)]
 #[non_exhaustive]
 pub enum ProcessedEntry {
-    Byte(Vec<u8>),
-    SByte(Vec<i8>),
-    Undefined(Vec<u8>),
+    Byte(SmallVec<[u8; 8]>),
+    SByte(SmallVec<[i8; 8]>),
+    Undefined(SmallVec<[u8; 8]>),
     /// Ascii value, still bytes to avoid unsafe when giving it as a buffer
-    /// That means we can hold an invalid strig without UB when giving out the buffer
+    /// That means we can hold an invalid string without UB when giving out the buffer
     /// Also: we keep the `0` byte at the end of the string
-    Ascii(Vec<u8>),
-    Short(Vec<u16>),
-    SShort(Vec<i16>),
-    Long(Vec<u32>),
-    SLong(Vec<i32>),
-    Ifd(Vec<u32>),
-    Long8(Vec<u64>),
-    SLong8(Vec<i64>),
-    Ifd8(Vec<u64>),
-    Float(Vec<f32>),
-    Double(Vec<f64>),
-    Rational(Vec<u32>),
-    SRational(Vec<i32>),
+    Ascii(SmallVec<[u8; 8]>),
+    Short(SmallVec<[u16; 4]>),
+    SShort(SmallVec<[i16; 4]>),
+    Long(SmallVec<[u32; 2]>),
+    SLong(SmallVec<[i32; 2]>),
+    Ifd(SmallVec<[u32; 2]>),
+    Long8(SmallVec<[u64; 1]>),
+    SLong8(SmallVec<[i64; 1]>),
+    Ifd8(SmallVec<[u64; 1]>),
+    Float(SmallVec<[f32; 2]>),
+    Double(SmallVec<[f64; 1]>),
+    Rational(SmallVec<[[u32; 2]; 1]>),
+    SRational(SmallVec<[[i32; 2]; 1]>),
 }
 
 impl ProcessedEntry {
@@ -172,22 +176,22 @@ impl ProcessedEntry {
         // answer](https://stackoverflow.com/a/48218307/14681457), this is
         // actually efficient, since it calls `RawVec::with_capacity_zeroed()`
         match tag_type {
-            TagType::BYTE      => Self::Byte     (vec![0  ; count    ]),
-            TagType::SBYTE     => Self::SByte    (vec![0  ; count    ]),
-            TagType::UNDEFINED => Self::Undefined(vec![0  ; count    ]),
-            TagType::ASCII     => Self::Ascii    (vec![0  ; count    ]),
-            TagType::SHORT     => Self::Short    (vec![0  ; count    ]),
-            TagType::SSHORT    => Self::SShort   (vec![0  ; count    ]),
-            TagType::LONG      => Self::Long     (vec![0  ; count    ]),
-            TagType::SLONG     => Self::SLong    (vec![0  ; count    ]),
-            TagType::IFD       => Self::Ifd      (vec![0  ; count    ]),
-            TagType::LONG8     => Self::Long8    (vec![0  ; count    ]),
-            TagType::SLONG8    => Self::SLong8   (vec![0  ; count    ]),
-            TagType::IFD8      => Self::Ifd8     (vec![0  ; count    ]),
-            TagType::FLOAT     => Self::Float    (vec![0.0; count    ]),
-            TagType::DOUBLE    => Self::Double   (vec![0.0; count    ]),
-            TagType::RATIONAL  => Self::Rational (vec![0  ; count * 2]),
-            TagType::SRATIONAL => Self::SRational(vec![0  ; count * 2]),
+            TagType::BYTE      => Self::Byte     (smallvec![0  ;   count]),
+            TagType::SBYTE     => Self::SByte    (smallvec![0  ;   count]),
+            TagType::UNDEFINED => Self::Undefined(smallvec![0  ;   count]),
+            TagType::ASCII     => Self::Ascii    (smallvec![0  ;   count]),
+            TagType::SHORT     => Self::Short    (smallvec![0  ;   count]),
+            TagType::SSHORT    => Self::SShort   (smallvec![0  ;   count]),
+            TagType::LONG      => Self::Long     (smallvec![0  ;   count]),
+            TagType::SLONG     => Self::SLong    (smallvec![0  ;   count]),
+            TagType::IFD       => Self::Ifd      (smallvec![0  ;   count]),
+            TagType::LONG8     => Self::Long8    (smallvec![0  ;   count]),
+            TagType::SLONG8    => Self::SLong8   (smallvec![0  ;   count]),
+            TagType::IFD8      => Self::Ifd8     (smallvec![0  ;   count]),
+            TagType::FLOAT     => Self::Float    (smallvec![0.0;   count]),
+            TagType::DOUBLE    => Self::Double   (smallvec![0.0;   count]),
+            TagType::RATIONAL  => Self::Rational (smallvec![[0;2]; count]),
+            TagType::SRATIONAL => Self::SRational(smallvec![[0;2]; count]),
         }
     }
 
@@ -233,8 +237,8 @@ impl ProcessedEntry {
             Self::Ifd8     (v) => v.len(),
             Self::Float    (v) => v.len(),
             Self::Double   (v) => v.len(),
-            Self::Rational (v) => v.len() / 2,
-            Self::SRational(v) => v.len() / 2,
+            Self::Rational (v) => v.len(),
+            Self::SRational(v) => v.len(),
         }
     }
 }
@@ -286,7 +290,7 @@ macro_rules! impl_try_from_processed_entry {
                 match val {
                     // https://stackoverflow.com/q/48308759/14681457
                     $(ProcessedEntry::$from_small(v) => Ok(v.into_iter().map(<$target>::from).collect()),)*
-                    ProcessedEntry::$from_exact(v) => Ok(v),
+                    ProcessedEntry::$from_exact(v) => Ok(v.into_vec()),
                     $(ProcessedEntry::$from_large(v) => Ok(v.into_iter().map(<$target>::try_from).collect::<Result<Self, _>>()?),)*
                     _ => Err($error_type(val.clone()).into()),
                 }
@@ -317,22 +321,21 @@ macro_rules! impl_try_from_processed_entry {
         // Slice conversion
         impl From<&[$target]> for ProcessedEntry {
             fn from(slice: &[$target]) -> Self {
-                ProcessedEntry::$from_exact(slice.to_vec())
+                ProcessedEntry::$from_exact(SmallVec::from(slice))
             }
         }
 
         // Vector consumption
         impl From<Vec<$target>> for ProcessedEntry {
-
             fn from(vec: Vec<$target>) -> Self {
-                ProcessedEntry::$from_exact(vec)
+                ProcessedEntry::$from_exact(SmallVec::from(vec))
             }
         }
 
         // Inverse: Convert from integer to ProcessedEntry
         impl From<$target> for ProcessedEntry {
             fn from(value: $target) -> Self {
-                ProcessedEntry::$from_exact(vec![value])
+                ProcessedEntry::$from_exact(smallvec![value])
             }
         }
     };
@@ -369,7 +372,7 @@ impl TryFrom<&ProcessedEntry> for (u32, u32) {
             return Err(TiffFormatError::InconsistentSizesEncountered(val.clone()).into());
         }
         match &val {
-            ProcessedEntry::Rational(v) => Ok((v[0], v[1])),
+            ProcessedEntry::Rational(v) => Ok((v[0][0], v[0][1])),
             _ => Err(TiffFormatError::RationalExpected(val.clone()).into()),
         }
     }
@@ -383,7 +386,7 @@ impl TryFrom<&ProcessedEntry> for (i32, i32) {
             return Err(TiffFormatError::InconsistentSizesEncountered(val.clone()).into());
         }
         match &val {
-            ProcessedEntry::SRational(v) => Ok((v[0], v[1])),
+            ProcessedEntry::SRational(v) => Ok((v[0][0], v[0][1])),
             _ => Err(TiffFormatError::SignedRationalExpected(val.clone()).into()),
         }
     }
@@ -509,6 +512,7 @@ impl<'a> TryFrom<&'a ProcessedEntry> for &'a str {
 //     }
 // }
 
+#[cfg(test)]
 #[allow(unused_imports, clippy::useless_conversion)]
 mod test_entry {
     use super::*;
@@ -771,31 +775,32 @@ mod test_entry {
         let cases = [
         // type   count      offset
         // / \   /     \   /       \
-        ([ 1, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Byte      (vec![42])                ),
-        ([ 0, 1, 0,0,0,1, 42, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Byte      (vec![42])                ),
-        ([ 6, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::SByte     (vec![42])                ),
-        ([ 0, 6, 0,0,0,1, 42, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::SByte     (vec![42])                ),
-        ([ 7, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Undefined (vec![42])                ),
-        ([ 0, 7, 0,0,0,1, 42, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Undefined (vec![42])                ),
-        ([ 2, 0, 1,0,0,0,  0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Ascii     (vec![0 ])                ),
-        ([ 0, 2, 0,0,0,1,  0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Ascii     (vec![0 ])                ),
-        ([ 3, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Short     (vec![42])                ),
-        ([ 0, 3, 0,0,0,1,  0,42, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Short     (vec![42])                ),
-        ([ 8, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::SShort    (vec![42])                ),
-        ([ 0, 8, 0,0,0,1,  0,42, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::SShort    (vec![42])                ),
-        ([ 4, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Long      (vec![42])                ),
-        ([ 0, 4, 0,0,0,1,  0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Long      (vec![42])                ),
-        ([ 9, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::SLong     (vec![42])                ),
-        ([ 0, 9, 0,0,0,1,  0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::SLong     (vec![42])                ),
-        ([13, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Ifd       (vec![42])                ),
-        ([ 0,13, 0,0,0,1,  0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Ifd       (vec![42])                ),
-        ([11, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Float     (vec![f32::from_bits(42)])),
-        ([ 0,11, 0,0,0,1,  0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Float     (vec![f32::from_bits(42)])),
+        ([ 1, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Byte      (smallvec![42])                ),
+        ([ 0, 1, 0,0,0,1, 42, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Byte      (smallvec![42])                ),
+        ([ 6, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::SByte     (smallvec![42])                ),
+        ([ 0, 6, 0,0,0,1, 42, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::SByte     (smallvec![42])                ),
+        ([ 7, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Undefined (smallvec![42])                ),
+        ([ 0, 7, 0,0,0,1, 42, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Undefined (smallvec![42])                ),
+        ([ 2, 0, 1,0,0,0,  0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Ascii     (smallvec![0 ])                ),
+        ([ 0, 2, 0,0,0,1,  0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Ascii     (smallvec![0 ])                ),
+        ([ 3, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Short     (smallvec![42])                ),
+        ([ 0, 3, 0,0,0,1,  0,42, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Short     (smallvec![42])                ),
+        ([ 8, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::SShort    (smallvec![42])                ),
+        ([ 0, 8, 0,0,0,1,  0,42, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::SShort    (smallvec![42])                ),
+        ([ 4, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Long      (smallvec![42])                ),
+        ([ 0, 4, 0,0,0,1,  0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Long      (smallvec![42])                ),
+        ([ 9, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::SLong     (smallvec![42])                ),
+        ([ 0, 9, 0,0,0,1,  0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::SLong     (smallvec![42])                ),
+        ([13, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Ifd       (smallvec![42])                ),
+        ([ 0,13, 0,0,0,1,  0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Ifd       (smallvec![42])                ),
+        ([11, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Float     (smallvec![f32::from_bits(42)])),
+        ([ 0,11, 0,0,0,1,  0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Float     (smallvec![f32::from_bits(42)])),
         // Double doesn't fit, neither 8-types and we special-case IFD
         ];
         for (buf, byte_order, res) in cases {
             let mut r = EndianReader::wrap(io::Cursor::new(buf), byte_order);
             assert_eq!(IfdEntry::from_reader(&mut r, false).unwrap(), IfdEntry::Value(res.try_into().unwrap()));
+            assert_eq!(r.stream_position().unwrap(), buf.len() as u64);
         }
     }
 
@@ -811,43 +816,45 @@ mod test_entry {
         let cases = [
         //type       count            offset
         // / \  1 2 3 4 5 6 7 8   1  2  3  4  5  6  7  8
-        ([ 1, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Byte      (vec![42])                ),
-        ([ 0, 1, 0,0,0,0,0,0,0,1, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Byte      (vec![42])                ),
-        ([ 6, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::SByte     (vec![42])                ),
-        ([ 0, 6, 0,0,0,0,0,0,0,1, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::SByte     (vec![42])                ),
-        ([ 7, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Undefined (vec![42])                ),
-        ([ 0, 7, 0,0,0,0,0,0,0,1, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Undefined (vec![42])                ),
-        ([ 2, 0, 1,0,0,0,0,0,0,0,  0, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Ascii     (vec![0 ])               ),
-        ([ 0, 2, 0,0,0,0,0,0,0,1,  0, 0, 0, 0, 0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Ascii     (vec![0 ])               ),
-        ([ 3, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Short     (vec![42])                ),
-        ([ 0, 3, 0,0,0,0,0,0,0,1,  0,42, 0, 0, 0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Short     (vec![42])                ),
-        ([ 8, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::SShort    (vec![42])                ),
-        ([ 0, 8, 0,0,0,0,0,0,0,1,  0,42, 0, 0, 0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::SShort    (vec![42])                ),
-        ([ 4, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Long      (vec![42])                ),
-        ([ 0, 4, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Long      (vec![42])                ),
-        ([ 9, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::SLong     (vec![42])                ),
-        ([ 0, 9, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::SLong     (vec![42])                ),
-        ([13, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Ifd       (vec![42])                ),
-        ([ 0,13, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Ifd       (vec![42])                ),
-        ([16, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Long8     (vec![42])                ),
-        ([ 0,16, 0,0,0,0,0,0,0,1,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Long8     (vec![42])                ),
-        ([17, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::SLong8    (vec![42])                ),
-        ([ 0,17, 0,0,0,0,0,0,0,1,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::SLong8    (vec![42])                ),
-        ([18, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Ifd8      (vec![42])                ),
-        ([ 0,18, 0,0,0,0,0,0,0,1,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Ifd8      (vec![42])                ),
-        ([11, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Float     (vec![f32::from_bits(42)])),
-        ([ 0,11, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Float     (vec![f32::from_bits(42)])),
-        ([12, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Double    (vec![f64::from_bits(42)])),
-        ([ 0,12, 0,0,0,0,0,0,0,1,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Double    (vec![f64::from_bits(42)])),
-        ([ 5, 0, 1,0,0,0,0,0,0,0,  42,0, 0, 0,43, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Rational  (vec![42, 43])            ),
-        ([ 0, 5, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0,43], ByteOrder::BigEndian,    ProcessedEntry::Rational  (vec![42, 43])            ),
-        ([ 10,0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0,43, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::SRational (vec![42, 43])            ),
-        ([ 0,10, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0,43], ByteOrder::BigEndian,    ProcessedEntry::SRational (vec![42, 43])            ),
+        ([ 1, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Byte      (smallvec![42])                ),
+        ([ 0, 1, 0,0,0,0,0,0,0,1, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Byte      (smallvec![42])                ),
+        ([ 6, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::SByte     (smallvec![42])                ),
+        ([ 0, 6, 0,0,0,0,0,0,0,1, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::SByte     (smallvec![42])                ),
+        ([ 7, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Undefined (smallvec![42])                ),
+        ([ 0, 7, 0,0,0,0,0,0,0,1, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Undefined (smallvec![42])                ),
+        ([ 2, 0, 1,0,0,0,0,0,0,0,  0, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Ascii     (smallvec![0 ])                ),
+        ([ 0, 2, 0,0,0,0,0,0,0,1,  0, 0, 0, 0, 0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Ascii     (smallvec![0 ])                ),
+        ([ 3, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Short     (smallvec![42])                ),
+        ([ 0, 3, 0,0,0,0,0,0,0,1,  0,42, 0, 0, 0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Short     (smallvec![42])                ),
+        ([ 8, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::SShort    (smallvec![42])                ),
+        ([ 0, 8, 0,0,0,0,0,0,0,1,  0,42, 0, 0, 0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::SShort    (smallvec![42])                ),
+        ([ 4, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Long      (smallvec![42])                ),
+        ([ 0, 4, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Long      (smallvec![42])                ),
+        ([ 9, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::SLong     (smallvec![42])                ),
+        ([ 0, 9, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::SLong     (smallvec![42])                ),
+        ([13, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Ifd       (smallvec![42])                ),
+        ([ 0,13, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Ifd       (smallvec![42])                ),
+        ([16, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Long8     (smallvec![42])                ),
+        ([ 0,16, 0,0,0,0,0,0,0,1,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Long8     (smallvec![42])                ),
+        ([17, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::SLong8    (smallvec![42])                ),
+        ([ 0,17, 0,0,0,0,0,0,0,1,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::SLong8    (smallvec![42])                ),
+        ([18, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Ifd8      (smallvec![42])                ),
+        ([ 0,18, 0,0,0,0,0,0,0,1,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Ifd8      (smallvec![42])                ),
+        ([11, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Float     (smallvec![f32::from_bits(42)])),
+        ([ 0,11, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Float     (smallvec![f32::from_bits(42)])),
+        ([12, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Double    (smallvec![f64::from_bits(42)])),
+        ([ 0,12, 0,0,0,0,0,0,0,1,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Double    (smallvec![f64::from_bits(42)])),
+        ([ 5, 0, 1,0,0,0,0,0,0,0,  42,0, 0, 0,43, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Rational  (smallvec![[42, 43]])          ),
+        ([ 0, 5, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0,43], ByteOrder::BigEndian,    ProcessedEntry::Rational  (smallvec![[42, 43]])          ),
+        ([ 10,0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0,43, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::SRational (smallvec![[42, 43]])          ),
+        ([ 0,10, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0,43], ByteOrder::BigEndian,    ProcessedEntry::SRational (smallvec![[42, 43]])          ),
         // we special-case IFD
         ];
         for (buf, byte_order, res) in cases {
+            println!("testing {res:?}");
             let mut r = EndianReader::wrap(io::Cursor::new(buf), byte_order);
             assert_eq!(IfdEntry::from_reader(&mut r, true).unwrap(), IfdEntry::Value(res.try_into().unwrap()));
+            assert_eq!(r.stream_position().unwrap(), buf.len() as u64);
         }
     }
 
@@ -863,24 +870,25 @@ mod test_entry {
         let cases = [
         //n_tags tag type  count    offset
         // //    // /  \  /     \   /     \
-        ([1, 0, 4,0,0,0, 42,42,42,42], ByteOrder::LittleEndian, ProcessedEntry::Byte      (vec![42; 4]) ),
-        ([0, 1, 0,0,0,4, 42,42,42,42], ByteOrder::BigEndian,    ProcessedEntry::Byte      (vec![42; 4]) ),
-        ([6, 0, 4,0,0,0, 42,42,42,42], ByteOrder::LittleEndian, ProcessedEntry::SByte     (vec![42; 4]) ),
-        ([0, 6, 0,0,0,4, 42,42,42,42], ByteOrder::BigEndian,    ProcessedEntry::SByte     (vec![42; 4]) ),
-        ([7, 0, 4,0,0,0, 42,42,42,42], ByteOrder::LittleEndian, ProcessedEntry::Undefined (vec![42; 4]) ),
-        ([0, 7, 0,0,0,4, 42,42,42,42], ByteOrder::BigEndian,    ProcessedEntry::Undefined (vec![42; 4]) ),
-        ([2, 0, 4,0,0,0, 42,42,42, 0], ByteOrder::LittleEndian, ProcessedEntry::Ascii     ("***\0".into())),
-        ([0, 2, 0,0,0,4, 42,42,42, 0], ByteOrder::BigEndian,    ProcessedEntry::Ascii     ("***\0".into())),
-        ([3, 0, 2,0,0,0, 42, 0,42, 0], ByteOrder::LittleEndian, ProcessedEntry::Short     (vec![42; 2]) ),
-        ([0, 3, 0,0,0,2,  0,42, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Short     (vec![42; 2]) ),
-        ([8, 0, 2,0,0,0, 42, 0,42, 0], ByteOrder::LittleEndian, ProcessedEntry::SShort    (vec![42; 2]) ),
-        ([0, 8, 0,0,0,2,  0,42, 0,42], ByteOrder::BigEndian,    ProcessedEntry::SShort    (vec![42; 2]) ),
-        ([0, 2, 0,0,0,4, b'A',b'B',b'C',0], ByteOrder::BigEndian, ProcessedEntry::Ascii("ABC\0".into())),
+        ([1, 0, 4,0,0,0, 42,42,42,42], ByteOrder::LittleEndian, ProcessedEntry::Byte      (smallvec![42; 4]) ),
+        ([0, 1, 0,0,0,4, 42,42,42,42], ByteOrder::BigEndian,    ProcessedEntry::Byte      (smallvec![42; 4]) ),
+        ([6, 0, 4,0,0,0, 42,42,42,42], ByteOrder::LittleEndian, ProcessedEntry::SByte     (smallvec![42; 4]) ),
+        ([0, 6, 0,0,0,4, 42,42,42,42], ByteOrder::BigEndian,    ProcessedEntry::SByte     (smallvec![42; 4]) ),
+        ([7, 0, 4,0,0,0, 42,42,42,42], ByteOrder::LittleEndian, ProcessedEntry::Undefined (smallvec![42; 4]) ),
+        ([0, 7, 0,0,0,4, 42,42,42,42], ByteOrder::BigEndian,    ProcessedEntry::Undefined (smallvec![42; 4]) ),
+        ([2, 0, 4,0,0,0, 42,42,42, 0], ByteOrder::LittleEndian, ProcessedEntry::Ascii     ("***\0".as_bytes().into())),
+        ([0, 2, 0,0,0,4, 42,42,42, 0], ByteOrder::BigEndian,    ProcessedEntry::Ascii     ("***\0".as_bytes().into())),
+        ([3, 0, 2,0,0,0, 42, 0,42, 0], ByteOrder::LittleEndian, ProcessedEntry::Short     (smallvec![42; 2]) ),
+        ([0, 3, 0,0,0,2,  0,42, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Short     (smallvec![42; 2]) ),
+        ([8, 0, 2,0,0,0, 42, 0,42, 0], ByteOrder::LittleEndian, ProcessedEntry::SShort    (smallvec![42; 2]) ),
+        ([0, 8, 0,0,0,2,  0,42, 0,42], ByteOrder::BigEndian,    ProcessedEntry::SShort    (smallvec![42; 2]) ),
+        ([0, 2, 0,0,0,4, b'A',b'B',b'C',0], ByteOrder::BigEndian, ProcessedEntry::Ascii("ABC\0".as_bytes().into())),
         // others don't fit, neither 8-types and we special-case IFD
         ];
         for (buf, byte_order, res) in cases {
             let mut r = EndianReader::wrap(io::Cursor::new(buf), byte_order);
             assert_eq!(IfdEntry::from_reader(&mut r, false).unwrap(), IfdEntry::Value(res.try_into().unwrap()));
+            assert_eq!(r.stream_position().unwrap(), buf.len() as u64);
         }
     }
 
@@ -896,31 +904,32 @@ mod test_entry {
         let cases = [
         // type       count            offset
         // / \  1 2 3 4 5 6 7 8   1  2  3  4  5  6  7  8
-        ([ 1, 0, 8,0,0,0,0,0,0,0, 42,42,42,42,42,42,42,42], ByteOrder::LittleEndian, ProcessedEntry::Byte      (vec![42                ; 8])),
-        ([ 0, 1, 0,0,0,0,0,0,0,8, 42,42,42,42,42,42,42,42], ByteOrder::BigEndian,    ProcessedEntry::Byte      (vec![42                ; 8])),
-        ([ 6, 0, 8,0,0,0,0,0,0,0, 42,42,42,42,42,42,42,42], ByteOrder::LittleEndian, ProcessedEntry::SByte     (vec![42                ; 8])),
-        ([ 0, 6, 0,0,0,0,0,0,0,8, 42,42,42,42,42,42,42,42], ByteOrder::BigEndian,    ProcessedEntry::SByte     (vec![42                ; 8])),
-        ([ 7, 0, 8,0,0,0,0,0,0,0, 42,42,42,42,42,42,42,42], ByteOrder::LittleEndian, ProcessedEntry::Undefined (vec![42                ; 8])),
-        ([ 0, 7, 0,0,0,0,0,0,0,8, 42,42,42,42,42,42,42,42], ByteOrder::BigEndian,    ProcessedEntry::Undefined (vec![42                ; 8])),
-        ([ 2, 0, 8,0,0,0,0,0,0,0, 42,42,42,42,42,42,42, 0], ByteOrder::LittleEndian, ProcessedEntry::Ascii     ("*******\0".into()           )),
-        ([ 0, 2, 0,0,0,0,0,0,0,8, 42,42,42,42,42,42,42, 0], ByteOrder::BigEndian,    ProcessedEntry::Ascii     ("*******\0".into()           )),
-        ([ 3, 0, 4,0,0,0,0,0,0,0, 42, 0,42, 0,42, 0,42, 0], ByteOrder::LittleEndian, ProcessedEntry::Short     (vec![42                ; 4])),
-        ([ 0, 3, 0,0,0,0,0,0,0,4,  0,42, 0,42, 0,42, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Short     (vec![42                ; 4])),
-        ([ 8, 0, 4,0,0,0,0,0,0,0, 42, 0,42, 0,42, 0,42, 0], ByteOrder::LittleEndian, ProcessedEntry::SShort    (vec![42                ; 4])),
-        ([ 0, 8, 0,0,0,0,0,0,0,4,  0,42, 0,42, 0,42, 0,42], ByteOrder::BigEndian,    ProcessedEntry::SShort    (vec![42                ; 4])),
-        ([ 4, 0, 2,0,0,0,0,0,0,0, 42, 0, 0, 0,42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Long      (vec![42                ; 2])),
-        ([ 0, 4, 0,0,0,0,0,0,0,2,  0, 0, 0,42, 0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Long      (vec![42                ; 2])),
-        ([ 9, 0, 2,0,0,0,0,0,0,0, 42, 0, 0, 0,42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::SLong     (vec![42                ; 2])),
-        ([ 0, 9, 0,0,0,0,0,0,0,2,  0, 0, 0,42, 0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::SLong     (vec![42                ; 2])),
-        ([13, 0, 2,0,0,0,0,0,0,0, 42, 0, 0, 0,42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Ifd       (vec![42                ; 2])),
-        ([ 0,13, 0,0,0,0,0,0,0,2,  0, 0, 0,42, 0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Ifd       (vec![42                ; 2])),
-        ([11, 0, 2,0,0,0,0,0,0,0, 42, 0, 0, 0,42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Float     (vec![f32::from_bits(42); 2])),
-        ([ 0,11, 0,0,0,0,0,0,0,2,  0, 0, 0,42, 0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Float     (vec![f32::from_bits(42); 2])),
+        ([ 1, 0, 8,0,0,0,0,0,0,0, 42,42,42,42,42,42,42,42], ByteOrder::LittleEndian, ProcessedEntry::Byte      (smallvec![42                ; 8])),
+        ([ 0, 1, 0,0,0,0,0,0,0,8, 42,42,42,42,42,42,42,42], ByteOrder::BigEndian,    ProcessedEntry::Byte      (smallvec![42                ; 8])),
+        ([ 6, 0, 8,0,0,0,0,0,0,0, 42,42,42,42,42,42,42,42], ByteOrder::LittleEndian, ProcessedEntry::SByte     (smallvec![42                ; 8])),
+        ([ 0, 6, 0,0,0,0,0,0,0,8, 42,42,42,42,42,42,42,42], ByteOrder::BigEndian,    ProcessedEntry::SByte     (smallvec![42                ; 8])),
+        ([ 7, 0, 8,0,0,0,0,0,0,0, 42,42,42,42,42,42,42,42], ByteOrder::LittleEndian, ProcessedEntry::Undefined (smallvec![42                ; 8])),
+        ([ 0, 7, 0,0,0,0,0,0,0,8, 42,42,42,42,42,42,42,42], ByteOrder::BigEndian,    ProcessedEntry::Undefined (smallvec![42                ; 8])),
+        ([ 2, 0, 8,0,0,0,0,0,0,0, 42,42,42,42,42,42,42, 0], ByteOrder::LittleEndian, ProcessedEntry::Ascii     ("*******\0".as_bytes().into()   )),
+        ([ 0, 2, 0,0,0,0,0,0,0,8, 42,42,42,42,42,42,42, 0], ByteOrder::BigEndian,    ProcessedEntry::Ascii     ("*******\0".as_bytes().into()   )),
+        ([ 3, 0, 4,0,0,0,0,0,0,0, 42, 0,42, 0,42, 0,42, 0], ByteOrder::LittleEndian, ProcessedEntry::Short     (smallvec![42                ; 4])),
+        ([ 0, 3, 0,0,0,0,0,0,0,4,  0,42, 0,42, 0,42, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Short     (smallvec![42                ; 4])),
+        ([ 8, 0, 4,0,0,0,0,0,0,0, 42, 0,42, 0,42, 0,42, 0], ByteOrder::LittleEndian, ProcessedEntry::SShort    (smallvec![42                ; 4])),
+        ([ 0, 8, 0,0,0,0,0,0,0,4,  0,42, 0,42, 0,42, 0,42], ByteOrder::BigEndian,    ProcessedEntry::SShort    (smallvec![42                ; 4])),
+        ([ 4, 0, 2,0,0,0,0,0,0,0, 42, 0, 0, 0,42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Long      (smallvec![42                ; 2])),
+        ([ 0, 4, 0,0,0,0,0,0,0,2,  0, 0, 0,42, 0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Long      (smallvec![42                ; 2])),
+        ([ 9, 0, 2,0,0,0,0,0,0,0, 42, 0, 0, 0,42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::SLong     (smallvec![42                ; 2])),
+        ([ 0, 9, 0,0,0,0,0,0,0,2,  0, 0, 0,42, 0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::SLong     (smallvec![42                ; 2])),
+        ([13, 0, 2,0,0,0,0,0,0,0, 42, 0, 0, 0,42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Ifd       (smallvec![42                ; 2])),
+        ([ 0,13, 0,0,0,0,0,0,0,2,  0, 0, 0,42, 0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Ifd       (smallvec![42                ; 2])),
+        ([11, 0, 2,0,0,0,0,0,0,0, 42, 0, 0, 0,42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Float     (smallvec![f32::from_bits(42); 2])),
+        ([ 0,11, 0,0,0,0,0,0,0,2,  0, 0, 0,42, 0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Float     (smallvec![f32::from_bits(42); 2])),
         // we special-case IFD
         ];
         for (buf, byte_order, res) in cases {
             let mut r = EndianReader::wrap(io::Cursor::new(buf), byte_order);
             assert_eq!(IfdEntry::from_reader(&mut r, true).unwrap(), IfdEntry::Value(res.try_into().unwrap()));
+            assert_eq!(r.stream_position().unwrap(), buf.len() as u64);
         }
     }
 
@@ -967,6 +976,7 @@ mod test_entry {
         for (buf, byte_order, count, tag_type) in cases {
             let mut r = EndianReader::wrap(io::Cursor::new(buf), byte_order);
             assert_eq!(IfdEntry::from_reader(&mut r, false).unwrap(), IfdEntry::Offset(Offset { tag_type, count, offset: 42 }));
+            assert_eq!(r.stream_position().unwrap(), buf.len() as u64);
         }
     }
 
@@ -1019,6 +1029,7 @@ mod test_entry {
         for (buf, byte_order, count, tag_type) in cases {
             let mut r = EndianReader::wrap(io::Cursor::new(buf), byte_order);
             assert_eq!(IfdEntry::from_reader(&mut r, true).unwrap(), IfdEntry::Offset(Offset { tag_type, count, offset: 42 }));
+            assert_eq!(r.stream_position().unwrap(), buf.len() as u64);
         }
     }
 }

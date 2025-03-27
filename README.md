@@ -102,7 +102,7 @@ Decoder:
 Decoding a tiff has multiple steps:
 1. Reading+decoding Image ifd(s) (&mut self)
 2. Reading+decoding relevant tag data (&mut self)
-3. reading+decoding chunks (&self -> Future<Output=DecodingResult>)
+  3. reading+decoding chunks (&self -> Future<Output=TileData>)
 
 There are some crates that implement similar mechanics:
 1. [image-png]() uses a global (per-file) state
@@ -148,7 +148,7 @@ fn test_concurrency_recover_problem() {
 impl CogDecoder {
   /// requiring mutable access to self is suboptimal
   /// actually solved
-  fn get_chunk(&mut self, i_chunk: u64, zoom_level: OverviewLevel) -> TiffResult<impl Future<Output = DecodingResult>/* + Send */> {
+  fn get_chunk(&mut self, i_chunk: u64, zoom_level: OverviewLevel) -> TiffResult<impl Future<Output = TileData>/* + Send */> {
     match self.images.get(zoom_level) {
       // this will make the caller 
       None => Err(TiffError::ImageNotLoaded(zoom_level)), // in this piece of code, we'd have to await IFD retrieval+decoding
@@ -159,7 +159,7 @@ impl CogDecoder {
 
 impl Image {
   // better move this to decoder, only make image return the offset and length
-  fn decode_chunk<R>(&self, reader: R, i_chunk: u64) -> impl Future<Output = DecodingResult>{
+  fn decode_chunk<R>(&self, reader: R, i_chunk: u64) -> impl Future<Output = TileData>{
     let chunk_offset = self.chunk_offsets[i_chunk];
     let chunk_bytes = self.chunk_bytes[i_chunk];
     let chunk_opts = self.chunk_opts.clone();
@@ -249,7 +249,7 @@ impl CogDecoder {
     }
     self
   }
-  async fn get_chunk(&self, i_chunk: u64, zoom_level: OverviewLevel) -> TiffResult<DecodingResult> {
+  async fn get_chunk(&self, i_chunk: u64, zoom_level: OverviewLevel) -> TiffResult<TileData> {
     match self.state {
       // is there some magic that we can await state changes in ourselves?
       DecoderState::Ready => {},
@@ -424,4 +424,3 @@ pub struct Image {
 ## references
 
 Carroll, S. R., Garba, I., Figueroa-Rodríguez, O. L., Holbrook, J., Lovett, R., Materechera, S., Parsons, M., Raseroka, K., Rodriguez-Lonebear, D., Rowe, R., Sara, R., Walker, J. D., Anderson, J., & Hudson, M. (2020). The CARE Principles for Indigenous Data Governance. Data Science Journal, 19, 43–43. https://doi.org/10.5334/dsj-2020-043
-

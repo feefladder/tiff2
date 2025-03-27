@@ -62,7 +62,6 @@ const RGBTIFFS: &[&str] = &[
 /// dir pointing to geotiff repo
 const GEOTIFF_DIR: &str = "/home/user/git/geotiff/";
 
-
 #[tokio::main]
 async fn main() -> TiffResult<()> {
     env_logger::init();

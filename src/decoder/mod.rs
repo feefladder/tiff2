@@ -1,11 +1,13 @@
 use crate::{
     structs::tags::{Predictor, SampleFormat},
     util::fix_endianness,
-    ByteOrder, ColorType,
+    ByteOrder, ColorType, NATIVE_ENDIAN,
 };
 
+mod chunk;
+mod metadata;
 mod reader;
-pub use reader::{CogReader, EndianReader};
+pub use reader::{CogReader, CogReaderExt, EndianReader};
 mod chunk_decoder;
 pub use chunk_decoder::ChunkDecoder;
 // see [clippy issue](https://github.com/rust-lang/rust-clippy/issues/13259)
@@ -15,51 +17,14 @@ pub use decoder::{Decoder, IfdBuffer, IfdCache};
 mod image_decoder;
 pub use image_decoder::ImageDecoder;
 mod decoding_result;
-pub use decoding_result::DecodingResult;
+pub use decoding_result::TileData;
 
 mod cogreader_impls;
-/// reverse horizontal prediction
-///
-/// Horizontal prediction uses a horizontal differencing scheme (on full values)
-/// That
-fn rev_hpredict_nsamp(buf: &mut [u8], bit_depth: u8, samples: usize) {
-    match bit_depth {
-        0..=8 => {
-            for i in samples..buf.len() {
-                buf[i] = buf[i].wrapping_add(buf[i - samples]);
-            }
-        }
-        9..=16 => {
-            for i in (samples * 2..buf.len()).step_by(2) {
-                let v = u16::from_ne_bytes(buf[i..][..2].try_into().unwrap());
-                let p = u16::from_ne_bytes(buf[i - 2 * samples..][..2].try_into().unwrap());
-                buf[i..][..2].copy_from_slice(&(v.wrapping_add(p)).to_ne_bytes());
-            }
-        }
-        17..=32 => {
-            for i in (samples * 4..buf.len()).step_by(4) {
-                let v = u32::from_ne_bytes(buf[i..][..4].try_into().unwrap());
-                let p = u32::from_ne_bytes(buf[i - 4 * samples..][..4].try_into().unwrap());
-                buf[i..][..4].copy_from_slice(&(v.wrapping_add(p)).to_ne_bytes());
-            }
-        }
-        33..=64 => {
-            for i in (samples * 8..buf.len()).step_by(8) {
-                let v = u64::from_ne_bytes(buf[i..][..8].try_into().unwrap());
-                let p = u64::from_ne_bytes(buf[i - 8 * samples..][..8].try_into().unwrap());
-                buf[i..][..8].copy_from_slice(&(v.wrapping_add(p)).to_ne_bytes());
-            }
-        }
-        _ => {
-            unreachable!("Caller should have validated arguments. Please file a bug.")
-        }
-    }
-}
 
 /// Reverse floating point prediction
 ///
 /// floating point prediction first shuffles the bytes and then uses horizontal
-/// differencing  
+/// differencing
 /// also performs byte-order conversion if needed.
 ///
 /// ```
@@ -135,7 +100,7 @@ fn rev_hpredict_nsamp(buf: &mut [u8], bit_depth: u8, samples: usize) {
 /// }
 /// assert_eq!(in_diffed, in_shuffled);
 /// ```
-pub fn predict_f32(input: &mut [u8], output: &mut [u8], samples: usize) {
+pub fn unpredict_f32(input: &mut [u8], output: &mut [u8], samples: usize) {
     // reverse horizontal differencing
     for i in samples..input.len() {
         input[i] = input[i].wrapping_add(input[i - samples]);
@@ -158,9 +123,9 @@ pub fn predict_f32(input: &mut [u8], output: &mut [u8], samples: usize) {
 /// Reverse floating point prediction
 ///
 /// floating point prediction first shuffles the bytes and then uses horizontal
-/// differencing  
+/// differencing
 /// Also fixes byte order if needed (tiff's->native)
-fn predict_f64(input: &mut [u8], output: &mut [u8], samples: usize) {
+fn unpredict_f64(input: &mut [u8], output: &mut [u8], samples: usize) {
     for i in samples..input.len() {
         input[i] = input[i].wrapping_add(input[i - samples]);
     }
@@ -176,32 +141,6 @@ fn predict_f64(input: &mut [u8], output: &mut [u8], samples: usize) {
             input[input.len() / 8 * 6 + i],
             input[input.len() / 8 * 7 + i],
         ])));
-    }
-}
-
-fn fix_endianness_and_predict(
-    buf: &mut [u8],
-    bit_depth: u8,
-    samples: usize,
-    byte_order: ByteOrder,
-    predictor: Predictor,
-) {
-    match predictor {
-        Predictor::None => {
-            fix_endianness(buf, byte_order, bit_depth);
-        }
-        Predictor::Horizontal => {
-            fix_endianness(buf, byte_order, bit_depth);
-            rev_hpredict_nsamp(buf, bit_depth, samples);
-        }
-        Predictor::FloatingPoint => {
-            let mut buffer_copy = buf.to_vec();
-            match bit_depth {
-                32 => predict_f32(&mut buffer_copy, buf, samples),
-                64 => predict_f64(&mut buffer_copy, buf, samples),
-                _ => unreachable!("Caller should have validated arguments. Please file a bug."),
-            }
-        }
     }
 }
 
@@ -250,7 +189,7 @@ fn invert_colors(buf: &mut [u8], color_type: ColorType, sample_format: SampleFor
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct Limits {
-    /// The maximum size of any `DecodingResult` in bytes, the default is
+    /// The maximum size of any `TileData` in bytes, the default is
     /// 256MiB. If the entire image is decoded at once, then this will
     /// be the maximum size of the image. If it is decoded one strip at a
     /// time, this will be the maximum size of a strip.

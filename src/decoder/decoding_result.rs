@@ -3,9 +3,22 @@ use crate::{
     error::{TiffError, TiffResult},
 };
 
+pub enum DataType {
+    U8,
+    U16,
+    U32,
+    U64,
+    I8,
+    I16,
+    I32,
+    I64,
+    F32,
+    F64,
+}
+
 /// Result of a decoding process
 #[derive(Debug)]
-pub enum DecodingResult {
+pub enum TileData {
     /// A vector of unsigned bytes
     U8(Vec<u8>),
     /// A vector of unsigned words
@@ -14,10 +27,6 @@ pub enum DecodingResult {
     U32(Vec<u32>),
     /// A vector of 64 bit unsigned ints
     U64(Vec<u64>),
-    /// A vector of 32 bit IEEE floats
-    F32(Vec<f32>),
-    /// A vector of 64 bit IEEE floats
-    F64(Vec<f64>),
     /// A vector of 8 bit signed ints
     I8(Vec<i8>),
     /// A vector of 16 bit signed ints
@@ -26,131 +35,149 @@ pub enum DecodingResult {
     I32(Vec<i32>),
     /// A vector of 64 bit signed ints
     I64(Vec<i64>),
+    /// A vector of 32 bit IEEE floats
+    F32(Vec<f32>),
+    /// A vector of 64 bit IEEE floats
+    F64(Vec<f64>),
 }
 
-impl DecodingResult {
-    pub fn new_u8(size: usize, limits: &Limits) -> TiffResult<DecodingResult> {
+impl TileData {
+    pub fn new(size: usize, dtype: DataType) -> TileData {
+        match dtype {
+            DataType::U8 => TileData::U8(vec![0; size]),
+            DataType::U16 => TileData::U16(vec![0; size]),
+            DataType::U32 => TileData::U32(vec![0; size]),
+            DataType::U64 => TileData::U64(vec![0; size]),
+            DataType::I8 => TileData::I8(vec![0; size]),
+            DataType::I16 => TileData::I16(vec![0; size]),
+            DataType::I32 => TileData::I32(vec![0; size]),
+            DataType::I64 => TileData::I64(vec![0; size]),
+            DataType::F32 => TileData::F32(vec![0.0; size]),
+            DataType::F64 => TileData::F64(vec![0.0; size]),
+        }
+    }
+    pub fn new_u8(size: usize, limits: &Limits) -> TiffResult<TileData> {
         if size > limits.decoding_buffer_size {
             Err(TiffError::LimitsExceeded)
         } else {
-            Ok(DecodingResult::U8(vec![0; size]))
+            Ok(TileData::U8(vec![0; size]))
         }
     }
 
-    pub fn new_u16(size: usize, limits: &Limits) -> TiffResult<DecodingResult> {
+    pub fn new_u16(size: usize, limits: &Limits) -> TiffResult<TileData> {
         if size > limits.decoding_buffer_size / 2 {
             Err(TiffError::LimitsExceeded)
         } else {
-            Ok(DecodingResult::U16(vec![0; size]))
+            Ok(TileData::U16(vec![0; size]))
         }
     }
 
-    pub fn new_u32(size: usize, limits: &Limits) -> TiffResult<DecodingResult> {
+    pub fn new_u32(size: usize, limits: &Limits) -> TiffResult<TileData> {
         if size > limits.decoding_buffer_size / 4 {
             Err(TiffError::LimitsExceeded)
         } else {
-            Ok(DecodingResult::U32(vec![0; size]))
+            Ok(TileData::U32(vec![0; size]))
         }
     }
 
-    pub fn new_u64(size: usize, limits: &Limits) -> TiffResult<DecodingResult> {
+    pub fn new_u64(size: usize, limits: &Limits) -> TiffResult<TileData> {
         if size > limits.decoding_buffer_size / 8 {
             Err(TiffError::LimitsExceeded)
         } else {
-            Ok(DecodingResult::U64(vec![0; size]))
+            Ok(TileData::U64(vec![0; size]))
         }
     }
 
-    pub fn new_f32(size: usize, limits: &Limits) -> TiffResult<DecodingResult> {
+    pub fn new_f32(size: usize, limits: &Limits) -> TiffResult<TileData> {
         if size > limits.decoding_buffer_size / std::mem::size_of::<f32>() {
             Err(TiffError::LimitsExceeded)
         } else {
-            Ok(DecodingResult::F32(vec![0.0; size]))
+            Ok(TileData::F32(vec![0.0; size]))
         }
     }
 
-    pub fn new_f64(size: usize, limits: &Limits) -> TiffResult<DecodingResult> {
+    pub fn new_f64(size: usize, limits: &Limits) -> TiffResult<TileData> {
         if size > limits.decoding_buffer_size / std::mem::size_of::<f64>() {
             Err(TiffError::LimitsExceeded)
         } else {
-            Ok(DecodingResult::F64(vec![0.0; size]))
+            Ok(TileData::F64(vec![0.0; size]))
         }
     }
 
-    pub fn new_i8(size: usize, limits: &Limits) -> TiffResult<DecodingResult> {
+    pub fn new_i8(size: usize, limits: &Limits) -> TiffResult<TileData> {
         if size > limits.decoding_buffer_size / std::mem::size_of::<i8>() {
             Err(TiffError::LimitsExceeded)
         } else {
-            Ok(DecodingResult::I8(vec![0; size]))
+            Ok(TileData::I8(vec![0; size]))
         }
     }
 
-    pub fn new_i16(size: usize, limits: &Limits) -> TiffResult<DecodingResult> {
+    pub fn new_i16(size: usize, limits: &Limits) -> TiffResult<TileData> {
         if size > limits.decoding_buffer_size / 2 {
             Err(TiffError::LimitsExceeded)
         } else {
-            Ok(DecodingResult::I16(vec![0; size]))
+            Ok(TileData::I16(vec![0; size]))
         }
     }
 
-    pub fn new_i32(size: usize, limits: &Limits) -> TiffResult<DecodingResult> {
+    pub fn new_i32(size: usize, limits: &Limits) -> TiffResult<TileData> {
         if size > limits.decoding_buffer_size / 4 {
             Err(TiffError::LimitsExceeded)
         } else {
-            Ok(DecodingResult::I32(vec![0; size]))
+            Ok(TileData::I32(vec![0; size]))
         }
     }
 
-    pub fn new_i64(size: usize, limits: &Limits) -> TiffResult<DecodingResult> {
+    pub fn new_i64(size: usize, limits: &Limits) -> TiffResult<TileData> {
         if size > limits.decoding_buffer_size / 8 {
             Err(TiffError::LimitsExceeded)
         } else {
-            Ok(DecodingResult::I64(vec![0; size]))
+            Ok(TileData::I64(vec![0; size]))
         }
     }
 
     pub fn as_buffer(&mut self, start: usize) -> &mut [u8] {
         match *self {
-            DecodingResult::U8(ref mut buf) => bytemuck::cast_slice_mut(&mut buf[start..]),
-            DecodingResult::U16(ref mut buf) => bytemuck::cast_slice_mut(&mut buf[start..]),
-            DecodingResult::U32(ref mut buf) => bytemuck::cast_slice_mut(&mut buf[start..]),
-            DecodingResult::U64(ref mut buf) => bytemuck::cast_slice_mut(&mut buf[start..]),
-            DecodingResult::F32(ref mut buf) => bytemuck::cast_slice_mut(&mut buf[start..]),
-            DecodingResult::F64(ref mut buf) => bytemuck::cast_slice_mut(&mut buf[start..]),
-            DecodingResult::I8(ref mut buf) => bytemuck::cast_slice_mut(&mut buf[start..]),
-            DecodingResult::I16(ref mut buf) => bytemuck::cast_slice_mut(&mut buf[start..]),
-            DecodingResult::I32(ref mut buf) => bytemuck::cast_slice_mut(&mut buf[start..]),
-            DecodingResult::I64(ref mut buf) => bytemuck::cast_slice_mut(&mut buf[start..]),
+            TileData::U8(ref mut buf) => bytemuck::cast_slice_mut(&mut buf[start..]),
+            TileData::U16(ref mut buf) => bytemuck::cast_slice_mut(&mut buf[start..]),
+            TileData::U32(ref mut buf) => bytemuck::cast_slice_mut(&mut buf[start..]),
+            TileData::U64(ref mut buf) => bytemuck::cast_slice_mut(&mut buf[start..]),
+            TileData::F32(ref mut buf) => bytemuck::cast_slice_mut(&mut buf[start..]),
+            TileData::F64(ref mut buf) => bytemuck::cast_slice_mut(&mut buf[start..]),
+            TileData::I8(ref mut buf) => bytemuck::cast_slice_mut(&mut buf[start..]),
+            TileData::I16(ref mut buf) => bytemuck::cast_slice_mut(&mut buf[start..]),
+            TileData::I32(ref mut buf) => bytemuck::cast_slice_mut(&mut buf[start..]),
+            TileData::I64(ref mut buf) => bytemuck::cast_slice_mut(&mut buf[start..]),
         }
     }
 
     pub fn len(&self) -> usize {
         match self {
-            DecodingResult::U8(v) => v.len(),
-            DecodingResult::U16(v) => v.len(),
-            DecodingResult::U32(v) => v.len(),
-            DecodingResult::U64(v) => v.len(),
-            DecodingResult::F32(v) => v.len(),
-            DecodingResult::F64(v) => v.len(),
-            DecodingResult::I8(v) => v.len(),
-            DecodingResult::I16(v) => v.len(),
-            DecodingResult::I32(v) => v.len(),
-            DecodingResult::I64(v) => v.len(),
+            TileData::U8(v) => v.len(),
+            TileData::U16(v) => v.len(),
+            TileData::U32(v) => v.len(),
+            TileData::U64(v) => v.len(),
+            TileData::F32(v) => v.len(),
+            TileData::F64(v) => v.len(),
+            TileData::I8(v) => v.len(),
+            TileData::I16(v) => v.len(),
+            TileData::I32(v) => v.len(),
+            TileData::I64(v) => v.len(),
         }
     }
 
     pub fn is_empty(&self) -> bool {
         match self {
-            DecodingResult::U8(v) => v.is_empty(),
-            DecodingResult::U16(v) => v.is_empty(),
-            DecodingResult::U32(v) => v.is_empty(),
-            DecodingResult::U64(v) => v.is_empty(),
-            DecodingResult::F32(v) => v.is_empty(),
-            DecodingResult::F64(v) => v.is_empty(),
-            DecodingResult::I8(v) => v.is_empty(),
-            DecodingResult::I16(v) => v.is_empty(),
-            DecodingResult::I32(v) => v.is_empty(),
-            DecodingResult::I64(v) => v.is_empty(),
+            TileData::U8(v) => v.is_empty(),
+            TileData::U16(v) => v.is_empty(),
+            TileData::U32(v) => v.is_empty(),
+            TileData::U64(v) => v.is_empty(),
+            TileData::F32(v) => v.is_empty(),
+            TileData::F64(v) => v.is_empty(),
+            TileData::I8(v) => v.is_empty(),
+            TileData::I16(v) => v.is_empty(),
+            TileData::I32(v) => v.is_empty(),
+            TileData::I64(v) => v.is_empty(),
         }
     }
 }

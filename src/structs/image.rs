@@ -75,7 +75,7 @@ pub struct ChunkOpts {
     /// bits per sample
     pub bits_per_sample: u8,
     /// samples per pixel
-    pub samples: u16,
+    pub samples_per_pixel: u16,
     /// datatype of samples
     pub sample_format: SampleFormat,
     /// photometric interpretation
@@ -104,116 +104,143 @@ pub struct ChunkOpts {
     /// - Chunky: [RGBRGBRGB]
     /// - Planar: [RRR] [GGG] [BBB]
     pub planar_config: PlanarConfiguration,
-    /// Chunk type
+    /// Chunk width in pixels
     ///
-    /// Either Strip or Tile
-    /// Strip => Some(StripDecoder) && None
-    /// Tile => None && Some(TileAttributes)
-    pub chunk_type: ChunkType,
-    pub strip_decoder: Option<StripDecodeState>,
-    pub tile_attributes: Option<TileAttributes>,
+    /// If this is a stripped tiff, `chunk_width=image_width`
+    pub chunk_width: u32,
+    /// Chunk height in pixels
+    ///
+    /// If this is a stripped tiff, `chunk_height=rows_per_strip`
+    pub chunk_height: u32,
 }
 
 impl ChunkOpts {
-    /// Samples per pixel within chunk.
-    ///
-    /// In planar config, samples are stored in separate strips/chunks, also called bands.
-    ///
-    /// Example with `bits_per_sample = [8, 8, 8]` and `PhotometricInterpretation::RGB`:
-    /// * `PlanarConfiguration::Chunky` -> 3 (RGBRGBRGB...)
-    /// * `PlanarConfiguration::Planar` -> 1 (RRR...) (GGG...) (BBB...)
-    pub fn samples_per_pixel(&self) -> usize {
-        match self.planar_config {
-            PlanarConfiguration::Chunky => self.samples.into(),
-            PlanarConfiguration::Planar => 1,
-        }
-    }
+    // /// Samples per pixel within chunk.
+    // ///
+    // /// In planar config, samples are stored in separate strips/chunks, also called bands.
+    // ///
+    // /// Example with `bits_per_sample = [8, 8, 8]` and `PhotometricInterpretation::RGB`:
+    // /// * `PlanarConfiguration::Chunky` -> 3 (RGBRGBRGB...)
+    // /// * `PlanarConfiguration::Planar` -> 1 (RRR...) (GGG...) (BBB...)
+    // pub fn samples_per_pixel(&self) -> usize {
+    //     match self.planar_config {
+    //         PlanarConfiguration::Chunky => self.samples.into(),
+    //         PlanarConfiguration::Planar => 1,
+    //     }
+    // }
+
     /// The length of a chunk row in bytes, taking padding into account.
     ///
-    pub fn output_row_stride(&self, chunk_index: u32) -> TiffResult<usize> {
-        let output_width = self.chunk_data_dimensions(chunk_index)?.0;
-        usize::try_from(
-            (output_width as u64)
-                .saturating_mul(self.samples_per_pixel() as u64)
-                .saturating_mul(self.bits_per_sample as u64)
-                / 8,
-        )
-        .map_err(TiffError::from)
+    pub fn output_row_stride(&self, x: u32) -> TiffResult<usize> {
+        Ok((self.chunk_width_pixels(x)? as usize).saturating_mul(self.bits_per_pixel()) / 8)
+    }
+
+    fn bits_per_pixel(&self) -> usize {
+        match self.planar_config {
+            PlanarConfiguration::Chunky => {
+                self.bits_per_sample as usize * self.samples_per_pixel as usize
+            }
+            PlanarConfiguration::Planar => self.samples_per_pixel as usize,
+        }
+    }
+    fn chunks_across(&self) -> u32 {
+        self.image_width.div_ceil(self.chunk_width)
+    }
+    fn chunks_down(&self) -> u32 {
+        self.image_height.div_ceil(self.chunk_height)
+    }
+    fn chunk_width_pixels(&self, x: u32) -> TiffResult<u32> {
+        let chunks_across = self.chunks_across();
+        if x >= chunks_across {
+            Err(TiffError::UsageError(UsageError::InvalidChunkIndex(x)))
+        } else if x == chunks_across - 1 {
+            Ok(self.image_width - self.chunk_width * x)
+        } else {
+            Ok(self.chunk_width)
+        }
+    }
+    fn chunk_height_pixels(&self, y: u32) -> TiffResult<u32> {
+        let chunks_down = self.chunks_down();
+        if y >= chunks_down {
+            Err(TiffError::UsageError(UsageError::InvalidChunkIndex(y)))
+        } else if y == chunks_down - 1 {
+            Ok(self.image_height - self.chunk_height * y)
+        } else {
+            Ok(self.chunk_height)
+        }
     }
     /// dimensions of a chunk, not taking padding into account.
     ///
     /// Can be directly deduced from ChunkType and corresponding data
-    pub fn chunk_dimensions(&self) -> TiffResult<(u32, u32)> {
-        match self.chunk_type {
-            ChunkType::Strip => {
-                let strip_attrs = self.strip_decoder.as_ref().unwrap();
-                Ok((self.image_width, strip_attrs.rows_per_strip))
-            }
-            ChunkType::Tile => {
-                let tile_attrs = self.tile_attributes.as_ref().unwrap();
-                Ok((
-                    u32::try_from(tile_attrs.tile_width)?,
-                    u32::try_from(tile_attrs.tile_length)?,
-                ))
+    pub fn chunk_dimensions(&self) -> (u32, u32) {
+        (self.chunk_width, self.chunk_height)
+    }
+
+    pub fn output_rows(&self, y: u32) -> TiffResult<usize> {
+        match self.planar_config {
+            PlanarConfiguration::Chunky => Ok(self.chunk_height_pixels(y)? as usize),
+            PlanarConfiguration::Planar => {
+                Ok((self.chunk_height_pixels(y)? as usize)
+                    .saturating_mul(self.samples_per_pixel as _))
             }
         }
     }
 
-    /// return the dimensions of an expanded chunk, taking into account padding
-    /// at the bottom and right side of the file.
-    ///
-    pub fn chunk_data_dimensions(&self, chunk_index: u32) -> TiffResult<(u32, u32)> {
-        let dims = self.chunk_dimensions()?;
+    // /// return the dimensions of an expanded chunk, taking into account padding
+    // /// at the bottom and right side of the file.
+    // ///
+    // pub fn chunk_data_dimensions(&self, chunk_index: u32) -> TiffResult<(u32, u32)> {
+    //     let dims = self.chunk_dimensions();
 
-        match self.chunk_type {
-            ChunkType::Strip => {
-                // image ordering in case of planar configuration:
-                // > The components are stored in separate “component planes.” The
-                // > values in StripOffsets and StripByteCounts are then arranged as a 2-dimensional
-                // > array, with SamplesPerPixel rows and StripsPerImage columns. (All of the col-
-                // > umns for row 0 are stored first, followed by the columns of row 1, and so on.)
-                // > PhotometricInterpretation describes the type of data stored in each component
-                // > plane. For example, RGB data is stored with the Red components in one compo-
-                // > nent plane, the Green in another, and the Blue in another.
-                // so:
-                // spp
-                // ^
-                // |
-                // +--> chunks
-                //       ___col0___________col2_______________colN______
-                // row1 | Chunk0[RED]  , Chunk1[RED]  , ... ChunkN[RED]
-                // row2 | Chunk0[GREEN], Chunk1[GREEN], ... ChunkN[GREEN]
-                // row3 | Chunk0[BLUE] , Chunk1[BLUE] , ... ChunkN[BLUE]
-                // "in memory": [Chunk1[RED],Chunk2[RED],...ChunkN[RED],Chunk1[GREEN]...]
-                // let's say we have a 42x42 RGBA image with 8 rows_per_chunk
-                // that's ceil(42/8)=6 strips_per_band, where the last chunk has 2 rows
-                let strip_attrs = self.strip_decoder.as_ref().unwrap();
-                // follow through, where we want to get chunk 5
-                let strips_per_band = // the N of ChunkN
-                    self.image_height.div_ceil(strip_attrs.rows_per_strip);
-                let strip_height_without_padding = (chunk_index % strips_per_band)// 5
-                    .checked_mul(dims.1)// 5*8=40
-                    .and_then(|x| self.image_height.checked_sub(x)) // 2
-                    .ok_or(TiffError::UsageError(UsageError::InvalidChunkIndex(
-                        chunk_index,
-                    )))?;
+    //     match self.chunk_type {
+    //         ChunkType::Strip => {
+    //             // image ordering in case of planar configuration:
+    //             // > The components are stored in separate “component planes.” The
+    //             // > values in StripOffsets and StripByteCounts are then arranged as a 2-dimensional
+    //             // > array, with SamplesPerPixel rows and StripsPerImage columns. (All of the col-
+    //             // > umns for row 0 are stored first, followed by the columns of row 1, and so on.)
+    //             // > PhotometricInterpretation describes the type of data stored in each component
+    //             // > plane. For example, RGB data is stored with the Red components in one compo-
+    //             // > nent plane, the Green in another, and the Blue in another.
+    //             // so:
+    //             // spp
+    //             // ^
+    //             // |
+    //             // +--> chunks
+    //             //       ___col0___________col2_______________colN______
+    //             // row1 | Chunk0[RED]  , Chunk1[RED]  , ... ChunkN[RED]
+    //             // row2 | Chunk0[GREEN], Chunk1[GREEN], ... ChunkN[GREEN]
+    //             // row3 | Chunk0[BLUE] , Chunk1[BLUE] , ... ChunkN[BLUE]
+    //             // "in memory": [Chunk1[RED],Chunk2[RED],...ChunkN[RED],Chunk1[GREEN]...]
+    //             // let's say we have a 42x42 RGBA image with 8 rows_per_chunk
+    //             // that's ceil(42/8)=6 strips_per_band, where the last chunk has 2 rows
+    //             let strip_attrs = self.strip_decoder.as_ref().unwrap();
+    //             // follow through, where we want to get chunk 5
+    //             let strips_per_band = // the N of ChunkN
+    //                 self.image_height.div_ceil(strip_attrs.rows_per_strip);
+    //             let strip_height_without_padding = (chunk_index % strips_per_band)// 5
+    //                 .checked_mul(dims.1)// 5*8=40
+    //                 .and_then(|x| self.image_height.checked_sub(x)) // 2
+    //                 .ok_or(TiffError::UsageError(UsageError::InvalidChunkIndex(
+    //                     chunk_index,
+    //                 )))?;
 
-                // Ignore potential vertical padding on the bottommost strip
-                let strip_height = dims.1.min(strip_height_without_padding);
+    //             // Ignore potential vertical padding on the bottommost strip
+    //             let strip_height = dims.1.min(strip_height_without_padding);
 
-                Ok((dims.0, strip_height))
-            }
-            ChunkType::Tile => {
-                let tile_attrs = self.tile_attributes.as_ref().unwrap();
-                let (padding_right, padding_down) = tile_attrs.get_padding(chunk_index as usize);
+    //             Ok((dims.0, strip_height))
+    //         }
+    //         ChunkType::Tile => {
+    //             let tile_attrs = self.tile_attributes.as_ref().unwrap();
+    //             let (padding_right, padding_down) = tile_attrs.get_padding(chunk_index as usize);
 
-                let tile_width = tile_attrs.tile_width - padding_right;
-                let tile_length = tile_attrs.tile_length - padding_down;
+    //             let tile_width = tile_attrs.tile_width - padding_right;
+    //             let tile_length = tile_attrs.tile_length - padding_down;
 
-                Ok((u32::try_from(tile_width)?, u32::try_from(tile_length)?))
-            }
-        }
-    }
+    //             Ok((u32::try_from(tile_width)?, u32::try_from(tile_length)?))
+    //         }
+    //     }
+    // }
 
     /// Derive colortype from info
     ///
@@ -223,7 +250,7 @@ impl ChunkOpts {
     /// - [CIELab](https://en.wikipedia.org/wiki/CIELAB_color_space)
     pub fn colortype(&self) -> TiffResult<ColorType> {
         match self.photometric_interpretation {
-            PhotometricInterpretation::RGB => match self.samples {
+            PhotometricInterpretation::RGB => match self.samples_per_pixel {
                 3 => Ok(ColorType::RGB(self.bits_per_sample)),
                 4 => Ok(ColorType::RGBA(self.bits_per_sample)),
                 // FIXME: We should _ignore_ other components. In particular:
@@ -234,34 +261,34 @@ impl ChunkOpts {
                 _ => Err(TiffError::UnsupportedError(
                     TiffUnsupportedError::InterpretationWithBits(
                         self.photometric_interpretation,
-                        vec![self.bits_per_sample; self.samples as usize],
+                        vec![self.bits_per_sample; self.samples_per_pixel as usize],
                     ),
                 )),
             },
-            PhotometricInterpretation::CMYK => match self.samples {
+            PhotometricInterpretation::CMYK => match self.samples_per_pixel {
                 4 => Ok(ColorType::CMYK(self.bits_per_sample)),
                 _ => Err(TiffError::UnsupportedError(
                     TiffUnsupportedError::InterpretationWithBits(
                         self.photometric_interpretation,
-                        vec![self.bits_per_sample; self.samples as usize],
+                        vec![self.bits_per_sample; self.samples_per_pixel as usize],
                     ),
                 )),
             },
-            PhotometricInterpretation::YCbCr => match self.samples {
+            PhotometricInterpretation::YCbCr => match self.samples_per_pixel {
                 3 => Ok(ColorType::YCbCr(self.bits_per_sample)),
                 _ => Err(TiffError::UnsupportedError(
                     TiffUnsupportedError::InterpretationWithBits(
                         self.photometric_interpretation,
-                        vec![self.bits_per_sample; self.samples as usize],
+                        vec![self.bits_per_sample; self.samples_per_pixel as usize],
                     ),
                 )),
             },
             PhotometricInterpretation::BlackIsZero | PhotometricInterpretation::WhiteIsZero => {
-                match self.samples {
+                match self.samples_per_pixel {
                     1 => Ok(ColorType::Gray(self.bits_per_sample)),
                     _ => Ok(ColorType::Multiband {
                         bit_depth: self.bits_per_sample,
-                        num_samples: self.samples,
+                        num_samples: self.samples_per_pixel,
                     }),
                 }
             }
@@ -271,66 +298,12 @@ impl ChunkOpts {
             | PhotometricInterpretation::CIELab => Err(TiffError::UnsupportedError(
                 TiffUnsupportedError::InterpretationWithBits(
                     self.photometric_interpretation,
-                    vec![self.bits_per_sample; self.samples as usize],
+                    vec![self.bits_per_sample; self.samples_per_pixel as usize],
                 ),
             )),
         }
     }
 }
-
-// pub enum MaybePartial {
-//     Whole(BufferedEntry),
-//     Partial {
-//         // tag_type: TagType,
-//         offset: u64,
-//         chunk_size: usize,
-//         data: Arc<RwLock<HashMap<u64, BufferedEntry>>>,
-//         pending_chunks: Arc<Mutex<HashMap<u64, Condvar>>>,
-//     },
-// }
-
-// pub enum MaybePartialIndex<T> {
-//     Ok(T),
-//     NeedRead {
-//         offset: u64,
-//         count: u64,
-//         buf: Vec<u8>,
-//     },
-//     Pending(Condvar),
-// }
-
-// impl MaybePartial {
-//     fn get_u64(&self, index: usize) -> TiffResult<MaybePartialIndex<u64>> {
-//         match self {
-//             MaybePartial::Whole(e) => Ok(MaybePartialIndex::Ok(e.get_u64(index)?)),
-//             MaybePartial::Partial {
-//                 offset,
-//                 chunk_size,
-//                 data,
-//                 pending_chunks,
-//             } => {
-//                 let i_chunk: usize = index / chunk_size;
-//                 let subindex: usize = index % chunk_size;
-//                 if let Some(entry) = data.try_read()?.get(&i_chunk.try_into()?) {
-//                     Ok(MaybePartialIndex::Ok(entry.get_u64(subindex)?))
-//                 } else {
-//                     if let Some(cv) = pending_chunks.try_lock()?.get(&i_chunk.try_into()?) {
-//                         Ok(MaybePartialIndex::Pending(cv.clone()))
-//                     } else {
-//                         pending_chunks
-//                             .try_lock()?
-//                             .insert(i_chunk.try_into()?, Condvar::new());
-//                         Ok(MaybePartialIndex::NeedRead {
-//                             offset: *offset,
-//                             count: u64::try_from(*chunk_size)?,
-//                             buf: vec![0u8; *chunk_size],
-//                         })
-//                     }
-//                 }
-//             }
-//         }
-//     }
-// }
 
 /// Image struct that holds all relevant metadata for locating an image's data in the file and which decoding method to use
 #[derive(PartialEq, Clone)]
@@ -421,7 +394,7 @@ impl Image {
     /// check if the given IFD can be made into an image Ifd
     ///
     /// returns a dictionary of tags that are present, but whose values need to
-    /// be loaded from the given offsets.  
+    /// be loaded from the given offsets.
     /// Doesn't check for tag values, only for presence/absence conflicts in tags
     ///
     /// TODO: check which tags _always_ - by the spec - fit inside the offset field.
@@ -502,7 +475,7 @@ impl Image {
         Ok(res)
     }
 
-    /// Create this image from the IFD.  
+    /// Create this image from the IFD.
     ///
     /// will remove fast-access values from the Directory:
     /// - `ImageWidth`
@@ -538,12 +511,12 @@ impl Image {
             None => CompressionMethod::None,
         };
 
-        let samples: u16 = ifd
+        let samples_per_pixel: u16 = ifd
             .remove_optional_val(&Tag::SamplesPerPixel)?
             .map(u16::try_from)
             .transpose()?
             .unwrap_or(1);
-        if samples == 0 {
+        if samples_per_pixel == 0 {
             return Err(TiffFormatError::SamplesPerPixelIsZero.into());
         }
 
@@ -572,7 +545,7 @@ impl Image {
 
         let planes = match planar_config {
             PlanarConfiguration::Chunky => 1,
-            PlanarConfiguration::Planar => samples,
+            PlanarConfiguration::Planar => samples_per_pixel,
         };
 
         let jpeg_tables = if compression_method == CompressionMethod::ModernJPEG
@@ -598,7 +571,7 @@ impl Image {
                     .map(|v| SampleFormat::from_u16_exhaustive(*v))
                     .collect();
 
-                // TODO: for now, only homogenous formats across samples are supported.
+                // only homogenous formats across samples are supported.
                 if !sample_format.windows(2).all(|s| s[0] == s[1]) {
                     return Err(TiffUnsupportedError::UnsupportedSampleFormat(sample_format).into());
                 }
@@ -616,7 +589,7 @@ impl Image {
 
         // Technically bits_per_sample.len() should be *equal* to samples, but libtiff also allows
         // it to be a single value that applies to all samples.
-        if bits_per_sample.len() != usize::from(samples) && bits_per_sample.len() != 1 {
+        if bits_per_sample.len() != usize::from(samples_per_pixel) && bits_per_sample.len() != 1 {
             return Err(TiffFormatError::InconsistentSizesEncountered(TagData::from(
                 bits_per_sample,
             ))
@@ -629,11 +602,10 @@ impl Image {
             return Err(TiffUnsupportedError::InconsistentBitsPerSample(bits_per_sample).into());
         }
 
-        let chunk_type;
         let chunk_offsets: Vec<u64>;
         let chunk_bytes: Vec<u64>;
-        let strip_decoder;
-        let tile_attributes;
+        let chunk_width;
+        let chunk_height;
         match (
             ifd.contains_key(&Tag::StripByteCounts),
             ifd.contains_key(&Tag::StripOffsets),
@@ -641,22 +613,20 @@ impl Image {
             ifd.contains_key(&Tag::TileOffsets),
         ) {
             (true, true, false, false) => {
-                chunk_type = ChunkType::Strip;
-
+                // stripped
                 chunk_offsets = ifd.remove_required_val(&Tag::StripOffsets)?.try_into()?;
                 chunk_bytes = ifd.remove_required_val(&Tag::StripByteCounts)?.try_into()?;
-                let rows_per_strip = ifd
+                chunk_height = ifd
                     .remove_optional_val(&Tag::RowsPerStrip)?
                     .map(u32::try_from)
                     .transpose()?
                     .unwrap_or(image_height);
-                strip_decoder = Some(StripDecodeState { rows_per_strip });
-                tile_attributes = None;
+                chunk_width = image_width;
 
                 if chunk_offsets.len() != chunk_bytes.len()
-                    || rows_per_strip == 0
+                    || chunk_height == 0
                     || u32::try_from(chunk_offsets.len())?
-                        != (image_height.saturating_sub(1) / rows_per_strip + 1) * planes as u32
+                        != (image_height.saturating_sub(1) / chunk_height + 1) * planes as u32
                 {
                     return Err(TiffFormatError::InconsistentSizesEncountered(TagData::from(
                         chunk_offsets,
@@ -665,43 +635,32 @@ impl Image {
                 }
             }
             (false, false, true, true) => {
-                chunk_type = ChunkType::Tile;
+                // tiled tiff
+                chunk_width = u32::try_from(ifd.remove_required_val(&Tag::TileWidth)?)?;
+                chunk_height = u32::try_from(ifd.remove_required_val(&Tag::TileLength)?)?;
 
-                let tile_width =
-                    usize::try_from(u64::try_from(ifd.remove_required_val(&Tag::TileWidth)?)?)?;
-                let tile_length =
-                    usize::try_from(u64::try_from(ifd.remove_required_val(&Tag::TileLength)?)?)?;
-
-                if tile_width == 0 {
+                if chunk_width == 0 {
                     return Err(
                         TiffFormatError::InvalidTagValueType(Tag::TileWidth.to_u16()).into(),
                     );
-                } else if tile_length == 0 {
+                } else if chunk_height == 0 {
                     return Err(
                         TiffFormatError::InvalidTagValueType(Tag::TileLength.to_u16()).into(),
                     );
                 }
 
-                strip_decoder = None;
-                tile_attributes = Some(TileAttributes {
-                    image_width: usize::try_from(image_width)?,
-                    image_height: usize::try_from(image_height)?,
-                    tile_width,
-                    tile_length,
-                });
                 chunk_offsets = ifd.remove_required_val(&Tag::TileOffsets)?.try_into()?;
                 chunk_bytes = ifd.remove_required_val(&Tag::TileByteCounts)?.try_into()?;
 
-                let tile = tile_attributes.as_ref().unwrap();
-                if chunk_offsets.len() != chunk_bytes.len()
-                    || chunk_offsets.len()
-                        != tile.tiles_down() * tile.tiles_across() * planes as usize
-                {
-                    return Err(TiffFormatError::InconsistentSizesEncountered(TagData::from(
-                        chunk_bytes,
-                    ))
-                    .into());
-                }
+                // if chunk_offsets.len() != chunk_bytes.len()
+                //     || chunk_offsets.len()
+                //         != tile.tiles_down() * tile.tiles_across() * planes as usize
+                // {
+                //     return Err(TiffFormatError::InconsistentSizesEncountered(TagData::from(
+                //         chunk_bytes,
+                //     ))
+                //     .into());
+                // }
             }
             (_, _, _, _) => {
                 return Err(TiffFormatError::StripTileTagConflict.into());
@@ -712,16 +671,15 @@ impl Image {
             image_width,
             image_height,
             bits_per_sample: bits_per_sample[0],
-            samples,
+            samples_per_pixel,
             sample_format,
             photometric_interpretation,
             compression_method,
             predictor,
             jpeg_tables,
             planar_config,
-            chunk_type,
-            strip_decoder,
-            tile_attributes,
+            chunk_width,
+            chunk_height,
         });
         Ok(Image {
             ifd,
@@ -914,16 +872,15 @@ mod test {
                 image_width: 42,
                 image_height: 42,
                 bits_per_sample: 1,
-                samples: 1,
+                samples_per_pixel: 1,
                 sample_format: SampleFormat::Uint,
                 photometric_interpretation: PhotometricInterpretation::RGB,
                 compression_method: CompressionMethod::None,
                 predictor: Predictor::None,
                 jpeg_tables: None,
                 planar_config: PlanarConfiguration::Chunky,
-                chunk_type: ChunkType::Strip,
-                strip_decoder: Some(StripDecodeState { rows_per_strip: 42 }),
-                tile_attributes: None,
+                chunk_height: 42,
+                chunk_width: 42,
             }),
             chunk_offsets: ofs.try_into().unwrap(),
             chunk_bytes: bytes.try_into().unwrap(),
@@ -955,21 +912,15 @@ mod test {
                 image_width: 42,
                 image_height: 42,
                 bits_per_sample: 1,
-                samples: 1,
+                samples_per_pixel: 1,
                 sample_format: SampleFormat::Uint,
                 photometric_interpretation: PhotometricInterpretation::RGB,
                 compression_method: CompressionMethod::None,
                 predictor: Predictor::None,
                 jpeg_tables: None,
                 planar_config: PlanarConfiguration::Chunky,
-                chunk_type: ChunkType::Tile,
-                strip_decoder: None,
-                tile_attributes: Some(TileAttributes {
-                    image_height: 42,
-                    image_width: 42,
-                    tile_length: u64::try_from(tile_length).unwrap().try_into().unwrap(),
-                    tile_width: u64::try_from(tile_width).unwrap().try_into().unwrap(),
-                }),
+                chunk_height: 42,
+                chunk_width: 42,
             }),
             chunk_offsets: ofs.try_into().unwrap(),
             chunk_bytes: bytes.try_into().unwrap(),
@@ -1321,21 +1272,15 @@ mod test {
                 image_width: 42,
                 image_height: 42,
                 bits_per_sample: 1,
-                samples: 1,
+                samples_per_pixel: 1,
                 sample_format: SampleFormat::Uint,
                 photometric_interpretation: PhotometricInterpretation::RGB,
                 compression_method: CompressionMethod::None,
                 predictor: Predictor::None,
                 jpeg_tables: None,
                 planar_config: PlanarConfiguration::Chunky,
-                chunk_type: ChunkType::Tile,
-                strip_decoder: None,
-                tile_attributes: Some(TileAttributes {
-                    image_height: 42,
-                    image_width: 42,
-                    tile_length: 42,
-                    tile_width: 42,
-                }),
+                chunk_height: 42,
+                chunk_width: 42,
             }),
             chunk_offsets: vec![42],
             chunk_bytes: vec![42 * 42 * 3],
@@ -1362,16 +1307,15 @@ mod test {
                 image_width: 42,
                 image_height: 42,
                 bits_per_sample: 1,
-                samples: 1,
+                samples_per_pixel: 1,
                 sample_format: SampleFormat::Uint,
                 photometric_interpretation: PhotometricInterpretation::RGB,
                 compression_method: CompressionMethod::None,
                 predictor: Predictor::None,
                 jpeg_tables: None,
                 planar_config: PlanarConfiguration::Chunky,
-                chunk_type: ChunkType::Strip,
-                strip_decoder: Some(StripDecodeState { rows_per_strip: 42 }),
-                tile_attributes: None,
+                chunk_width: 42,
+                chunk_height: 42,
             }),
             chunk_offsets: vec![42],
             chunk_bytes: vec![42 * 42 * 3],

@@ -8,8 +8,6 @@
 //! * <https://web.archive.org/web/20210108073850/https://www.adobe.io/open/standards/TIFF.html> - The TIFF specification
 //! * <https://download.osgeo.org/libtiff/doc/TIFF6.pdf> - Tiff spec as PDF
 
-/// for byte casting. Not sure if we can actually stomp in bytemuck as dependency.
-pub mod bytecast;
 /// Errors
 pub mod error;
 /// Generic utility functions that can be used for both decoding and encoding
@@ -29,6 +27,11 @@ pub enum ByteOrder {
     BigEndian,
     LittleEndian,
 }
+
+#[cfg(target_endian = "big")]
+pub const NATIVE_ENDIAN: ByteOrder = ByteOrder::BigEndian;
+#[cfg(target_endian = "little")]
+pub const NATIVE_ENDIAN: ByteOrder = ByteOrder::LittleEndian;
 
 macro_rules! cast_fn {
     ($name:ident, $type:ty, $length:literal) => {

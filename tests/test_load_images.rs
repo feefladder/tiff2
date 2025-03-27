@@ -4,7 +4,7 @@ use image::{DynamicImage, ImageBuffer, Luma, Rgb, Rgba};
 use log::{error, info};
 use std::{fs, ops::Range, path::Path};
 use tiff2::{
-    decoder::{ChunkDecoder, CogReader, Decoder},
+    decoder::{ChunkDecoder, CogReader, CogReaderExt, Decoder},
     error::{TiffError, TiffResult},
 };
 use tokio::{

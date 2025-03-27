@@ -5,7 +5,7 @@ mod ifd;
 pub use ifd::Ifd;
 /// IFD struct and functions for IFDs related to images
 mod image;
-pub use image::{ChunkOpts, Image, StripDecodeState, TileAttributes};
+pub use image::{Image, StripDecodeState, TileAttributes};
 /// Tags: type, and important ones here
 pub mod tags;
 pub use tags::{Tag, TagType};
@@ -18,11 +18,11 @@ pub use tiff::Tiff;
 pub mod value;
 
 pub struct Point<T> {
-    x: T,
-    y: T,
+    pub x: T,
+    pub y: T,
 }
 
 pub struct BBox<T> {
-    top_left: Point<T>,
-    bot_right: Point<T>,
+    pub top_left: Point<T>,
+    pub bot_right: Point<T>,
 }
