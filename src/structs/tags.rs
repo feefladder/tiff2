@@ -127,6 +127,9 @@ pub enum Tag(u16) unknown("A private or extension tag") {
     // 1 SHORT
     PlanarConfiguration = 284,
     ResolutionUnit = 296, // TODO add support
+    /// The number of rows per strip in a stripped tiff
+    ///
+    /// If not set, this defaults to `1`
     RowsPerStrip = 278,
     /// The number of samples in each pixel.
     ///

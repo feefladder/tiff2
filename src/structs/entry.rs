@@ -14,7 +14,7 @@ use crate::{
         },
     },
     util::fix_endianness,
-    NATIVE_ENDIAN,
+    ByteOrder, NATIVE_ENDIAN,
 };
 
 use std::{
@@ -25,8 +25,6 @@ use std::{
 use smallvec::{smallvec, SmallVec};
 
 pub type Directory = HashMap<Tag, IfdEntry>;
-/// public type for tag data. Will probably change soon
-pub type TagData = ProcessedEntry;
 
 /// an offset into the field
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -42,7 +40,7 @@ pub struct Offset {
 #[derive(Debug, PartialEq, Clone)]
 pub enum IfdEntry {
     Offset(Offset),
-    Value(ProcessedEntry),
+    Value(TagData),
 }
 
 impl IfdEntry {
@@ -53,19 +51,19 @@ impl IfdEntry {
     /// If the value fits in the offset field, it will be converted
     /// ```
     /// # use tiff2::ByteOrder;
-    /// # use tiff2::{tags::TagType, ProcessedEntry::Value, entry::IfdEntry, decoder::EndianReader};
+    /// # use tiff2::{tags::TagType, TagData::Value, entry::IfdEntry, decoder::EndianReader};
     /// let entry_buf = [
     ///     0x03, 0x00,                         // Type (SHORT)
     ///     0x01, 0x00, 0x00, 0x00,             // Count (1)
     ///     0x2C, 0x01, 0x00, 0x00,             // Offset = Value (300)
     /// ];
     /// let mut r = EndianReader::wrap(std::io::Cursor::new(entry_buf), ByteOrder::LittleEndian);
-    /// assert_eq!(IfdEntry::from_reader(&mut r, false).unwrap(), IfdEntry::Value(ProcessedEntry::Short(300)));
+    /// assert_eq!(IfdEntry::from_reader(&mut r, false).unwrap(), IfdEntry::Value(TagData::Short(300)));
     /// ```
     /// Otherwise an offset is saved
     /// ```
     /// # use tiff2::ByteOrder;
-    /// # use tiff2::{tags::TagType, ProcessedEntry::Value, entry::IfdEntry, decoder::EndianReader};
+    /// # use tiff2::{tags::TagType, TagData::Value, entry::IfdEntry, decoder::EndianReader};
     /// let entry_buf = [
     ///     0x03, 0x00,                         // Type (SHORT)
     ///     0x03, 0x00, 0x00, 0x00,             // Count (3)
@@ -105,7 +103,7 @@ impl IfdEntry {
             }))
         } else {
             // create a buffer for the offset
-            let mut offset = ProcessedEntry::new(tag_type, count.try_into()?);
+            let mut offset = TagData::new(tag_type, count.try_into()?);
             r.read_exact(offset.buf_mut())?;
 
             // discard remaining bytes of offset
@@ -142,7 +140,7 @@ impl IfdEntry {
 /// ```
 #[derive(Debug, PartialEq, Clone)]
 #[non_exhaustive]
-pub enum ProcessedEntry {
+pub enum TagData {
     Byte(SmallVec<[u8; 8]>),
     SByte(SmallVec<[i8; 8]>),
     Undefined(SmallVec<[u8; 8]>),
@@ -164,17 +162,14 @@ pub enum ProcessedEntry {
     SRational(SmallVec<[[i32; 2]; 1]>),
 }
 
-impl ProcessedEntry {
+impl TagData {
     /// Create a new, zero-initialized version of Self.
     ///
-    /// DEPRECATION WARNING
-    /// will probably deprecate soon, in favour of a `Bytes`-type container,
-    /// which should be managed externally.
     #[rustfmt::skip]
     pub fn new(tag_type: TagType, count: usize) -> Self {
         // from the comment [on this
         // answer](https://stackoverflow.com/a/48218307/14681457), this is
-        // actually efficient, since it calls `RawVec::with_capacity_zeroed()`
+        // actually efficient, since it calls `RawVec::with_capacity_zeroed()` ..apparently
         match tag_type {
             TagType::BYTE      => Self::Byte     (smallvec![0  ;   count]),
             TagType::SBYTE     => Self::SByte    (smallvec![0  ;   count]),
@@ -193,6 +188,40 @@ impl ProcessedEntry {
             TagType::RATIONAL  => Self::Rational (smallvec![[0;2]; count]),
             TagType::SRATIONAL => Self::SRational(smallvec![[0;2]; count]),
         }
+    }
+
+    #[rustfmt::skip]
+    pub fn tag_type(&self) -> TagType {
+        match self {
+            Self::Byte     (_) => TagType::BYTE     ,
+            Self::SByte    (_) => TagType::SBYTE    ,
+            Self::Undefined(_) => TagType::UNDEFINED,
+            Self::Ascii    (_) => TagType::ASCII    ,
+            Self::Short    (_) => TagType::SHORT    ,
+            Self::SShort   (_) => TagType::SSHORT   ,
+            Self::Long     (_) => TagType::LONG     ,
+            Self::SLong    (_) => TagType::SLONG    ,
+            Self::Ifd      (_) => TagType::IFD      ,
+            Self::Long8    (_) => TagType::LONG8    ,
+            Self::SLong8   (_) => TagType::SLONG8   ,
+            Self::Ifd8     (_) => TagType::IFD8     ,
+            Self::Float    (_) => TagType::FLOAT    ,
+            Self::Double   (_) => TagType::DOUBLE   ,
+            Self::Rational (_) => TagType::RATIONAL ,
+            Self::SRational(_) => TagType::SRATIONAL,
+        }
+    }
+
+    pub fn from_buffer(buf: &[u8], tag_type: TagType, count: usize, byte_order: ByteOrder) -> Self {
+        let mut e = Self::new(tag_type, count);
+        e.buf_mut().copy_from_slice(buf);
+        fix_endianness(
+            e.buf_mut(),
+            byte_order,
+            NATIVE_ENDIAN,
+            tag_type.primitive_size() * 8,
+        );
+        e
     }
 
     /// Get the underlying data as a `&mut [u8]`
@@ -251,91 +280,91 @@ macro_rules! impl_try_from_processed_entry {
         [$($from_large:ident),*],
         $error_type:ident
     ) => {
-        impl TryFrom<&ProcessedEntry> for $target {
+        impl TryFrom<&TagData> for $target {
             type Error = TiffError;
 
-            fn try_from(val: &ProcessedEntry) -> Result<Self, Self::Error> {
+            fn try_from(val: &TagData) -> Result<Self, Self::Error> {
                 if val.len() != 1 {
                     return Err(TiffFormatError::InconsistentSizesEncountered(val.clone()).into());
                 }
                 match val {
-                    $(ProcessedEntry::$from_small(v) => Ok(Self::from(v[0])),)*
-                    ProcessedEntry::$from_exact(v) => Ok(v[0]),
-                    $(ProcessedEntry::$from_large(v) => Ok(Self::try_from(v[0])?),)*
+                    $(TagData::$from_small(v) => Ok(Self::from(v[0])),)*
+                    TagData::$from_exact(v) => Ok(v[0]),
+                    $(TagData::$from_large(v) => Ok(Self::try_from(v[0])?),)*
                     _ => Err($error_type(val.clone()).into()),
                 }
             }
         }
 
-        impl TryFrom<ProcessedEntry> for $target {
+        impl TryFrom<TagData> for $target {
             type Error = TiffError;
 
-            fn try_from(val: ProcessedEntry) -> Result<Self, Self::Error> {
+            fn try_from(val: TagData) -> Result<Self, Self::Error> {
                 if val.len() != 1 {
                     return Err(TiffFormatError::InconsistentSizesEncountered(val.clone()).into());
                 }
                 match val {
-                    $(ProcessedEntry::$from_small(v) => Ok(Self::from(v[0])),)*
-                    ProcessedEntry::$from_exact(v) => Ok(v[0]),
-                    $(ProcessedEntry::$from_large(v) => Ok(Self::try_from(v[0])?),)*
+                    $(TagData::$from_small(v) => Ok(Self::from(v[0])),)*
+                    TagData::$from_exact(v) => Ok(v[0]),
+                    $(TagData::$from_large(v) => Ok(Self::try_from(v[0])?),)*
                     _ => Err($error_type(val.clone()).into()),
                 }
             }
         }
 
-        impl TryFrom<ProcessedEntry> for Vec<$target> {
+        impl TryFrom<TagData> for Vec<$target> {
             type Error = TiffError;
 
-            fn try_from(val: ProcessedEntry) -> Result<Self, Self::Error> {
+            fn try_from(val: TagData) -> Result<Self, Self::Error> {
                 match val {
                     // https://stackoverflow.com/q/48308759/14681457
-                    $(ProcessedEntry::$from_small(v) => Ok(v.into_iter().map(<$target>::from).collect()),)*
-                    ProcessedEntry::$from_exact(v) => Ok(v.into_vec()),
-                    $(ProcessedEntry::$from_large(v) => Ok(v.into_iter().map(<$target>::try_from).collect::<Result<Self, _>>()?),)*
+                    $(TagData::$from_small(v) => Ok(v.into_iter().map(<$target>::from).collect()),)*
+                    TagData::$from_exact(v) => Ok(v.into_vec()),
+                    $(TagData::$from_large(v) => Ok(v.into_iter().map(<$target>::try_from).collect::<Result<Self, _>>()?),)*
                     _ => Err($error_type(val.clone()).into()),
                 }
             }
         }
 
-        impl<'a> TryFrom<&'a ProcessedEntry> for &'a[$target] {
+        impl<'a> TryFrom<&'a TagData> for &'a[$target] {
             type Error = TiffError;
-            fn try_from(val: &'a ProcessedEntry) -> Result<Self, Self::Error> {
+            fn try_from(val: &'a TagData) -> Result<Self, Self::Error> {
                 match &val {
-                    ProcessedEntry::$from_exact(v) => Ok(&v),
+                    TagData::$from_exact(v) => Ok(&v),
                     _ => Err($error_type(val.clone()).into()),
                 }
             }
         }
 
 
-        impl<'a> TryFrom<&'a mut ProcessedEntry> for &'a mut [$target] {
+        impl<'a> TryFrom<&'a mut TagData> for &'a mut [$target] {
             type Error = TiffError;
-            fn try_from(val: &'a mut ProcessedEntry) -> Result<Self, Self::Error> {
+            fn try_from(val: &'a mut TagData) -> Result<Self, Self::Error> {
                 match val {
-                    ProcessedEntry::$from_exact(ref mut v) => Ok(v),
+                    TagData::$from_exact(ref mut v) => Ok(v),
                     _ => Err($error_type(val.clone()).into()),
                 }
             }
         }
 
         // Slice conversion
-        impl From<&[$target]> for ProcessedEntry {
+        impl From<&[$target]> for TagData {
             fn from(slice: &[$target]) -> Self {
-                ProcessedEntry::$from_exact(SmallVec::from(slice))
+                TagData::$from_exact(SmallVec::from(slice))
             }
         }
 
         // Vector consumption
-        impl From<Vec<$target>> for ProcessedEntry {
+        impl From<Vec<$target>> for TagData {
             fn from(vec: Vec<$target>) -> Self {
-                ProcessedEntry::$from_exact(SmallVec::from(vec))
+                TagData::$from_exact(SmallVec::from(vec))
             }
         }
 
-        // Inverse: Convert from integer to ProcessedEntry
-        impl From<$target> for ProcessedEntry {
+        // Inverse: Convert from integer to TagData
+        impl From<$target> for TagData {
             fn from(value: $target) -> Self {
-                ProcessedEntry::$from_exact(smallvec![value])
+                TagData::$from_exact(smallvec![value])
             }
         }
     };
@@ -364,40 +393,40 @@ mod macro_impls {
     // #[cfg(target_pointer_width = "64")]
     // impl_try_from_processed_entry!(usize, [Byte,Short, Long, Ifd, Ifd8], Long8, [], UnsignedIntegerExpected);
 }
-impl TryFrom<&ProcessedEntry> for (u32, u32) {
+impl TryFrom<&TagData> for (u32, u32) {
     type Error = TiffError;
 
-    fn try_from(val: &ProcessedEntry) -> Result<Self, Self::Error> {
+    fn try_from(val: &TagData) -> Result<Self, Self::Error> {
         if val.len() != 2 {
             return Err(TiffFormatError::InconsistentSizesEncountered(val.clone()).into());
         }
         match &val {
-            ProcessedEntry::Rational(v) => Ok((v[0][0], v[0][1])),
+            TagData::Rational(v) => Ok((v[0][0], v[0][1])),
             _ => Err(TiffFormatError::RationalExpected(val.clone()).into()),
         }
     }
 }
 
-impl TryFrom<&ProcessedEntry> for (i32, i32) {
+impl TryFrom<&TagData> for (i32, i32) {
     type Error = TiffError;
 
-    fn try_from(val: &ProcessedEntry) -> Result<Self, Self::Error> {
+    fn try_from(val: &TagData) -> Result<Self, Self::Error> {
         if val.len() != 2 {
             return Err(TiffFormatError::InconsistentSizesEncountered(val.clone()).into());
         }
         match &val {
-            ProcessedEntry::SRational(v) => Ok((v[0][0], v[0][1])),
+            TagData::SRational(v) => Ok((v[0][0], v[0][1])),
             _ => Err(TiffFormatError::SignedRationalExpected(val.clone()).into()),
         }
     }
 }
 
-impl<'a> TryFrom<&'a ProcessedEntry> for &'a str {
+impl<'a> TryFrom<&'a TagData> for &'a str {
     type Error = TiffError;
 
-    fn try_from(val: &'a ProcessedEntry) -> Result<Self, Self::Error> {
+    fn try_from(val: &'a TagData) -> Result<Self, Self::Error> {
         match val {
-            ProcessedEntry::Byte(v) | ProcessedEntry::Ascii(v) | ProcessedEntry::Undefined(v) => {
+            TagData::Byte(v) | TagData::Ascii(v) | TagData::Undefined(v) => {
                 if v.is_ascii() && v.ends_with(&[0]) {
                     let v = std::str::from_utf8(v)?;
                     let v = v.trim_matches(char::from(0));
@@ -410,107 +439,6 @@ impl<'a> TryFrom<&'a ProcessedEntry> for &'a str {
         }
     }
 }
-
-// /// Should not be needed in future, since we do everything from BufferedEntry
-// fn from_single(tag_type: TagType, data: &[u8]) -> TiffResult<Value> {
-//     Ok(match tag_type {
-//         TagType::BYTE => ProcessedEntry::Byte(data[0]),
-//         TagType::SBYTE => ProcessedEntry::SignedByte(data[0] as i8),
-//         TagType::UNDEFINED => ProcessedEntry::Undefined(data[0]),
-
-//         TagType::SHORT => ProcessedEntry::Short(u16::from_ne_bytes(data[..2].try_into().unwrap())),
-//         TagType::SSHORT => ProcessedEntry::SShort(i16::from_ne_bytes(data[..2].try_into().unwrap())),
-
-//         TagType::LONG => ProcessedEntry::Long(u32::from_ne_bytes(data[..4].try_into().unwrap())),
-//         TagType::SLONG => ProcessedEntry::SLong(i32::from_ne_bytes(data[..4].try_into().unwrap())),
-
-//         TagType::LONG8 => ProcessedEntry::Long8(u64::from_ne_bytes(data[..8].try_into().unwrap())),
-//         TagType::SLONG8 => ProcessedEntry::SLong8(i64::from_ne_bytes(data[..8].try_into().unwrap())),
-
-//         TagType::RATIONAL => ProcessedEntry::Rational(
-//             u32::from_ne_bytes(data[..4].try_into().unwrap()),
-//             u32::from_ne_bytes(data[4..8].try_into().unwrap()),
-//         ),
-//         TagType::SRATIONAL => ProcessedEntry::SRational(
-//             i32::from_ne_bytes(data[..4].try_into().unwrap()),
-//             i32::from_ne_bytes(data[4..8].try_into().unwrap()),
-//         ),
-//         TagType::FLOAT => ProcessedEntry::Float(f32::from_ne_bytes(data[..4].try_into().unwrap())),
-//         TagType::DOUBLE => ProcessedEntry::Double(f64::from_ne_bytes(data[..8].try_into().unwrap())),
-
-//         TagType::ASCII => {
-//             if data[0] == 0 {
-//                 ProcessedEntry::Ascii("".to_string())
-//             } else {
-//                 return Err(TiffFormatError::InvalidTag.into());
-//             }
-//         }
-//         TagType::IFD | TagType::IFD8 => return Err(UsageError::IfdReadIntoEntry.into()),
-//     })
-// }
-
-// impl TryFrom<ProcessedEntry> for Value {
-//     type Error = TiffError;
-//     fn try_from(entry: ProcessedEntry) -> Result<Self, TiffError> {
-//         if entry.len() == 1 {
-//             Ok(from_single(entry.tag_type, &entry.data)?)
-//         } else if entry.tag_type == TagType::ASCII {
-//             println!("decoding ascii value: {:?}", entry.data);
-//             if entry.data.is_ascii() && entry.data.ends_with(&[0]) {
-//                 let v = std::str::from_utf8(&entry.data)?;
-//                 let v = v.trim_matches(char::from(0));
-//                 Ok(ProcessedEntry::Ascii(v.into()))
-//             } else {
-//                 Err(TiffFormatError::InvalidTag.into())
-//             }
-//         } else {
-//             Ok(ProcessedEntry::List(
-//                 entry
-//                     .data
-//                     .chunks_exact(entry.tag_type.size())
-//                     .map(|chunk| from_single(entry.tag_type, chunk))
-//                     .collect::<TiffResult<Vec<Value>>>()?,
-//             ))
-//         }
-//     }
-// }
-
-// #[rustfmt::skip]
-// impl TryFrom<Value> for ProcessedEntry {
-//     type Error = TiffError;
-//     fn try_from(val: Value) -> Result<Self, Self::Error> {
-//         Ok(match val {
-//             ProcessedEntry::Byte(v)                     => ProcessedEntry::from(v),
-//             ProcessedEntry::SignedByte(v)               => ProcessedEntry::from(v),
-//             ProcessedEntry::Ascii(v)                => ProcessedEntry::from(v),
-//             ProcessedEntry::Undefined(v)                => ProcessedEntry::from(v),
-//             ProcessedEntry::Short(v)                   => ProcessedEntry::from(v),
-//             ProcessedEntry::SShort(v)                  => ProcessedEntry::from(v),
-//             ProcessedEntry::Long(v)                    => ProcessedEntry::from(v),
-//             ProcessedEntry::Ifd(v)                     => ProcessedEntry::from(v),
-//             ProcessedEntry::SLong(v)                   => ProcessedEntry::from(v),
-//             ProcessedEntry::Long8(v)                   => ProcessedEntry::from(v),
-//             ProcessedEntry::Ifd8(v)                    => ProcessedEntry::from(v),
-//             ProcessedEntry::SLong8(v)                  => ProcessedEntry::from(v),
-//             ProcessedEntry::Float(v)                   => ProcessedEntry::from(v),
-//             ProcessedEntry::Double(v)                  => ProcessedEntry::from(v),
-//             ProcessedEntry::Rational(num, denom)  => ProcessedEntry::from(v),
-//             ProcessedEntry::SRational(num, denom) => ProcessedEntry::from(v),
-//             ProcessedEntry::List(vec) => {
-//                 let mut buf = Self::try_from(vec[0].clone())?;
-//                 for v in &vec[1..] {
-//                     let mut temp = Self::try_from(v.clone())?;
-//                     if temp.tag_type != buf.tag_type {
-//                         return Err(TiffFormatError::InvalidTag.into());
-//                     }
-//                     buf.data.append(&mut temp.data);
-//                     buf.count += temp.count;
-//                 }
-//                 buf
-//             },
-//         })
-//     }
-// }
 
 #[cfg(test)]
 #[allow(unused_imports, clippy::useless_conversion)]
@@ -544,7 +472,7 @@ mod test_entry {
     #[test]
     fn test_bufferedentry_into_u8slice() {
         let data = vec![42u8; 42];
-        let entry = ProcessedEntry::from(data.clone());
+        let entry = TagData::from(data.clone());
         assert_eq!(<&[u8]>::try_from(&entry).unwrap(), data);
     }
 
@@ -557,7 +485,7 @@ mod test_entry {
     //             let val = 42 as $t;
     //             $(
     //                 let source_val = val as $st;
-    //                 let e = ProcessedEntry::$type(vec![source_val]);
+    //                 let e = TagData::$type(vec![source_val]);
     //                 println!("testing for single type {}, {:?}", std::any::type_name::<$t>(), $type);
     //                 dbg!(&e);
     //                 // test is ok: test assertion
@@ -567,7 +495,7 @@ mod test_entry {
     //                 if std::mem::size_of::<$t>() < std::mem::size_of::<$st>() {
     //                     let sv = <$st>::MAX;
     //                     println!("{sv} should not fit in {}", std::any::type_name::<$t>());
-    //                     let entry = ProcessedEntry::$type(vec![sv]);
+    //                     let entry = TagData::$type(vec![sv]);
     //                     // https://stackoverflow.com/a/68919527/14681457
     //                     match <$t>::try_from(&entry) {
     //                         Ok(v) => panic!("{v}"),
@@ -590,7 +518,7 @@ mod test_entry {
     // //         fn $name() {
     // //           let size = std::mem::size_of::<$t>();
     // //           $(
-    // //             let e = ProcessedEntry::$type(vec![0]) BufferedEntry{tag_type: $tag_type, count: 1, data: vec![0; size + 1]};
+    // //             let e = TagData::$type(vec![0]) BufferedEntry{tag_type: $tag_type, count: 1, data: vec![0; size + 1]};
     // //             println!("testing for type {}, {:?}", std::any::type_name::<$t>(), $tag_type);
     // //             let TiffError::FormatError(err) = <$t>::try_from(&e).unwrap_err() else {
     // //                 panic!("wrong error type, should be InconsistentSizesEncountered")
@@ -620,7 +548,7 @@ mod test_entry {
     //         fn $name() {
     //             $(
     //                 let z = 0 as $t;
-    //                 let e = ProcessedEntry::$type(vec![z]);//BufferedEntry{tag_type: $tag_type , count: 1, data: vec![0; $tag_type.size()]};
+    //                 let e = TagData::$type(vec![z]);//BufferedEntry{tag_type: $tag_type , count: 1, data: vec![0; $tag_type.size()]};
     //                 println!("testing for type {}, {:?}", std::any::type_name::<$t>(), $type);
     //                 dbg!(&e);
     //                 // First check: converting data manually
@@ -646,7 +574,7 @@ mod test_entry {
     //         fn $name() {
     //             $(
     //                 let z = 0 as $t;
-    //                 let e = ProcessedEntry::$type(vec![z])//BufferedEntry{tag_type: $tag_type , count: 1, data: vec![0; $tag_type.size()]};
+    //                 let e = TagData::$type(vec![z])//BufferedEntry{tag_type: $tag_type , count: 1, data: vec![0; $tag_type.size()]};
     //                 println!("testing for type {}, {:?}", std::any::type_name::<$t>(), $tag_type);
     //                 dbg!(&e);
     //                 // First check: converting data manually
@@ -775,26 +703,26 @@ mod test_entry {
         let cases = [
         // type   count      offset
         // / \   /     \   /       \
-        ([ 1, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Byte      (smallvec![42])                ),
-        ([ 0, 1, 0,0,0,1, 42, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Byte      (smallvec![42])                ),
-        ([ 6, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::SByte     (smallvec![42])                ),
-        ([ 0, 6, 0,0,0,1, 42, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::SByte     (smallvec![42])                ),
-        ([ 7, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Undefined (smallvec![42])                ),
-        ([ 0, 7, 0,0,0,1, 42, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Undefined (smallvec![42])                ),
-        ([ 2, 0, 1,0,0,0,  0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Ascii     (smallvec![0 ])                ),
-        ([ 0, 2, 0,0,0,1,  0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Ascii     (smallvec![0 ])                ),
-        ([ 3, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Short     (smallvec![42])                ),
-        ([ 0, 3, 0,0,0,1,  0,42, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Short     (smallvec![42])                ),
-        ([ 8, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::SShort    (smallvec![42])                ),
-        ([ 0, 8, 0,0,0,1,  0,42, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::SShort    (smallvec![42])                ),
-        ([ 4, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Long      (smallvec![42])                ),
-        ([ 0, 4, 0,0,0,1,  0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Long      (smallvec![42])                ),
-        ([ 9, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::SLong     (smallvec![42])                ),
-        ([ 0, 9, 0,0,0,1,  0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::SLong     (smallvec![42])                ),
-        ([13, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Ifd       (smallvec![42])                ),
-        ([ 0,13, 0,0,0,1,  0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Ifd       (smallvec![42])                ),
-        ([11, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Float     (smallvec![f32::from_bits(42)])),
-        ([ 0,11, 0,0,0,1,  0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Float     (smallvec![f32::from_bits(42)])),
+        ([ 1, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, TagData::Byte      (smallvec![42])                ),
+        ([ 0, 1, 0,0,0,1, 42, 0, 0, 0], ByteOrder::BigEndian,    TagData::Byte      (smallvec![42])                ),
+        ([ 6, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, TagData::SByte     (smallvec![42])                ),
+        ([ 0, 6, 0,0,0,1, 42, 0, 0, 0], ByteOrder::BigEndian,    TagData::SByte     (smallvec![42])                ),
+        ([ 7, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, TagData::Undefined (smallvec![42])                ),
+        ([ 0, 7, 0,0,0,1, 42, 0, 0, 0], ByteOrder::BigEndian,    TagData::Undefined (smallvec![42])                ),
+        ([ 2, 0, 1,0,0,0,  0, 0, 0, 0], ByteOrder::LittleEndian, TagData::Ascii     (smallvec![0 ])                ),
+        ([ 0, 2, 0,0,0,1,  0, 0, 0, 0], ByteOrder::BigEndian,    TagData::Ascii     (smallvec![0 ])                ),
+        ([ 3, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, TagData::Short     (smallvec![42])                ),
+        ([ 0, 3, 0,0,0,1,  0,42, 0, 0], ByteOrder::BigEndian,    TagData::Short     (smallvec![42])                ),
+        ([ 8, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, TagData::SShort    (smallvec![42])                ),
+        ([ 0, 8, 0,0,0,1,  0,42, 0, 0], ByteOrder::BigEndian,    TagData::SShort    (smallvec![42])                ),
+        ([ 4, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, TagData::Long      (smallvec![42])                ),
+        ([ 0, 4, 0,0,0,1,  0, 0, 0,42], ByteOrder::BigEndian,    TagData::Long      (smallvec![42])                ),
+        ([ 9, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, TagData::SLong     (smallvec![42])                ),
+        ([ 0, 9, 0,0,0,1,  0, 0, 0,42], ByteOrder::BigEndian,    TagData::SLong     (smallvec![42])                ),
+        ([13, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, TagData::Ifd       (smallvec![42])                ),
+        ([ 0,13, 0,0,0,1,  0, 0, 0,42], ByteOrder::BigEndian,    TagData::Ifd       (smallvec![42])                ),
+        ([11, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, TagData::Float     (smallvec![f32::from_bits(42)])),
+        ([ 0,11, 0,0,0,1,  0, 0, 0,42], ByteOrder::BigEndian,    TagData::Float     (smallvec![f32::from_bits(42)])),
         // Double doesn't fit, neither 8-types and we special-case IFD
         ];
         for (buf, byte_order, res) in cases {
@@ -816,38 +744,38 @@ mod test_entry {
         let cases = [
         //type       count            offset
         // / \  1 2 3 4 5 6 7 8   1  2  3  4  5  6  7  8
-        ([ 1, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Byte      (smallvec![42])                ),
-        ([ 0, 1, 0,0,0,0,0,0,0,1, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Byte      (smallvec![42])                ),
-        ([ 6, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::SByte     (smallvec![42])                ),
-        ([ 0, 6, 0,0,0,0,0,0,0,1, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::SByte     (smallvec![42])                ),
-        ([ 7, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Undefined (smallvec![42])                ),
-        ([ 0, 7, 0,0,0,0,0,0,0,1, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Undefined (smallvec![42])                ),
-        ([ 2, 0, 1,0,0,0,0,0,0,0,  0, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Ascii     (smallvec![0 ])                ),
-        ([ 0, 2, 0,0,0,0,0,0,0,1,  0, 0, 0, 0, 0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Ascii     (smallvec![0 ])                ),
-        ([ 3, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Short     (smallvec![42])                ),
-        ([ 0, 3, 0,0,0,0,0,0,0,1,  0,42, 0, 0, 0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Short     (smallvec![42])                ),
-        ([ 8, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::SShort    (smallvec![42])                ),
-        ([ 0, 8, 0,0,0,0,0,0,0,1,  0,42, 0, 0, 0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::SShort    (smallvec![42])                ),
-        ([ 4, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Long      (smallvec![42])                ),
-        ([ 0, 4, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Long      (smallvec![42])                ),
-        ([ 9, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::SLong     (smallvec![42])                ),
-        ([ 0, 9, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::SLong     (smallvec![42])                ),
-        ([13, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Ifd       (smallvec![42])                ),
-        ([ 0,13, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Ifd       (smallvec![42])                ),
-        ([16, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Long8     (smallvec![42])                ),
-        ([ 0,16, 0,0,0,0,0,0,0,1,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Long8     (smallvec![42])                ),
-        ([17, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::SLong8    (smallvec![42])                ),
-        ([ 0,17, 0,0,0,0,0,0,0,1,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::SLong8    (smallvec![42])                ),
-        ([18, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Ifd8      (smallvec![42])                ),
-        ([ 0,18, 0,0,0,0,0,0,0,1,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Ifd8      (smallvec![42])                ),
-        ([11, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Float     (smallvec![f32::from_bits(42)])),
-        ([ 0,11, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0, 0], ByteOrder::BigEndian,    ProcessedEntry::Float     (smallvec![f32::from_bits(42)])),
-        ([12, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Double    (smallvec![f64::from_bits(42)])),
-        ([ 0,12, 0,0,0,0,0,0,0,1,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Double    (smallvec![f64::from_bits(42)])),
-        ([ 5, 0, 1,0,0,0,0,0,0,0,  42,0, 0, 0,43, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Rational  (smallvec![[42, 43]])          ),
-        ([ 0, 5, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0,43], ByteOrder::BigEndian,    ProcessedEntry::Rational  (smallvec![[42, 43]])          ),
-        ([ 10,0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0,43, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::SRational (smallvec![[42, 43]])          ),
-        ([ 0,10, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0,43], ByteOrder::BigEndian,    ProcessedEntry::SRational (smallvec![[42, 43]])          ),
+        ([ 1, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, TagData::Byte      (smallvec![42])                ),
+        ([ 0, 1, 0,0,0,0,0,0,0,1, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::BigEndian,    TagData::Byte      (smallvec![42])                ),
+        ([ 6, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, TagData::SByte     (smallvec![42])                ),
+        ([ 0, 6, 0,0,0,0,0,0,0,1, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::BigEndian,    TagData::SByte     (smallvec![42])                ),
+        ([ 7, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, TagData::Undefined (smallvec![42])                ),
+        ([ 0, 7, 0,0,0,0,0,0,0,1, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::BigEndian,    TagData::Undefined (smallvec![42])                ),
+        ([ 2, 0, 1,0,0,0,0,0,0,0,  0, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, TagData::Ascii     (smallvec![0 ])                ),
+        ([ 0, 2, 0,0,0,0,0,0,0,1,  0, 0, 0, 0, 0, 0, 0, 0], ByteOrder::BigEndian,    TagData::Ascii     (smallvec![0 ])                ),
+        ([ 3, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, TagData::Short     (smallvec![42])                ),
+        ([ 0, 3, 0,0,0,0,0,0,0,1,  0,42, 0, 0, 0, 0, 0, 0], ByteOrder::BigEndian,    TagData::Short     (smallvec![42])                ),
+        ([ 8, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, TagData::SShort    (smallvec![42])                ),
+        ([ 0, 8, 0,0,0,0,0,0,0,1,  0,42, 0, 0, 0, 0, 0, 0], ByteOrder::BigEndian,    TagData::SShort    (smallvec![42])                ),
+        ([ 4, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, TagData::Long      (smallvec![42])                ),
+        ([ 0, 4, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0, 0], ByteOrder::BigEndian,    TagData::Long      (smallvec![42])                ),
+        ([ 9, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, TagData::SLong     (smallvec![42])                ),
+        ([ 0, 9, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0, 0], ByteOrder::BigEndian,    TagData::SLong     (smallvec![42])                ),
+        ([13, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, TagData::Ifd       (smallvec![42])                ),
+        ([ 0,13, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0, 0], ByteOrder::BigEndian,    TagData::Ifd       (smallvec![42])                ),
+        ([16, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, TagData::Long8     (smallvec![42])                ),
+        ([ 0,16, 0,0,0,0,0,0,0,1,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian,    TagData::Long8     (smallvec![42])                ),
+        ([17, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, TagData::SLong8    (smallvec![42])                ),
+        ([ 0,17, 0,0,0,0,0,0,0,1,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian,    TagData::SLong8    (smallvec![42])                ),
+        ([18, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, TagData::Ifd8      (smallvec![42])                ),
+        ([ 0,18, 0,0,0,0,0,0,0,1,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian,    TagData::Ifd8      (smallvec![42])                ),
+        ([11, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, TagData::Float     (smallvec![f32::from_bits(42)])),
+        ([ 0,11, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0, 0], ByteOrder::BigEndian,    TagData::Float     (smallvec![f32::from_bits(42)])),
+        ([12, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, TagData::Double    (smallvec![f64::from_bits(42)])),
+        ([ 0,12, 0,0,0,0,0,0,0,1,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian,    TagData::Double    (smallvec![f64::from_bits(42)])),
+        ([ 5, 0, 1,0,0,0,0,0,0,0,  42,0, 0, 0,43, 0, 0, 0], ByteOrder::LittleEndian, TagData::Rational  (smallvec![[42, 43]])          ),
+        ([ 0, 5, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0,43], ByteOrder::BigEndian,    TagData::Rational  (smallvec![[42, 43]])          ),
+        ([ 10,0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0,43, 0, 0, 0], ByteOrder::LittleEndian, TagData::SRational (smallvec![[42, 43]])          ),
+        ([ 0,10, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0,43], ByteOrder::BigEndian,    TagData::SRational (smallvec![[42, 43]])          ),
         // we special-case IFD
         ];
         for (buf, byte_order, res) in cases {
@@ -870,19 +798,19 @@ mod test_entry {
         let cases = [
         //n_tags tag type  count    offset
         // //    // /  \  /     \   /     \
-        ([1, 0, 4,0,0,0, 42,42,42,42], ByteOrder::LittleEndian, ProcessedEntry::Byte      (smallvec![42; 4]) ),
-        ([0, 1, 0,0,0,4, 42,42,42,42], ByteOrder::BigEndian,    ProcessedEntry::Byte      (smallvec![42; 4]) ),
-        ([6, 0, 4,0,0,0, 42,42,42,42], ByteOrder::LittleEndian, ProcessedEntry::SByte     (smallvec![42; 4]) ),
-        ([0, 6, 0,0,0,4, 42,42,42,42], ByteOrder::BigEndian,    ProcessedEntry::SByte     (smallvec![42; 4]) ),
-        ([7, 0, 4,0,0,0, 42,42,42,42], ByteOrder::LittleEndian, ProcessedEntry::Undefined (smallvec![42; 4]) ),
-        ([0, 7, 0,0,0,4, 42,42,42,42], ByteOrder::BigEndian,    ProcessedEntry::Undefined (smallvec![42; 4]) ),
-        ([2, 0, 4,0,0,0, 42,42,42, 0], ByteOrder::LittleEndian, ProcessedEntry::Ascii     ("***\0".as_bytes().into())),
-        ([0, 2, 0,0,0,4, 42,42,42, 0], ByteOrder::BigEndian,    ProcessedEntry::Ascii     ("***\0".as_bytes().into())),
-        ([3, 0, 2,0,0,0, 42, 0,42, 0], ByteOrder::LittleEndian, ProcessedEntry::Short     (smallvec![42; 2]) ),
-        ([0, 3, 0,0,0,2,  0,42, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Short     (smallvec![42; 2]) ),
-        ([8, 0, 2,0,0,0, 42, 0,42, 0], ByteOrder::LittleEndian, ProcessedEntry::SShort    (smallvec![42; 2]) ),
-        ([0, 8, 0,0,0,2,  0,42, 0,42], ByteOrder::BigEndian,    ProcessedEntry::SShort    (smallvec![42; 2]) ),
-        ([0, 2, 0,0,0,4, b'A',b'B',b'C',0], ByteOrder::BigEndian, ProcessedEntry::Ascii("ABC\0".as_bytes().into())),
+        ([1, 0, 4,0,0,0, 42,42,42,42], ByteOrder::LittleEndian, TagData::Byte      (smallvec![42; 4]) ),
+        ([0, 1, 0,0,0,4, 42,42,42,42], ByteOrder::BigEndian,    TagData::Byte      (smallvec![42; 4]) ),
+        ([6, 0, 4,0,0,0, 42,42,42,42], ByteOrder::LittleEndian, TagData::SByte     (smallvec![42; 4]) ),
+        ([0, 6, 0,0,0,4, 42,42,42,42], ByteOrder::BigEndian,    TagData::SByte     (smallvec![42; 4]) ),
+        ([7, 0, 4,0,0,0, 42,42,42,42], ByteOrder::LittleEndian, TagData::Undefined (smallvec![42; 4]) ),
+        ([0, 7, 0,0,0,4, 42,42,42,42], ByteOrder::BigEndian,    TagData::Undefined (smallvec![42; 4]) ),
+        ([2, 0, 4,0,0,0, 42,42,42, 0], ByteOrder::LittleEndian, TagData::Ascii     ("***\0".as_bytes().into())),
+        ([0, 2, 0,0,0,4, 42,42,42, 0], ByteOrder::BigEndian,    TagData::Ascii     ("***\0".as_bytes().into())),
+        ([3, 0, 2,0,0,0, 42, 0,42, 0], ByteOrder::LittleEndian, TagData::Short     (smallvec![42; 2]) ),
+        ([0, 3, 0,0,0,2,  0,42, 0,42], ByteOrder::BigEndian,    TagData::Short     (smallvec![42; 2]) ),
+        ([8, 0, 2,0,0,0, 42, 0,42, 0], ByteOrder::LittleEndian, TagData::SShort    (smallvec![42; 2]) ),
+        ([0, 8, 0,0,0,2,  0,42, 0,42], ByteOrder::BigEndian,    TagData::SShort    (smallvec![42; 2]) ),
+        ([0, 2, 0,0,0,4, b'A',b'B',b'C',0], ByteOrder::BigEndian, TagData::Ascii("ABC\0".as_bytes().into())),
         // others don't fit, neither 8-types and we special-case IFD
         ];
         for (buf, byte_order, res) in cases {
@@ -904,26 +832,26 @@ mod test_entry {
         let cases = [
         // type       count            offset
         // / \  1 2 3 4 5 6 7 8   1  2  3  4  5  6  7  8
-        ([ 1, 0, 8,0,0,0,0,0,0,0, 42,42,42,42,42,42,42,42], ByteOrder::LittleEndian, ProcessedEntry::Byte      (smallvec![42                ; 8])),
-        ([ 0, 1, 0,0,0,0,0,0,0,8, 42,42,42,42,42,42,42,42], ByteOrder::BigEndian,    ProcessedEntry::Byte      (smallvec![42                ; 8])),
-        ([ 6, 0, 8,0,0,0,0,0,0,0, 42,42,42,42,42,42,42,42], ByteOrder::LittleEndian, ProcessedEntry::SByte     (smallvec![42                ; 8])),
-        ([ 0, 6, 0,0,0,0,0,0,0,8, 42,42,42,42,42,42,42,42], ByteOrder::BigEndian,    ProcessedEntry::SByte     (smallvec![42                ; 8])),
-        ([ 7, 0, 8,0,0,0,0,0,0,0, 42,42,42,42,42,42,42,42], ByteOrder::LittleEndian, ProcessedEntry::Undefined (smallvec![42                ; 8])),
-        ([ 0, 7, 0,0,0,0,0,0,0,8, 42,42,42,42,42,42,42,42], ByteOrder::BigEndian,    ProcessedEntry::Undefined (smallvec![42                ; 8])),
-        ([ 2, 0, 8,0,0,0,0,0,0,0, 42,42,42,42,42,42,42, 0], ByteOrder::LittleEndian, ProcessedEntry::Ascii     ("*******\0".as_bytes().into()   )),
-        ([ 0, 2, 0,0,0,0,0,0,0,8, 42,42,42,42,42,42,42, 0], ByteOrder::BigEndian,    ProcessedEntry::Ascii     ("*******\0".as_bytes().into()   )),
-        ([ 3, 0, 4,0,0,0,0,0,0,0, 42, 0,42, 0,42, 0,42, 0], ByteOrder::LittleEndian, ProcessedEntry::Short     (smallvec![42                ; 4])),
-        ([ 0, 3, 0,0,0,0,0,0,0,4,  0,42, 0,42, 0,42, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Short     (smallvec![42                ; 4])),
-        ([ 8, 0, 4,0,0,0,0,0,0,0, 42, 0,42, 0,42, 0,42, 0], ByteOrder::LittleEndian, ProcessedEntry::SShort    (smallvec![42                ; 4])),
-        ([ 0, 8, 0,0,0,0,0,0,0,4,  0,42, 0,42, 0,42, 0,42], ByteOrder::BigEndian,    ProcessedEntry::SShort    (smallvec![42                ; 4])),
-        ([ 4, 0, 2,0,0,0,0,0,0,0, 42, 0, 0, 0,42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Long      (smallvec![42                ; 2])),
-        ([ 0, 4, 0,0,0,0,0,0,0,2,  0, 0, 0,42, 0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Long      (smallvec![42                ; 2])),
-        ([ 9, 0, 2,0,0,0,0,0,0,0, 42, 0, 0, 0,42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::SLong     (smallvec![42                ; 2])),
-        ([ 0, 9, 0,0,0,0,0,0,0,2,  0, 0, 0,42, 0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::SLong     (smallvec![42                ; 2])),
-        ([13, 0, 2,0,0,0,0,0,0,0, 42, 0, 0, 0,42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Ifd       (smallvec![42                ; 2])),
-        ([ 0,13, 0,0,0,0,0,0,0,2,  0, 0, 0,42, 0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Ifd       (smallvec![42                ; 2])),
-        ([11, 0, 2,0,0,0,0,0,0,0, 42, 0, 0, 0,42, 0, 0, 0], ByteOrder::LittleEndian, ProcessedEntry::Float     (smallvec![f32::from_bits(42); 2])),
-        ([ 0,11, 0,0,0,0,0,0,0,2,  0, 0, 0,42, 0, 0, 0,42], ByteOrder::BigEndian,    ProcessedEntry::Float     (smallvec![f32::from_bits(42); 2])),
+        ([ 1, 0, 8,0,0,0,0,0,0,0, 42,42,42,42,42,42,42,42], ByteOrder::LittleEndian, TagData::Byte      (smallvec![42                ; 8])),
+        ([ 0, 1, 0,0,0,0,0,0,0,8, 42,42,42,42,42,42,42,42], ByteOrder::BigEndian,    TagData::Byte      (smallvec![42                ; 8])),
+        ([ 6, 0, 8,0,0,0,0,0,0,0, 42,42,42,42,42,42,42,42], ByteOrder::LittleEndian, TagData::SByte     (smallvec![42                ; 8])),
+        ([ 0, 6, 0,0,0,0,0,0,0,8, 42,42,42,42,42,42,42,42], ByteOrder::BigEndian,    TagData::SByte     (smallvec![42                ; 8])),
+        ([ 7, 0, 8,0,0,0,0,0,0,0, 42,42,42,42,42,42,42,42], ByteOrder::LittleEndian, TagData::Undefined (smallvec![42                ; 8])),
+        ([ 0, 7, 0,0,0,0,0,0,0,8, 42,42,42,42,42,42,42,42], ByteOrder::BigEndian,    TagData::Undefined (smallvec![42                ; 8])),
+        ([ 2, 0, 8,0,0,0,0,0,0,0, 42,42,42,42,42,42,42, 0], ByteOrder::LittleEndian, TagData::Ascii     ("*******\0".as_bytes().into()   )),
+        ([ 0, 2, 0,0,0,0,0,0,0,8, 42,42,42,42,42,42,42, 0], ByteOrder::BigEndian,    TagData::Ascii     ("*******\0".as_bytes().into()   )),
+        ([ 3, 0, 4,0,0,0,0,0,0,0, 42, 0,42, 0,42, 0,42, 0], ByteOrder::LittleEndian, TagData::Short     (smallvec![42                ; 4])),
+        ([ 0, 3, 0,0,0,0,0,0,0,4,  0,42, 0,42, 0,42, 0,42], ByteOrder::BigEndian,    TagData::Short     (smallvec![42                ; 4])),
+        ([ 8, 0, 4,0,0,0,0,0,0,0, 42, 0,42, 0,42, 0,42, 0], ByteOrder::LittleEndian, TagData::SShort    (smallvec![42                ; 4])),
+        ([ 0, 8, 0,0,0,0,0,0,0,4,  0,42, 0,42, 0,42, 0,42], ByteOrder::BigEndian,    TagData::SShort    (smallvec![42                ; 4])),
+        ([ 4, 0, 2,0,0,0,0,0,0,0, 42, 0, 0, 0,42, 0, 0, 0], ByteOrder::LittleEndian, TagData::Long      (smallvec![42                ; 2])),
+        ([ 0, 4, 0,0,0,0,0,0,0,2,  0, 0, 0,42, 0, 0, 0,42], ByteOrder::BigEndian,    TagData::Long      (smallvec![42                ; 2])),
+        ([ 9, 0, 2,0,0,0,0,0,0,0, 42, 0, 0, 0,42, 0, 0, 0], ByteOrder::LittleEndian, TagData::SLong     (smallvec![42                ; 2])),
+        ([ 0, 9, 0,0,0,0,0,0,0,2,  0, 0, 0,42, 0, 0, 0,42], ByteOrder::BigEndian,    TagData::SLong     (smallvec![42                ; 2])),
+        ([13, 0, 2,0,0,0,0,0,0,0, 42, 0, 0, 0,42, 0, 0, 0], ByteOrder::LittleEndian, TagData::Ifd       (smallvec![42                ; 2])),
+        ([ 0,13, 0,0,0,0,0,0,0,2,  0, 0, 0,42, 0, 0, 0,42], ByteOrder::BigEndian,    TagData::Ifd       (smallvec![42                ; 2])),
+        ([11, 0, 2,0,0,0,0,0,0,0, 42, 0, 0, 0,42, 0, 0, 0], ByteOrder::LittleEndian, TagData::Float     (smallvec![f32::from_bits(42); 2])),
+        ([ 0,11, 0,0,0,0,0,0,0,2,  0, 0, 0,42, 0, 0, 0,42], ByteOrder::BigEndian,    TagData::Float     (smallvec![f32::from_bits(42); 2])),
         // we special-case IFD
         ];
         for (buf, byte_order, res) in cases {

@@ -293,7 +293,7 @@ pub struct Image {
 
 ### Notable changes with image-tiff:
 
-- use of ~BufferedEntry~ `ProcessedEntry` in stead of `Value` everywhere
+- use of ~BufferedEntry~ `TagData` in stead of `Value` everywhere
 - Ifd and other building blocks have a more central place
 - ChunkOpts is taking some place of Image
 - 
@@ -389,7 +389,7 @@ pub struct Image {
     pub struct IfdEntry {
       Offset(Offset),
       Single(Value),
-      Multiple(ProcessedEntry),
+      Multiple(TagData),
     }
     ```
     - no needless allocs for single values

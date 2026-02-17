@@ -1,14 +1,12 @@
-use crate::{
-    error::{TiffError, TiffFormatError, TiffResult, TiffUnsupportedError, UsageError},
-    structs::{
-        tags::{
-            CompressionMethod, PhotometricInterpretation, PlanarConfiguration, Predictor,
-            SampleFormat, Tag,
-        },
-        Ifd, IfdEntry, Offset, TagData,
-    },
-    ByteOrder, ChunkType, ColorType,
+use bytes::Bytes;
+
+use crate::decoder::chunk::ChunkOpts;
+use crate::error::{TiffError, TiffFormatError, TiffResult, TiffUnsupportedError, UsageError};
+use crate::structs::tags::{
+    CompressionMethod, PhotometricInterpretation, PlanarConfiguration, Predictor, SampleFormat, Tag,
 };
+use crate::structs::{Ifd, IfdEntry, Offset, TagData};
+use crate::{ByteOrder, ColorType};
 
 use std::{collections::BTreeMap, fmt::Debug, ops::Range, sync::Arc};
 
@@ -57,251 +55,6 @@ impl TileAttributes {
         };
 
         (padding_right, padding_down)
-    }
-}
-
-/// Struct that holds all relevant metadata that is needed to decode a chunk
-/// (strip or tile).
-/// this does not include chunkoffsets or -bytes, since those may be partial and
-/// then mutated. once we implement partial tags
-#[derive(Debug, PartialEq, Clone)]
-pub struct ChunkOpts {
-    /// tiff byte order
-    pub byte_order: ByteOrder,
-    /// width of the image in pixels
-    pub image_width: u32,
-    /// height of the image in pixels
-    pub image_height: u32,
-    /// bits per sample
-    pub bits_per_sample: u8,
-    /// samples per pixel
-    pub samples_per_pixel: u16,
-    /// datatype of samples
-    pub sample_format: SampleFormat,
-    /// photometric interpretation
-    pub photometric_interpretation: PhotometricInterpretation,
-    /// compression method
-    ///
-    /// supported decoding:
-    /// - `LZW`
-    /// - `ModernJPEG`
-    /// - `Deflate`
-    /// - `PackBits``
-    pub compression_method: CompressionMethod,
-    /// horizontal predictor type
-    ///
-    /// Allows for more efficient compression
-    pub predictor: Predictor,
-    /// Jpeg tables
-    ///
-    /// In case of ModernJPEG compression, the compression infomation _can_ be
-    /// in this tag, where it is prepended to chunks before decoding.
-    /// still an Arc, because we want to do error sharing.
-    pub jpeg_tables: Option<Arc<Vec<u8>>>,
-    /// Planar configuration:
-    ///
-    /// example: RGB
-    /// - Chunky: [RGBRGBRGB]
-    /// - Planar: [RRR] [GGG] [BBB]
-    pub planar_config: PlanarConfiguration,
-    /// Chunk width in pixels
-    ///
-    /// If this is a stripped tiff, `chunk_width=image_width`
-    pub chunk_width: u32,
-    /// Chunk height in pixels
-    ///
-    /// If this is a stripped tiff, `chunk_height=rows_per_strip`
-    pub chunk_height: u32,
-}
-
-impl ChunkOpts {
-    // /// Samples per pixel within chunk.
-    // ///
-    // /// In planar config, samples are stored in separate strips/chunks, also called bands.
-    // ///
-    // /// Example with `bits_per_sample = [8, 8, 8]` and `PhotometricInterpretation::RGB`:
-    // /// * `PlanarConfiguration::Chunky` -> 3 (RGBRGBRGB...)
-    // /// * `PlanarConfiguration::Planar` -> 1 (RRR...) (GGG...) (BBB...)
-    // pub fn samples_per_pixel(&self) -> usize {
-    //     match self.planar_config {
-    //         PlanarConfiguration::Chunky => self.samples.into(),
-    //         PlanarConfiguration::Planar => 1,
-    //     }
-    // }
-
-    /// The length of a chunk row in bytes, taking padding into account.
-    ///
-    pub fn output_row_stride(&self, x: u32) -> TiffResult<usize> {
-        Ok((self.chunk_width_pixels(x)? as usize).saturating_mul(self.bits_per_pixel()) / 8)
-    }
-
-    fn bits_per_pixel(&self) -> usize {
-        match self.planar_config {
-            PlanarConfiguration::Chunky => {
-                self.bits_per_sample as usize * self.samples_per_pixel as usize
-            }
-            PlanarConfiguration::Planar => self.samples_per_pixel as usize,
-        }
-    }
-    fn chunks_across(&self) -> u32 {
-        self.image_width.div_ceil(self.chunk_width)
-    }
-    fn chunks_down(&self) -> u32 {
-        self.image_height.div_ceil(self.chunk_height)
-    }
-    fn chunk_width_pixels(&self, x: u32) -> TiffResult<u32> {
-        let chunks_across = self.chunks_across();
-        if x >= chunks_across {
-            Err(TiffError::UsageError(UsageError::InvalidChunkIndex(x)))
-        } else if x == chunks_across - 1 {
-            Ok(self.image_width - self.chunk_width * x)
-        } else {
-            Ok(self.chunk_width)
-        }
-    }
-    fn chunk_height_pixels(&self, y: u32) -> TiffResult<u32> {
-        let chunks_down = self.chunks_down();
-        if y >= chunks_down {
-            Err(TiffError::UsageError(UsageError::InvalidChunkIndex(y)))
-        } else if y == chunks_down - 1 {
-            Ok(self.image_height - self.chunk_height * y)
-        } else {
-            Ok(self.chunk_height)
-        }
-    }
-    /// dimensions of a chunk, not taking padding into account.
-    ///
-    /// Can be directly deduced from ChunkType and corresponding data
-    pub fn chunk_dimensions(&self) -> (u32, u32) {
-        (self.chunk_width, self.chunk_height)
-    }
-
-    pub fn output_rows(&self, y: u32) -> TiffResult<usize> {
-        match self.planar_config {
-            PlanarConfiguration::Chunky => Ok(self.chunk_height_pixels(y)? as usize),
-            PlanarConfiguration::Planar => {
-                Ok((self.chunk_height_pixels(y)? as usize)
-                    .saturating_mul(self.samples_per_pixel as _))
-            }
-        }
-    }
-
-    // /// return the dimensions of an expanded chunk, taking into account padding
-    // /// at the bottom and right side of the file.
-    // ///
-    // pub fn chunk_data_dimensions(&self, chunk_index: u32) -> TiffResult<(u32, u32)> {
-    //     let dims = self.chunk_dimensions();
-
-    //     match self.chunk_type {
-    //         ChunkType::Strip => {
-    //             // image ordering in case of planar configuration:
-    //             // > The components are stored in separate “component planes.” The
-    //             // > values in StripOffsets and StripByteCounts are then arranged as a 2-dimensional
-    //             // > array, with SamplesPerPixel rows and StripsPerImage columns. (All of the col-
-    //             // > umns for row 0 are stored first, followed by the columns of row 1, and so on.)
-    //             // > PhotometricInterpretation describes the type of data stored in each component
-    //             // > plane. For example, RGB data is stored with the Red components in one compo-
-    //             // > nent plane, the Green in another, and the Blue in another.
-    //             // so:
-    //             // spp
-    //             // ^
-    //             // |
-    //             // +--> chunks
-    //             //       ___col0___________col2_______________colN______
-    //             // row1 | Chunk0[RED]  , Chunk1[RED]  , ... ChunkN[RED]
-    //             // row2 | Chunk0[GREEN], Chunk1[GREEN], ... ChunkN[GREEN]
-    //             // row3 | Chunk0[BLUE] , Chunk1[BLUE] , ... ChunkN[BLUE]
-    //             // "in memory": [Chunk1[RED],Chunk2[RED],...ChunkN[RED],Chunk1[GREEN]...]
-    //             // let's say we have a 42x42 RGBA image with 8 rows_per_chunk
-    //             // that's ceil(42/8)=6 strips_per_band, where the last chunk has 2 rows
-    //             let strip_attrs = self.strip_decoder.as_ref().unwrap();
-    //             // follow through, where we want to get chunk 5
-    //             let strips_per_band = // the N of ChunkN
-    //                 self.image_height.div_ceil(strip_attrs.rows_per_strip);
-    //             let strip_height_without_padding = (chunk_index % strips_per_band)// 5
-    //                 .checked_mul(dims.1)// 5*8=40
-    //                 .and_then(|x| self.image_height.checked_sub(x)) // 2
-    //                 .ok_or(TiffError::UsageError(UsageError::InvalidChunkIndex(
-    //                     chunk_index,
-    //                 )))?;
-
-    //             // Ignore potential vertical padding on the bottommost strip
-    //             let strip_height = dims.1.min(strip_height_without_padding);
-
-    //             Ok((dims.0, strip_height))
-    //         }
-    //         ChunkType::Tile => {
-    //             let tile_attrs = self.tile_attributes.as_ref().unwrap();
-    //             let (padding_right, padding_down) = tile_attrs.get_padding(chunk_index as usize);
-
-    //             let tile_width = tile_attrs.tile_width - padding_right;
-    //             let tile_length = tile_attrs.tile_length - padding_down;
-
-    //             Ok((u32::try_from(tile_width)?, u32::try_from(tile_length)?))
-    //         }
-    //     }
-    // }
-
-    /// Derive colortype from info
-    ///
-    /// ## TODO: fix:
-    /// - RGB++
-    /// - TransparencyMask
-    /// - [CIELab](https://en.wikipedia.org/wiki/CIELAB_color_space)
-    pub fn colortype(&self) -> TiffResult<ColorType> {
-        match self.photometric_interpretation {
-            PhotometricInterpretation::RGB => match self.samples_per_pixel {
-                3 => Ok(ColorType::RGB(self.bits_per_sample)),
-                4 => Ok(ColorType::RGBA(self.bits_per_sample)),
-                // FIXME: We should _ignore_ other components. In particular:
-                // > Beware of extra components. Some TIFF files may have more components per pixel
-                // than you think. A Baseline TIFF reader must skip over them gracefully,using the
-                // values of the SamplesPerPixel and BitsPerSample fields.
-                // > -- TIFF 6.0 Specification, Section 7, Additional Baseline requirements.
-                _ => Err(TiffError::UnsupportedError(
-                    TiffUnsupportedError::InterpretationWithBits(
-                        self.photometric_interpretation,
-                        vec![self.bits_per_sample; self.samples_per_pixel as usize],
-                    ),
-                )),
-            },
-            PhotometricInterpretation::CMYK => match self.samples_per_pixel {
-                4 => Ok(ColorType::CMYK(self.bits_per_sample)),
-                _ => Err(TiffError::UnsupportedError(
-                    TiffUnsupportedError::InterpretationWithBits(
-                        self.photometric_interpretation,
-                        vec![self.bits_per_sample; self.samples_per_pixel as usize],
-                    ),
-                )),
-            },
-            PhotometricInterpretation::YCbCr => match self.samples_per_pixel {
-                3 => Ok(ColorType::YCbCr(self.bits_per_sample)),
-                _ => Err(TiffError::UnsupportedError(
-                    TiffUnsupportedError::InterpretationWithBits(
-                        self.photometric_interpretation,
-                        vec![self.bits_per_sample; self.samples_per_pixel as usize],
-                    ),
-                )),
-            },
-            PhotometricInterpretation::BlackIsZero | PhotometricInterpretation::WhiteIsZero => {
-                match self.samples_per_pixel {
-                    1 => Ok(ColorType::Gray(self.bits_per_sample)),
-                    _ => Ok(ColorType::Multiband {
-                        bit_depth: self.bits_per_sample,
-                        num_samples: self.samples_per_pixel,
-                    }),
-                }
-            }
-            // TODO: this is bad we should not fail at this point
-            PhotometricInterpretation::RGBPalette
-            | PhotometricInterpretation::TransparencyMask
-            | PhotometricInterpretation::CIELab => Err(TiffError::UnsupportedError(
-                TiffUnsupportedError::InterpretationWithBits(
-                    self.photometric_interpretation,
-                    vec![self.bits_per_sample; self.samples_per_pixel as usize],
-                ),
-            )),
-        }
     }
 }
 
@@ -559,7 +312,7 @@ impl Image {
                 ));
             }
 
-            Some(Arc::new(vec))
+            Some(Bytes::from_owner(vec))
         } else {
             None
         };
@@ -773,7 +526,7 @@ mod test {
     //     for req_tag in REQUIRED_TAGS {
     //         // since all required tags fit within the offset field, they cannot
     //         // be an offset in the tiff
-    //         let entry = ProcessedEntry::Long(vec![42u32]);
+    //         let entry = TagData::Long(vec![42u32]);
 
     //         let mut d = build_strip_dir();
     //         d.insert(req_tag, IfdEntry::Value(entry)).unwrap();
@@ -1163,11 +916,17 @@ mod test {
 
     // from buffer using chatgpt: "write me an IFD (byte buffer) for the
     // following cases (little-endian): // above functions"
+    /// The base ImageFileDirectory for an image
+    ///
+    /// has 3 entries:
+    /// 1. `ImageWidth`
+    /// 2. `ImageHeight`
+    /// 3. `PhotometricInterpretation`
     fn build_dir_buffer() -> Vec<u8> {
         let mut buffer = Vec::new();
 
         // Number of entries (2 bytes)
-        buffer.extend_from_slice(&(3u16).to_le_bytes());
+        // buffer.extend_from_slice(&(3u16).to_le_bytes());
 
         // Entry: ImageWidth (tag 0x0100, type LONG, count 1, value 42)
         buffer.extend_from_slice(&Tag::ImageWidth.to_u16().to_le_bytes()); // Tag
@@ -1194,11 +953,19 @@ mod test {
         buffer
     }
 
+    /// Build a directory for a stripped tiff
+    ///
+    /// has 5 entries:
+    ///
+    /// 4. `StripByteCounts`
+    /// 5. `StripOffsets`
+    ///
+    /// well, apparently no `RowsPerStrip`, so that's 1
     fn build_strip_dir_buffer() -> Vec<u8> {
         let mut buffer = build_dir_buffer();
 
         // Update the number of entries to 5 (previous entries + 2 new ones)
-        buffer[0..2].copy_from_slice(&5u16.to_le_bytes());
+        // buffer[0..2].copy_from_slice(&5u16.to_le_bytes());
 
         // Entry: StripByteCounts (tag 0x0117, type LONG, count 1, value 1764)
         buffer.extend_from_slice(&Tag::StripByteCounts.to_u16().to_le_bytes()); // Tag
@@ -1218,11 +985,19 @@ mod test {
         buffer
     }
 
+    /// Build a buffer for a tile directory.
+    ///
+    /// has 7 entries
+    ///
+    /// 4. `TileByteCounts`
+    /// 5. `TileOffsets`
+    /// 6. `TileLenght`
+    /// 7. `TileWidth`
     fn build_tile_dir_buffer() -> Vec<u8> {
         let mut buffer = build_dir_buffer();
 
         // Update the number of entries to 7 (previous entries + 4 new ones)
-        buffer[0..2].copy_from_slice(&7u16.to_le_bytes());
+        // buffer[0..2].copy_from_slice(&7u16.to_le_bytes());
 
         // Entry: TileByteCounts (tag 0x0145, type LONG, count 1, value 1764)
         buffer.extend_from_slice(&Tag::TileByteCounts.to_u16().to_le_bytes()); // Tag
@@ -1259,7 +1034,7 @@ mod test {
         let buf = build_tile_dir_buffer();
         let byte_order = ByteOrder::LittleEndian;
         let (ifd, next) =
-            Ifd::from_buffer(&buf, byte_order, false).expect("Could not build ifd from buffer");
+            Ifd::from_buffer(&buf, 7, byte_order, false).expect("Could not build ifd from buffer");
         assert_eq!(
             Image::check_ifd(&ifd).expect("not a valid ifd"),
             BTreeMap::new()
@@ -1294,7 +1069,7 @@ mod test {
         let buf = build_strip_dir_buffer();
         let byte_order = ByteOrder::LittleEndian;
         let (ifd, next) =
-            Ifd::from_buffer(&buf, byte_order, false).expect("Could not build ifd from buffer");
+            Ifd::from_buffer(&buf, 5, byte_order, false).expect("Could not build ifd from buffer");
         assert_eq!(
             Image::check_ifd(&ifd).expect("not a valid ifd"),
             BTreeMap::new()

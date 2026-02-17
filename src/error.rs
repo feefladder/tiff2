@@ -6,6 +6,7 @@ use std::str;
 use std::string;
 use std::sync::Arc;
 
+#[cfg(feature = "jpeg")]
 use jpeg::UnsupportedFeature;
 use thiserror::Error;
 use weezl::LzwError;
@@ -121,6 +122,7 @@ pub enum TiffFormatError {
     StripTileTagConflict,
     #[error("File contained a cycle in the list of IFDs")]
     CycleInOffsets,
+    #[cfg(feature = "jpeg")]
     #[error("{0}")]
     JpegDecoder(#[from] JpegDecoderError),
     #[error("Samples per pixel is zero")]
@@ -168,6 +170,7 @@ pub enum TiffUnsupportedError {
     UnsupportedDataType,
     #[error("Unsupported photometric interpretation \"{0:?}\".")]
     UnsupportedInterpretation(PhotometricInterpretation),
+    #[cfg(feature = "jpeg")]
     #[error("Unsupported JPEG feature {0:?}")]
     UnsupportedJpegFeature(UnsupportedFeature),
     #[error("Tile rows are not aligned to byte boundaries")]
@@ -180,8 +183,6 @@ pub enum TiffUnsupportedError {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum UsageError {
-    #[error("Requested operation is only valid for images with chunk encoding of type: {0:?}, got {0:?}.")]
-    InvalidChunkType(ChunkType, ChunkType),
     #[error("Image chunk index ({0}) requested.")]
     InvalidChunkIndex(u32),
     #[error("The requested predictor is not compatible with the requested compression")]
@@ -194,12 +195,14 @@ pub enum UsageError {
     DuplicateTagData,
     #[error("Tried to add data to an IFD that didn't have this tag: {0:?}")]
     TagOfDataNotPresent(Tag),
-    #[error("Required tag {0:?} with type {:?} and count {} not loaded from {}", .1.tag_type, .1.count, .1.offset)]
+    #[error("Required tag {:?} with type {:?} and count {} not loaded from {}", .0, .1.tag_type, .1.count, .1.offset)]
     RequiredTagNotLoaded(Tag, Offset),
     #[error("Overview level {0} not in tiff")]
     OverviewNotLoaded(usize),
     #[error("Ifd at offset {0} is not an image or not fully loaded")]
     NotAnImage(u64),
+    #[error("Buffer expected of size {0}, but got {1}")]
+    InvalidBufferSize(usize, usize),
 }
 
 impl From<str::Utf8Error> for TiffError {
@@ -224,11 +227,13 @@ impl From<LzwError> for TiffError {
     }
 }
 
+#[cfg(feature = "jpeg")]
 #[derive(Debug, Clone, Error)]
 pub struct JpegDecoderError {
     inner: Arc<jpeg::Error>,
 }
 
+#[cfg(feature = "jpeg")]
 impl JpegDecoderError {
     fn new(error: jpeg::Error) -> Self {
         Self {
@@ -236,25 +241,25 @@ impl JpegDecoderError {
         }
     }
 }
-
+#[cfg(feature = "jpeg")]
 impl PartialEq for JpegDecoderError {
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
 }
-
+#[cfg(feature = "jpeg")]
 impl Display for JpegDecoderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.inner.fmt(f)
     }
 }
-
+#[cfg(feature = "jpeg")]
 impl From<JpegDecoderError> for TiffError {
     fn from(error: JpegDecoderError) -> Self {
         TiffError::FormatError(TiffFormatError::JpegDecoder(error))
     }
 }
-
+#[cfg(feature = "jpeg")]
 impl From<jpeg::Error> for TiffError {
     fn from(error: jpeg::Error) -> Self {
         JpegDecoderError::new(error).into()

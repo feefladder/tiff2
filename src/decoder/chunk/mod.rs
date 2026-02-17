@@ -25,7 +25,31 @@ pub struct Chunk {
 }
 
 impl Chunk {
-    pub fn decode_into(self, decoder_registry: &DecoderRegistry) -> TiffResult<TileData> {
+    pub fn decode(self, decoder_registry: &DecoderRegistry) -> TiffResult<TileData> {
+        // output size in number of samples
+        let output_size = usize::try_from(self.chunk_opts.chunk_width_pixels(self.x)?)?
+            .saturating_mul(usize::try_from(
+                self.chunk_opts.chunk_height_pixels(self.y)?,
+            )?)
+            .saturating_mul(self.chunk_opts.samples_per_pixel.into());
+        let mut res = TileData::new(output_size, self.dtype);
+        // from here we work with bytes
+        let output_row_stride = self.chunk_opts.output_row_stride(self.x)?;
+        self.decode_into(
+            decoder_registry,
+            &mut res
+                .as_buffer(0)
+                .chunks_exact_mut(output_row_stride)
+                .collect::<Vec<_>>(),
+        )?;
+        Ok(res)
+    }
+
+    pub fn decode_into<'a>(
+        self,
+        decoder_registry: &DecoderRegistry,
+        out_bufs: &mut [&mut [u8]],
+    ) -> TiffResult<()> {
         let decoder = decoder_registry
             .as_ref()
             .get(&self.chunk_opts.compression_method)
@@ -34,63 +58,40 @@ impl Chunk {
                     self.chunk_opts.compression_method,
                 ),
             ))?;
-        let output_size = usize::try_from(self.chunk_opts.chunk_width_pixels(self.x)?)?
-            .saturating_mul(usize::try_from(
-                self.chunk_opts.chunk_height_pixels(self.y)?,
-            )?)
-            .saturating_mul(self.chunk_opts.samples_per_pixel.into());
-        let mut res = TileData::new(output_size, self.dtype);
         match self.chunk_opts.predictor {
             Predictor::None => {
-                decoder.decode_chunk(
-                    &self.compressed_bytes,
-                    &mut res
-                        .as_buffer(0)
-                        .chunks_exact_mut(self.chunk_opts.output_row_stride(self.x)?),
-                    &self.chunk_opts,
-                )?;
-                fix_endianness(
-                    res.as_buffer(0),
-                    self.chunk_opts.byte_order,
-                    NATIVE_ENDIAN,
-                    self.chunk_opts.bits_per_sample,
-                );
+                decoder.decode_chunk(&self.compressed_bytes, out_bufs, &self.chunk_opts)?;
+                for buf in out_bufs {
+                    fix_endianness(
+                        buf,
+                        self.chunk_opts.byte_order,
+                        NATIVE_ENDIAN,
+                        self.chunk_opts.bits_per_sample,
+                    );
+                }
             }
             Predictor::Horizontal => {
-                decoder.decode_chunk(
-                    &self.compressed_bytes,
-                    &mut res
-                        .as_buffer(0)
-                        .chunks_exact_mut(self.chunk_opts.output_row_stride(self.x)?),
-                    &self.chunk_opts,
-                )?;
-                unpredict_hdiff(res.as_buffer(0), &self.chunk_opts, self.x);
+                decoder.decode_chunk(&self.compressed_bytes, out_bufs, &self.chunk_opts)?;
+                unpredict_hdiff(out_bufs, &self.chunk_opts, self.x);
             }
             Predictor::FloatingPoint => {
                 let mut temp_buf = vec![
-                    0;
+                    0u8;
                     self.chunk_opts.input_row_stride(self.x)?
                         * self.chunk_opts.chunk_height as usize
                 ];
-                decoder.decode_chunk(
-                    &self.compressed_bytes,
-                    &mut temp_buf.chunks_exact_mut(self.chunk_opts.input_row_stride(self.x)?),
-                    &self.chunk_opts,
-                )?;
-                unpredict_float(
-                    &mut temp_buf,
-                    res.as_buffer(0),
-                    &self.chunk_opts,
-                    self.x,
-                    self.y,
-                );
+                let mut temp_bufs = temp_buf
+                    .chunks_exact_mut(self.chunk_opts.input_row_stride(self.x)?)
+                    .collect::<Vec<_>>();
+                decoder.decode_chunk(&self.compressed_bytes, &mut temp_bufs, &self.chunk_opts)?;
+                unpredict_float(&mut temp_bufs, out_bufs, &self.chunk_opts, self.x, self.y);
             }
         }
-        Ok(res)
+        Ok(())
     }
 }
 
-/// Struct that holds all relevant metadata that is needed to decode a chunk
+/// Struct that holds all relevant metadata that is needed to ecnode/decode a chunk
 /// (strip or tile).
 /// this does not include chunkoffsets or -bytes, since those may be partial and
 /// then mutated. once we implement partial tags
@@ -112,11 +113,6 @@ pub struct ChunkOpts {
     pub photometric_interpretation: PhotometricInterpretation,
     /// compression method
     ///
-    /// supported decoding:
-    /// - `LZW`
-    /// - `ModernJPEG`
-    /// - `Deflate`
-    /// - `PackBits``
     pub compression_method: CompressionMethod,
     /// horizontal predictor type
     ///
@@ -126,7 +122,6 @@ pub struct ChunkOpts {
     ///
     /// In case of ModernJPEG compression, the compression infomation _can_ be
     /// in this tag, where it is prepended to chunks before decoding.
-    /// still an Arc, because we want to do error sharing.
     pub jpeg_tables: Option<Bytes>,
     /// Planar configuration:
     ///

@@ -23,23 +23,21 @@ flate2 = "1.0"
 futures = "0.3.31"
 jpeg = { package = "jpeg-decoder", version = "0.3.0", default-features = false, optional= true }
 log = "0.4.22"
-object_store = { version = "0.11.1", optional = true, features = ["http"] }
+object_store = { version = "0.13.1", optional = true, features = ["http"] }
 rayon = "1.10.0"
 smallvec = "1.15.1"
-thiserror = "1.0"
+thiserror = "2.0"
 weezl = "0.1.8"
 zstd = { version = "0.13.3", optional = true }
 
 [dev-dependencies]
-criterion = "0.5.1"
+criterion = "0.8"
 env_logger = "0.11.5"
 futures = "0.3.31"
 image = { version = "0.25", default-features = false } # make this match viuer?
-rand = "0.8.5"
+rand = "0.10"
 rayon = "1.10.0"
-reqwest = { version = "0.12.9", default-features = false, features = [
-    "rustls-tls",
-] }
+reqwest = { version = "0.13", default-features = false}
 test-log = "0.2.16"
 tokio = { version = "1.41", features = [
     "rt",
@@ -48,11 +46,11 @@ tokio = { version = "1.41", features = [
     "macros",
     "io-util",
 ] }
-viuer = "0.9.1"
+viuer = "0.11.0"
 
 
 [features]
-default = ["zstd","jpeg"]
+default = []
 object_store = ["dep:object_store"]
 zstd = ["dep:zstd"]
 jpeg = ["dep:jpeg"]
@@ -64,3 +62,9 @@ harness = false
 [[bench]]
 name = "parse_ifd"
 harness = false
+
+[tools.rustfmt]
+reorder_imports = true
+imports_granularity = "Module"
+group_imports = "StdExternalCrate"
+reorder_modules = true

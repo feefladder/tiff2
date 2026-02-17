@@ -16,10 +16,6 @@ use crate::decoder::{ChunkDecoder, CogReader, EndianReader, Limits, TileData};
 const HEADER_SIZE_SMALLTIFF: usize = 6;
 #[allow(unused)]
 const HEADER_SIZE_BIGTIFF: usize = 16;
-const ENTRY_SIZE_SMALLTIFF: u64 = 12;
-const ENTRY_SIZE_BIGTIFF: u64 = 20;
-const NUM_ENTRIES_SIZE_SMALLTIFF: u64 = 2;
-const NUM_ENTRIES_SIZE_BIGTIFF: u64 = 8;
 
 /// cache for reading ifds, since their size is not known from the header. Also
 /// allows for creating a reader at a specific location
@@ -583,16 +579,15 @@ mod test {
             image_width: 5,
             image_height: 5,
             bits_per_sample: 64,
-            samples: 1,
+            samples_per_pixel: 1,
             sample_format: SampleFormat::Uint,
             photometric_interpretation: PhotometricInterpretation::BlackIsZero,
             compression_method: CompressionMethod::None,
             predictor: Predictor::None,
             jpeg_tables: None,
             planar_config: PlanarConfiguration::Chunky,
-            chunk_type: crate::ChunkType::Strip,
-            strip_decoder: Some(StripDecodeState { rows_per_strip: 2 }),
-            tile_attributes: None,
+            chunk_width: 5,
+            chunk_height: 2,
         };
         let data = (0..25).collect::<Vec<u64>>();
         let mut fake_reader = std::io::Cursor::new(bytemuck::cast_slice(&data[..]));

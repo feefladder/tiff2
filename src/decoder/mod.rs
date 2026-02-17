@@ -4,16 +4,11 @@ use crate::{
     ByteOrder, ColorType, NATIVE_ENDIAN,
 };
 
-mod chunk;
+pub(crate) mod chunk;
 mod metadata;
 mod reader;
 pub use reader::{CogReader, CogReaderExt, EndianReader};
-mod chunk_decoder;
-pub use chunk_decoder::ChunkDecoder;
-// see [clippy issue](https://github.com/rust-lang/rust-clippy/issues/13259)
-#[allow(clippy::module_inception)]
-mod decoder;
-pub use decoder::{Decoder, IfdBuffer, IfdCache};
+
 mod image_decoder;
 pub use image_decoder::ImageDecoder;
 mod decoding_result;
@@ -31,7 +26,7 @@ mod cogreader_impls;
 /// let samples = 1;
 /// let input = [42.0f32, 43.0];
 /// let in_be_bytes: Vec<u8> = input.iter().flat_map(|f| f.to_be_bytes()).collect();
-/// assert_eq!(vec![0x42,0x28,0,0,0x42,0x2c,0,0],in_be_bytes);
+/// assert_eq!(vec![0x42, 0x28, 0, 0, 0x42, 0x2c, 0, 0], in_be_bytes);
 /// //               0   1   2 3   4  5   6 7-- OG
 /// //               0   2         1  3
 /// //                       0 2          1 3
@@ -39,7 +34,7 @@ mod cogreader_impls;
 /// //               0       1     2      3
 /// //                   0     1      2     3
 /// //               0   1   2 3   4  5   6 7-- deshuffled
-/// let mut in_shuffled = vec![0x42,0x42,0x28,0x2c,0,0,0,0];
+/// let mut in_shuffled = vec![0x42, 0x42, 0x28, 0x2c, 0, 0, 0, 0];
 /// let n_floats = in_be_bytes.len() / 4;
 /// for (i, chunk) in in_shuffled.chunks_mut(n_floats).enumerate() {
 ///     for (j, c) in chunk.iter_mut().enumerate() {
@@ -47,8 +42,8 @@ mod cogreader_impls;
 ///     }
 /// }
 /// println!("shuffled: {in_shuffled:?}");
-/// assert_eq!(vec![0x42,0x42,0x28,0x2c,0,0,0,0], in_shuffled);
-/// let mut in_diffed = vec![0x42u8,0,230,4,212,0,0,0];
+/// assert_eq!(vec![0x42, 0x42, 0x28, 0x2c, 0, 0, 0, 0], in_shuffled);
+/// let mut in_diffed = vec![0x42u8, 0, 230, 4, 212, 0, 0, 0];
 /// // let's see if we can do horizontal differencing without an extra copy...
 /// let prev = in_diffed[..samples].clone();
 /// // [1 2 3 4 5 6 7 8] samples = 2
@@ -73,30 +68,32 @@ mod cogreader_impls;
 /// //      2 2 2 2 2[2]
 /// for i in samples..in_diffed.len() {
 ///     let p = in_diffed[i];
-///     in_diffed[i] = in_shuffled[i].wrapping_sub(prev[i%samples]);
-///     prev[i%samples] = p
+///     in_diffed[i] = in_shuffled[i].wrapping_sub(prev[i % samples]);
+///     prev[i % samples] = p
 /// }
 /// println!("diffed: {in_diffed:?}");
-/// assert_eq!(vec![0x42u8,0,230,4,212,0,0,0], in_diffed);
+/// assert_eq!(vec![0x42u8, 0, 230, 4, 212, 0, 0, 0], in_diffed);
 /// //assert_eq!(vec![42,42,0x28,0x2c,0,0,0,0], in_shuffled);
 /// //              0  1  2    3   4 5 6 7 len=8 8/4=2
 /// //              0     1        2   3   : 0 2 4 6
 /// //                 0       1     2   3 : 1 3 5 7
-/// let mut output = vec![0;8];
+/// let mut output = vec![0; 8];
 /// for (i, chunk) in output.chunks_mut(4).enumerate() {
-///     chunk.copy_from_slice(&u32::to_be_bytes( // don't convert to native-endian
+///     chunk.copy_from_slice(&u32::to_be_bytes(
+///         // don't convert to native-endian
 ///         // preserve original byte-order
 ///         u32::from_be_bytes([
 ///             in_shuffled[i],
 ///             in_shuffled[in_shuffled.len() / 4 + i],
 ///             in_shuffled[in_shuffled.len() / 4 * 2 + i],
 ///             in_shuffled[in_shuffled.len() / 4 * 3 + i],
-///         ])));
+///         ]),
+///     ));
 /// }
 /// assert_eq!(output, in_be_bytes);
-/// let mut in_diffed = vec![0x42u8,0,230,4,212,0,0,0];
+/// let mut in_diffed = vec![0x42u8, 0, 230, 4, 212, 0, 0, 0];
 /// for i in samples..in_diffed.len() {
-///   in_diffed[i] = in_diffed[i].wrapping_add(in_diffed[i-samples]);
+///     in_diffed[i] = in_diffed[i].wrapping_add(in_diffed[i - samples]);
 /// }
 /// assert_eq!(in_diffed, in_shuffled);
 /// ```

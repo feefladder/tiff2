@@ -70,10 +70,10 @@ impl Default for DecoderRegistry {
 }
 
 pub trait Decoder: Debug + Send + Sync {
-    fn decode_chunk<'a>(
+    fn decode_chunk(
         &self,
         buf: &[u8],
-        out_bufs: &mut dyn Iterator<Item = &'a mut [u8]>,
+        out_bufs: &mut [&mut [u8]],
         chunk_opts: &ChunkOpts,
     ) -> TiffResult<()>;
 }
@@ -82,15 +82,15 @@ pub trait Decoder: Debug + Send + Sync {
 pub struct UncompressedDecoder;
 
 impl Decoder for UncompressedDecoder {
-    fn decode_chunk<'a>(
+    fn decode_chunk(
         &self,
         buf: &[u8],
-        out_bufs: &mut dyn Iterator<Item = &'a mut [u8]>,
-        _chunk_opts: &ChunkOpts,
+        out_bufs: &mut [&mut [u8]],
+        chunk_opts: &ChunkOpts,
     ) -> TiffResult<()> {
         let mut cursor = Cursor::new(buf);
-        for buf in out_bufs {
-            cursor.read_exact(buf)?;
+        for out_buf in out_bufs {
+            cursor.read_exact(out_buf)?;
         }
         Ok(())
     }
@@ -100,11 +100,11 @@ impl Decoder for UncompressedDecoder {
 pub struct DeflateDecoder;
 
 impl Decoder for DeflateDecoder {
-    fn decode_chunk<'a>(
+    fn decode_chunk(
         &self,
         buf: &[u8],
-        out_bufs: &mut dyn Iterator<Item = &'a mut [u8]>,
-        _chunk_opts: &ChunkOpts,
+        out_bufs: &mut [&mut [u8]],
+        chunk_opts: &ChunkOpts,
     ) -> TiffResult<()> {
         let mut decoder = ZlibDecoder::new(Cursor::new(buf));
         for buf in out_bufs {
@@ -118,11 +118,11 @@ impl Decoder for DeflateDecoder {
 pub struct LZWDecoder;
 
 impl Decoder for LZWDecoder {
-    fn decode_chunk<'a>(
+    fn decode_chunk(
         &self,
         buf: &[u8],
-        out_bufs: &mut dyn Iterator<Item = &'a mut [u8]>,
-        _chunk_opts: &ChunkOpts,
+        out_bufs: &mut [&mut [u8]],
+        chunk_opts: &ChunkOpts,
     ) -> TiffResult<()> {
         // https://github.com/image-rs/image-tiff/blob/90ae5b8e54356a35e266fb24e969aafbcb26e990/src/decoder/stream.rs#L147
         let mut decoder = weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8);
@@ -143,11 +143,11 @@ pub struct ZstdDecoder;
 
 #[cfg(feature = "zstd")]
 impl Decoder for ZstdDecoder {
-    fn decode_chunk<'a>(
+    fn decode_chunk(
         &self,
         buf: &[u8],
-        out_bufs: &mut dyn Iterator<Item = &'a mut [u8]>,
-        _chunk_opts: &ChunkOpts,
+        out_bufs: &mut [&mut [u8]],
+        chunk_opts: &ChunkOpts,
     ) -> TiffResult<()> {
         let mut decoder = zstd::Decoder::new(Cursor::new(buf))?;
         for out_buf in out_bufs {
@@ -164,10 +164,10 @@ pub struct JpegDecoder;
 #[cfg(feature = "jpeg")]
 // https://github.com/image-rs/image-tiff/blob/3bfb43e83e31b0da476832067ada68a82b378b7b/src/decoder/image.rs#L389-L450
 impl Decoder for JpegDecoder {
-    fn decode_chunk<'a>(
+    fn decode_chunk(
         &self,
         buf: &[u8],
-        out_bufs: &mut dyn Iterator<Item = &'a mut [u8]>,
+        out_bufs: &mut [&mut [u8]],
         chunk_opts: &ChunkOpts,
     ) -> TiffResult<()> {
         use crate::structs::tags::PhotometricInterpretation;

@@ -3,6 +3,7 @@ use crate::{
     error::{TiffError, TiffResult},
 };
 
+#[derive(Debug, Clone, Copy)]
 pub enum DataType {
     U8,
     U16,

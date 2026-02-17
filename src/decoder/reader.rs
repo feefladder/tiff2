@@ -85,14 +85,7 @@ pub trait CogReaderExt: CogReader {
         let mut res = BTreeMap::new();
         // BTreeMap keeps order, so we can safely iterate over that again
         for (i, (tag, offset)) in tags.iter().enumerate() {
-            let mut e = TagData::new(offset.tag_type, usize::try_from(offset.count)?);
-            e.buf_mut().copy_from_slice(&resp[i][..]);
-            fix_endianness(
-                e.buf_mut(),
-                byte_order,
-                NATIVE_ENDIAN,
-                offset.tag_type.primitive_size() * 8,
-            );
+            let mut e = TagData::from_buf()?;
             res.insert(*tag, e);
         }
         // debug!("Received tags: {res:?}");
@@ -122,7 +115,6 @@ pub(crate) const OBJECT_STORE_COALESCE_PARALLEL: usize = 10;
 ///
 /// * Combine ranges less than `coalesce` bytes apart into a single call to `fetch`
 /// * Make multiple `fetch` requests in parallel (up to maximum of 10)
-///
 pub async fn coalesce_ranges<F, E, Fut>(
     ranges: &[Range<u64>],
     fetch: F,
@@ -306,7 +298,6 @@ impl<R: io::Write> EndianReader<R> {
 
 ///
 /// ## Deflate Reader
-///
 pub type DeflateReader<R> = flate2::read::ZlibDecoder<R>;
 
 // ///
