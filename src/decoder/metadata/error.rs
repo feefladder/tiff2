@@ -1,6 +1,35 @@
-use std::ops::Range;
+use std::{
+    error::Error,
+    fmt::Display,
+    ops::{Bound, Range},
+};
 
 use crate::structs::Tag;
+
+/// The error that most caches should implement imho
+///
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CacheMiss(pub Bound<usize>, pub Bound<usize>);
+impl Display for CacheMiss {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "cache miss for range ")?;
+        match self.0 {
+            Bound::Excluded(v) => {
+                write!(f, "({v})")?;
+            }
+            Bound::Included(v) => {
+                write!(f, "[{v}")?;
+            }
+            Bound::Unbounded => {}
+        }
+        match self.1 {
+            Bound::Excluded(v) => write!(f, "..{v})"),
+            Bound::Included(v) => write!(f, "..={v}]"),
+            Bound::Unbounded => write!(f, ".."),
+        }
+    }
+}
+impl Error for CacheMiss {}
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]

@@ -101,7 +101,7 @@ impl IfdLoader {
     pub fn load_ifd_values(
         &mut self,
         ifd_offset: u64,
-        bufs: &mut dyn Iterator<Item = (Tag, &[u8])>,
+        bufs: &mut dyn Iterator<Item = (Tag, Bytes)>,
     ) -> MetaResult<()> {
         // ah, so this is currently in get_tags() function of reader, which is super ugly...
         for (tag, buf) in bufs {
