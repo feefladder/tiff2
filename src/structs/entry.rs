@@ -1,3 +1,9 @@
+use std::collections::HashMap;
+use std::io::{Read, Seek, SeekFrom};
+use std::ops::Range;
+
+use smallvec::{smallvec, SmallVec};
+
 use crate::{
     decoder::EndianReader,
     error::{
@@ -17,13 +23,6 @@ use crate::{
     ByteOrder, NATIVE_ENDIAN,
 };
 
-use std::{
-    collections::HashMap,
-    io::{Read, Seek, SeekFrom},
-};
-
-use smallvec::{smallvec, SmallVec};
-
 pub type Directory = HashMap<Tag, IfdEntry>;
 
 /// an offset into the field
@@ -32,6 +31,13 @@ pub struct Offset {
     pub tag_type: TagType,
     pub count: u64,
     pub offset: u64,
+}
+
+impl Offset {
+    /// get the in-file byte range required to load this Tag
+    pub fn range(&self) -> Range<u64> {
+        self.offset..self.offset + self.count * u64::try_from(self.tag_type.size()).unwrap()
+    }
 }
 
 /// an IFD entry
@@ -212,16 +218,25 @@ impl TagData {
         }
     }
 
-    pub fn from_buffer(buf: &[u8], tag_type: TagType, count: usize, byte_order: ByteOrder) -> Self {
+    pub fn from_buffer(
+        buf: &[u8],
+        tag_type: TagType,
+        count: usize,
+        byte_order: ByteOrder,
+    ) -> TiffResult<Self> {
         let mut e = Self::new(tag_type, count);
-        e.buf_mut().copy_from_slice(buf);
+        let req_len = e.buf_mut().len();
+        if req_len > buf.len() {
+            return Err(TiffError::LimitsExceeded);
+        }
+        e.buf_mut().copy_from_slice(&buf[..req_len]);
         fix_endianness(
             e.buf_mut(),
             byte_order,
             NATIVE_ENDIAN,
             tag_type.primitive_size() * 8,
         );
-        e
+        Ok(e)
     }
 
     /// Get the underlying data as a `&mut [u8]`
@@ -249,6 +264,13 @@ impl TagData {
         }
     }
 
+    /// The length in values of the underlying datatype
+    ///
+    /// ```
+    /// let ascii = TagData::Ascii(smallvec!::from(b"hello world");//
+    /// let fracs = TagData::Rational(smallvec![43,42, 42,43]); // 43/42 42/43
+    /// assert_eq!(fracs.len(), 2)
+    /// ```
     #[rustfmt::skip]
     pub fn len(&self) -> usize {
         match self {
@@ -443,9 +465,8 @@ impl<'a> TryFrom<&'a TagData> for &'a str {
 #[cfg(test)]
 #[allow(unused_imports, clippy::useless_conversion)]
 mod test_entry {
-    use super::*;
-    use crate::ByteOrder;
     use std::io;
+
     use TagType::{
         ASCII,
         // SINGLE BYTE
@@ -468,6 +489,9 @@ mod test_entry {
         SSHORT,
         UNDEFINED,
     };
+
+    use super::*;
+    use crate::ByteOrder;
 
     #[test]
     fn test_bufferedentry_into_u8slice() {

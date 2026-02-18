@@ -1,6 +1,7 @@
 //! Tiff struct that holds all *meta*data of a tiff
 //! Can be used for both decoding and encoding purposes
-use crate::{structs::Image, ByteOrder};
+use crate::structs::Image;
+use crate::ByteOrder;
 
 pub struct Tiff<R> {
     pub images: Vec<Image>,

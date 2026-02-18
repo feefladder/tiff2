@@ -1,7 +1,5 @@
-use crate::{
-    decoder::Limits,
-    error::{TiffError, TiffResult},
-};
+use crate::decoder::Limits;
+use crate::error::{TiffError, TiffResult};
 
 #[derive(Debug, Clone, Copy)]
 pub enum DataType {

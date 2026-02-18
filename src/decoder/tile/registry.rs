@@ -3,9 +3,10 @@ use std::fmt::Debug;
 use std::io::{Cursor, Read};
 
 use flate2::bufread::ZlibDecoder;
+use weezl::LzwStatus;
 
-use crate::decoder::chunk::ChunkOpts;
-use crate::error::TiffResult;
+use crate::decoder::tile::ChunkOpts;
+use crate::error::{TiffError, TiffFormatError, TiffResult, TiffUnsupportedError};
 use crate::structs::tags::CompressionMethod;
 
 // from async-tiff
@@ -72,8 +73,8 @@ impl Default for DecoderRegistry {
 pub trait Decoder: Debug + Send + Sync {
     fn decode_chunk(
         &self,
-        buf: &[u8],
-        out_bufs: &mut [&mut [u8]],
+        in_buf: &[u8],
+        out_bufs: &mut [u8],
         chunk_opts: &ChunkOpts,
     ) -> TiffResult<()>;
 }
@@ -84,14 +85,11 @@ pub struct UncompressedDecoder;
 impl Decoder for UncompressedDecoder {
     fn decode_chunk(
         &self,
-        buf: &[u8],
-        out_bufs: &mut [&mut [u8]],
-        chunk_opts: &ChunkOpts,
+        in_buf: &[u8],
+        out_buf: &mut [u8],
+        _chunk_opts: &ChunkOpts,
     ) -> TiffResult<()> {
-        let mut cursor = Cursor::new(buf);
-        for out_buf in out_bufs {
-            cursor.read_exact(out_buf)?;
-        }
+        out_buf.copy_from_slice(in_buf);
         Ok(())
     }
 }
@@ -102,14 +100,12 @@ pub struct DeflateDecoder;
 impl Decoder for DeflateDecoder {
     fn decode_chunk(
         &self,
-        buf: &[u8],
-        out_bufs: &mut [&mut [u8]],
-        chunk_opts: &ChunkOpts,
+        in_buf: &[u8],
+        out_buf: &mut [u8],
+        _chunk_opts: &ChunkOpts,
     ) -> TiffResult<()> {
-        let mut decoder = ZlibDecoder::new(Cursor::new(buf));
-        for buf in out_bufs {
-            decoder.read_exact(buf)?;
-        }
+        let mut decoder = ZlibDecoder::new(Cursor::new(in_buf));
+        decoder.read_exact(out_buf)?;
         Ok(())
     }
 }
@@ -120,20 +116,21 @@ pub struct LZWDecoder;
 impl Decoder for LZWDecoder {
     fn decode_chunk(
         &self,
-        buf: &[u8],
-        out_bufs: &mut [&mut [u8]],
-        chunk_opts: &ChunkOpts,
+        in_buf: &[u8],
+        out_buf: &mut [u8],
+        _chunk_opts: &ChunkOpts,
     ) -> TiffResult<()> {
         // https://github.com/image-rs/image-tiff/blob/90ae5b8e54356a35e266fb24e969aafbcb26e990/src/decoder/stream.rs#L147
         let mut decoder = weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8);
-        let mut buf_start = 0;
-        for out_buf in out_bufs {
-            decoder
-                .decode_bytes(&buf[buf_start..buf_start + out_buf.len()], out_buf)
-                .status?;
-            buf_start += out_buf.len()
+        let res = decoder.decode_bytes(in_buf, out_buf);
+        // verify the output
+        if res.consumed_out != out_buf.len() || !matches!(res.status?, LzwStatus::Done) {
+            Err(TiffError::UnsupportedError(
+                TiffUnsupportedError::UnsupportedCompressionMethod(CompressionMethod::LZW),
+            ))
+        } else {
+            Ok(())
         }
-        Ok(())
     }
 }
 
@@ -173,10 +170,8 @@ impl Decoder for JpegDecoder {
         use crate::structs::tags::PhotometricInterpretation;
 
         if chunk_opts.jpeg_tables.is_some() && buf.len() < 2 {
-            use crate::{
-                error::{TiffError, TiffFormatError},
-                structs::Tag,
-            };
+            use crate::error::{TiffError, TiffFormatError};
+            use crate::structs::Tag;
 
             return Err(TiffError::FormatError(
                 TiffFormatError::InvalidTagValueType(Tag::JPEGTables.to_u16()),

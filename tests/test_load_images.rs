@@ -1,16 +1,15 @@
+use std::fs;
+use std::ops::Range;
+use std::path::Path;
+
 use async_trait::async_trait;
 use bytes::Bytes;
 use image::{DynamicImage, ImageBuffer, Luma, Rgb, Rgba};
 use log::{error, info};
-use std::{fs, ops::Range, path::Path};
-use tiff2::{
-    decoder::{ChunkDecoder, CogReader, CogReaderExt, Decoder},
-    error::{TiffError, TiffResult},
-};
-use tokio::{
-    fs::File,
-    io::{AsyncReadExt, AsyncSeekExt},
-};
+use tiff2::decoder::{ChunkDecoder, CogReader, CogReaderExt, Decoder};
+use tiff2::error::{TiffError, TiffResult};
+use tokio::fs::File;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 struct TokioFile(std::path::PathBuf);
 

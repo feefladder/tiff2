@@ -79,14 +79,14 @@ mod test {
             &mut u16_be,
             ByteOrder::BigEndian,
             ByteOrder::LittleEndian,
-            32,
+            16,
         );
         assert_eq!(u16_be, 42u16.to_le_bytes());
         fix_endianness(
             &mut u16_be,
             ByteOrder::LittleEndian,
             ByteOrder::BigEndian,
-            32,
+            16,
         );
         assert_eq!(u16_be, 42u16.to_be_bytes());
     }

@@ -84,8 +84,13 @@ pub trait CogReaderExt: CogReader {
         );
         let mut res = BTreeMap::new();
         // BTreeMap keeps order, so we can safely iterate over that again
-        for (i, (tag, offset)) in tags.iter().enumerate() {
-            let mut e = TagData::from_buf()?;
+        for ((tag, offset), buffer) in tags.iter().zip(&resp) {
+            let e = TagData::from_buffer(
+                &buffer,
+                offset.tag_type,
+                offset.count.try_into().unwrap(),
+                byte_order,
+            )?;
             res.insert(*tag, e);
         }
         // debug!("Received tags: {res:?}");
@@ -257,29 +262,29 @@ impl<R> EndianReader<R> {
 }
 impl<R: std::io::Read> EndianReader<R> {
     read_fn!(read_u8, u8);
-    read_fn!(read_i8, i8);
+    // read_fn!(read_i8, i8);
     read_fn!(read_u16, u16);
-    read_fn!(read_i16, i16);
+    // read_fn!(read_i16, i16);
     read_fn!(read_u32, u32);
-    read_fn!(read_i32, i32);
+    // read_fn!(read_i32, i32);
     read_fn!(read_u64, u64);
-    read_fn!(read_i64, i64);
+    // read_fn!(read_i64, i64);
 
-    read_fn!(read_f32, f32);
-    read_fn!(read_f64, f64);
+    // read_fn!(read_f32, f32);
+    // read_fn!(read_f64, f64);
 }
 impl<R: io::Write> EndianReader<R> {
     write_fn!(write_u8, u8);
-    write_fn!(write_i8, i8);
+    // write_fn!(write_i8, i8);
     write_fn!(write_u16, u16);
-    write_fn!(write_i16, i16);
+    // write_fn!(write_i16, i16);
     write_fn!(write_u32, u32);
-    write_fn!(write_i32, i32);
+    // write_fn!(write_i32, i32);
     write_fn!(write_u64, u64);
-    write_fn!(write_i64, i64);
+    // write_fn!(write_i64, i64);
 
-    write_fn!(write_f32, f32);
-    write_fn!(write_f64, f64);
+    // write_fn!(write_f32, f32);
+    // write_fn!(write_f64, f64);
 }
 
 // impl<R: io::Write> EndianReader<R> {

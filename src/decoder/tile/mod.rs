@@ -1,8 +1,11 @@
+use std::borrow::Cow;
+use std::ops::Range;
+
 use bytes::Bytes;
 
-use crate::decoder::chunk::predictor::{unpredict_float, unpredict_hdiff};
-use crate::decoder::chunk::registry::DecoderRegistry;
 use crate::decoder::decoding_result::DataType;
+use crate::decoder::tile::predictor::{unpredict_float, unpredict_hdiff};
+use crate::decoder::tile::registry::DecoderRegistry;
 use crate::decoder::TileData;
 use crate::error::{TiffError, TiffResult, TiffUnsupportedError, UsageError};
 use crate::structs::tags::{
@@ -11,20 +14,54 @@ use crate::structs::tags::{
 use crate::util::fix_endianness;
 use crate::{ByteOrder, ColorType, NATIVE_ENDIAN};
 
+mod error;
 mod predictor;
 mod registry;
 
-pub struct Chunk {
+pub struct TileServer<'a> {
+    dtype: DataType,
+    chunk_opts: ChunkOpts,
+    tile_offsets: Cow<'a, [u64]>,
+    tile_byte_counts: Cow<'a, [u32]>,
+}
+
+impl<'a> TileServer<'a> {
+    pub fn tile_range(&self, x: u32, y: u32) -> Range<u64> {
+        let i = self.chunk_opts.xy2i(x, y);
+        let start = self.tile_offsets[i];
+        start..start + u64::from(self.tile_byte_counts[i])
+    }
+
+    pub fn tiles_ranges<'b>(
+        &'b self,
+        coords: impl Iterator<Item = (u32, u32)> + 'b,
+    ) -> impl Iterator<Item = (u32, u32, Range<u64>)> + 'b {
+        coords.map(|(x, y)| (x, y, self.tile_range(x, y)))
+    }
+
+    pub fn get_tiles<'b>(
+        &'b self,
+        tile_datas: impl Iterator<Item = (u32, u32, Bytes)> + 'b,
+    ) -> impl Iterator<Item = Tile> + 'b {
+        tile_datas.map(|(x, y, buf)| Tile {
+            x,
+            y,
+            dtype: self.dtype,
+            chunk_opts: self.chunk_opts.clone(),
+            compressed_bytes: buf,
+        })
+    }
+}
+
+pub struct Tile {
     x: u32,
     y: u32,
     dtype: DataType,
-    width: u32,
-    height: u32,
     chunk_opts: ChunkOpts,
     compressed_bytes: Bytes,
 }
 
-impl Chunk {
+impl Tile {
     pub fn decode(self, decoder_registry: &DecoderRegistry) -> TiffResult<TileData> {
         // output size in number of samples
         let output_size = usize::try_from(self.chunk_opts.chunk_width_pixels(self.x)?)?
@@ -33,22 +70,14 @@ impl Chunk {
             )?)
             .saturating_mul(self.chunk_opts.samples_per_pixel.into());
         let mut res = TileData::new(output_size, self.dtype);
-        // from here we work with bytes
-        let output_row_stride = self.chunk_opts.output_row_stride(self.x)?;
-        self.decode_into(
-            decoder_registry,
-            &mut res
-                .as_buffer(0)
-                .chunks_exact_mut(output_row_stride)
-                .collect::<Vec<_>>(),
-        )?;
+        self.decode_into(decoder_registry, res.as_buffer(0))?;
         Ok(res)
     }
 
     pub fn decode_into<'a>(
         self,
         decoder_registry: &DecoderRegistry,
-        out_bufs: &mut [&mut [u8]],
+        out_buf: &mut [u8],
     ) -> TiffResult<()> {
         let decoder = decoder_registry
             .as_ref()
@@ -60,19 +89,17 @@ impl Chunk {
             ))?;
         match self.chunk_opts.predictor {
             Predictor::None => {
-                decoder.decode_chunk(&self.compressed_bytes, out_bufs, &self.chunk_opts)?;
-                for buf in out_bufs {
-                    fix_endianness(
-                        buf,
-                        self.chunk_opts.byte_order,
-                        NATIVE_ENDIAN,
-                        self.chunk_opts.bits_per_sample,
-                    );
-                }
+                decoder.decode_chunk(&self.compressed_bytes, out_buf, &self.chunk_opts)?;
+                fix_endianness(
+                    out_buf,
+                    self.chunk_opts.byte_order,
+                    NATIVE_ENDIAN,
+                    self.chunk_opts.bits_per_sample,
+                );
             }
             Predictor::Horizontal => {
-                decoder.decode_chunk(&self.compressed_bytes, out_bufs, &self.chunk_opts)?;
-                unpredict_hdiff(out_bufs, &self.chunk_opts, self.x);
+                decoder.decode_chunk(&self.compressed_bytes, out_buf, &self.chunk_opts)?;
+                unpredict_hdiff(out_buf, &self.chunk_opts, self.x)?;
             }
             Predictor::FloatingPoint => {
                 let mut temp_buf = vec![
@@ -80,11 +107,8 @@ impl Chunk {
                     self.chunk_opts.input_row_stride(self.x)?
                         * self.chunk_opts.chunk_height as usize
                 ];
-                let mut temp_bufs = temp_buf
-                    .chunks_exact_mut(self.chunk_opts.input_row_stride(self.x)?)
-                    .collect::<Vec<_>>();
-                decoder.decode_chunk(&self.compressed_bytes, &mut temp_bufs, &self.chunk_opts)?;
-                unpredict_float(&mut temp_bufs, out_bufs, &self.chunk_opts, self.x, self.y);
+                decoder.decode_chunk(&self.compressed_bytes, &mut temp_buf, &self.chunk_opts)?;
+                unpredict_float(&mut temp_buf, out_buf, &self.chunk_opts, self.x, self.y)?;
             }
         }
         Ok(())
@@ -140,6 +164,12 @@ pub struct ChunkOpts {
 }
 
 impl ChunkOpts {
+    /// Converts a tile's x and y coordinate to a flat index.
+    ///
+    ///
+    fn xy2i(&self, x: u32, y: u32) -> usize {
+        usize::try_from(x).unwrap() + usize::try_from(y * self.chunks_across()).unwrap()
+    }
     // /// Samples per pixel within chunk.
     // ///
     // /// In planar config, samples are stored in separate strips/chunks, also called bands.
@@ -173,7 +203,7 @@ impl ChunkOpts {
             PlanarConfiguration::Chunky => {
                 self.bits_per_sample as usize * self.samples_per_pixel as usize
             }
-            PlanarConfiguration::Planar => self.samples_per_pixel as usize,
+            PlanarConfiguration::Planar => self.bits_per_sample as usize,
         }
     }
     pub fn chunks_across(&self) -> u32 {

@@ -234,11 +234,12 @@ pub enum TagType(u16) {
 }
 
 mod tag_type {
-    use super::*;
     use TagType::{
         self, ASCII, BYTE, DOUBLE, FLOAT, IFD, IFD8, LONG, LONG8, RATIONAL, SBYTE, SHORT, SLONG,
         SLONG8, SRATIONAL, SSHORT, UNDEFINED,
     };
+
+    use super::*;
     impl TagType {
         /// Returns the size of the type in bytes. Useful for determining total
         /// buffer size.

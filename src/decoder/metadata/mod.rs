@@ -1,75 +1,29 @@
-use std::{collections::BTreeMap, io::Cursor, ops::Range};
+use std::collections::BTreeMap;
+use std::io::Cursor;
+use std::ops::Range;
 
-use crate::{
-    decoder::EndianReader,
-    error::{TiffError, TiffFormatError, TiffResult},
-    structs::{Ifd, IfdEntry, Tag, TagData},
-    ByteOrder,
-};
+use crate::decoder::metadata::ifd::IfdLoader;
+use crate::decoder::EndianReader;
+use crate::error::{TiffError, TiffFormatError, TiffResult};
+use crate::structs::{Ifd, IfdEntry, Tag, TagData};
+use crate::ByteOrder;
 
+mod cog;
 pub mod error;
+mod ifd;
 use error::MetaError;
 use exn::{bail, ErrorExt, OptionExt, ResultExt};
 pub type MetaResult<T> = exn::Result<T, MetaError>;
 
-/// The size of an ifd entry
-///
-/// |field       |small|big|
-/// |------------|:---:|:-:|
-/// |tag         | 2   | 2 |
-/// |type        | 2   | 2 |
-/// |count       | 4   | 8 |
-/// |value/offset| 4   | 8 |
-/// |total       | 12  | 20|
-#[inline]
-#[must_use]
-pub const fn entry_size(bigtiff: bool) -> u64 {
-    if bigtiff {
-        2 + 2 + 8 + 8
-    } else {
-        2 + 2 + 4 + 4
-    }
-}
-
-/// The size of the `number of entries`
-///
-/// The start of an IFD is the number of entries in that IFD.
-///
-/// |small|big|
-/// |-----|---|
-/// |2    | 8 |
-///
-#[inline]
-#[must_use]
-pub const fn num_entries_size(bigtiff: bool) -> u64 {
-    if bigtiff {
-        8 // u64
-    } else {
-        2 // u16
-    }
-}
-
-/// The size of an offset to an IFD
-///
-/// This is the same in the header as at the end of each IFD.
-///
-/// |small|big|
-/// |-----|---|
-/// |4    |8  |
-///
-pub const fn ifd_offset_size(bigtiff: bool) -> u64 {
-    if bigtiff {
-        8 // u64
-    } else {
-        4 // u32
-    }
-}
-
-pub struct TiffLoader {
+pub struct Tiff {
+    /// Whether we are big or small tiff
     bigtiff: bool,
+    /// byte_order of the tiff file
     byte_order: ByteOrder,
+    /// offsets to ifds
     ifd_offsets: Vec<u64>,
-    ifds: Vec<BTreeMap<Tag, IfdEntry>>,
+    /// all current ifds
+    ifds: BTreeMap<u64, Ifd>,
 }
 
 /// So the idea is inversion-of-control, much like how `std::io::Copy` allows
@@ -136,7 +90,7 @@ pub struct TiffLoader {
 ///     .next_ifd()
 ///     .retry_with_async(async |ranges| f.fetch(ranges));
 /// ```
-impl TiffLoader {
+impl Tiff {
     /// The range required to parse the header
     ///
     /// This is the required range for a bigtiff file
@@ -144,9 +98,9 @@ impl TiffLoader {
         0..16
     }
 
-    pub fn load_header(buf: &[u8]) -> MetaResult<Self> {
+    pub fn from_header(buf: &[u8]) -> MetaResult<Self> {
         if buf.len() < 16 {
-            bail!(MetaError::missing_range(
+            bail!(MetaError::invalid_buffer(
                 Self::header_range(),
                 format!("could not load header with buffer size of {}", buf.len()),
             ));
@@ -207,90 +161,34 @@ impl TiffLoader {
             bigtiff,
             byte_order,
             ifd_offsets,
-            ifds: Vec::new(),
+            ifds: BTreeMap::new(),
         };
         Ok(res)
     }
 
     /// Get the range that holds the next ifd's count value
-    pub fn next_ifd_entry_count_range(&self) -> Range<u64> {
-        let offset = *self.ifd_offsets.last().unwrap();
-        offset..offset + if self.bigtiff { 8 } else { 2 }
+    ///
+    /// TODO: shold this return None on 0? e.g. at the end of the iterator?
+    pub fn next_ifd_offset(&self) -> u64 {
+        *self.ifd_offsets.last().unwrap()
     }
 
-    /// given a buffer holding the count value, get the range of the full ifd
-    pub fn ifd_range(&self, buf: &[u8], buf_start: u64) -> MetaResult<Range<u64>> {
-        let mut r = EndianReader::wrap(Cursor::new(buf), self.byte_order);
-        let count = if self.bigtiff {
-            r.read_u64().or_raise(|| {
-                MetaError::missing_range(
-                    buf_start..buf_start + 8,
-                    format!("could not read number of entries in ifd"),
-                )
-            })?
-        } else {
-            u64::from(r.read_u16().or_raise(|| {
-                MetaError::missing_range(
-                    buf_start..buf_start + 2,
-                    format!("could not read number of entries in ifd"),
-                )
-            })?)
-        };
-        Ok(buf_start + num_entries_size(self.bigtiff)
-            ..buf_start + num_entries_size(self.bigtiff) + entry_size(self.bigtiff) * count)
-    }
-
-    /// Given a buffer holding the ifd, get the underlying ifd
-    pub fn load_ifd(&mut self, ifd_buf: &[u8], buf_start: u64, count: u64) -> MetaResult<()> {
-        if u64::try_from(ifd_buf.len()).unwrap()
-            < count * entry_size(self.bigtiff) + ifd_offset_size(self.bigtiff)
-        {
-            bail!(MetaError::missing_range(
-                buf_start
-                    ..buf_start + count * entry_size(self.bigtiff) + ifd_offset_size(self.bigtiff),
-                format!("could not load IFD at offset {buf_start}")
-            ))
-        }
-        let (ifd, next_offset) = Ifd::from_buffer(ifd_buf, count, self.byte_order, self.bigtiff)
-            .expect("all reads should be in-range");
-        if self.ifd_offsets.contains(&next_offset) {
+    pub fn ifd_loader(&mut self, buf: &[u8], offset: u64) -> MetaResult<IfdLoader> {
+        let (ifd_loader, next_ifd) =
+            IfdLoader::load_ifd(buf, offset, self.bigtiff, self.byte_order)?;
+        if self.ifd_offsets.contains(&next_ifd) {
             bail!(MetaError::permanent(format!(
-                "cycle in offsets detected at offset {next_offset}"
+                "Cycle in offset detected at ifd {next_ifd}"
             )));
         }
-        self.ifd_offsets.push(next_offset);
-        self.ifds.push(ifd.data);
-        Ok(())
+        self.ifd_offsets.push(next_ifd);
+        Ok(ifd_loader)
     }
 
-    pub fn load_ifd_values(
-        &mut self,
-        ifd_offset: u64,
-        bufs: &mut dyn Iterator<Item = (Tag, &[u8])>,
-    ) -> MetaResult<()> {
-        let ifd = &mut self.ifds[self
-            .ifd_offsets
-            .iter()
-            .position(|v| *v == ifd_offset)
-            .ok_or_raise(|| {
-                MetaError::permanent(format!("No ifd at position {ifd_offset} loaded"))
-            })?];
-        // ah, so this is currently in get_tags() function of reader, which is super ugly...
-        for (tag, buf) in bufs {
-            let entry = ifd.get_mut(&tag).ok_or_raise(|| {
-                MetaError::permanent(format!(
-                    "no pre-existing entry (offset) for {tag:?} in ifd at {ifd_offset}"
-                ))
-            })?;
-            *entry = IfdEntry::Value(match entry {
-                IfdEntry::Offset(o) => {
-                    TagData::from_buffer(buf, o.tag_type, o.count as usize, self.byte_order)
-                }
-                IfdEntry::Value(data) => {
-                    TagData::from_buffer(buf, data.tag_type(), data.len(), self.byte_order)
-                }
-            });
+    pub fn insert_ifd(&mut self, offset: u64, ifd: Ifd) {
+        if !self.ifd_offsets.contains(&offset) {
+            self.ifd_offsets.push(offset);
         }
-        Ok(())
+        self.ifds.insert(offset, ifd);
     }
 }

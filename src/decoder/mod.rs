@@ -1,12 +1,10 @@
-use crate::{
-    structs::tags::{Predictor, SampleFormat},
-    util::fix_endianness,
-    ByteOrder, ColorType, NATIVE_ENDIAN,
-};
+use crate::structs::tags::{Predictor, SampleFormat};
+use crate::util::fix_endianness;
+use crate::{ByteOrder, ColorType, NATIVE_ENDIAN};
 
-pub(crate) mod chunk;
 mod metadata;
 mod reader;
+pub(crate) mod tile;
 pub use reader::{CogReader, CogReaderExt, EndianReader};
 
 mod image_decoder;

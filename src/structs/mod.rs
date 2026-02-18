@@ -2,7 +2,7 @@ mod entry;
 pub use entry::{Directory, IfdEntry, Offset, TagData};
 /// IFD struct for non-images
 mod ifd;
-pub use ifd::Ifd;
+pub use ifd::{entry_size, ifd_offset_size, num_entries_size, Ifd};
 /// IFD struct and functions for IFDs related to images
 mod image;
 pub use image::{Image, StripDecodeState, TileAttributes};

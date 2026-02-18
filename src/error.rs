@@ -1,25 +1,18 @@
 use std::error::Error;
-use std::fmt;
 use std::fmt::Display;
-use std::io;
-use std::str;
-use std::string;
 use std::sync::Arc;
+use std::{fmt, io, str, string};
 
 #[cfg(feature = "jpeg")]
 use jpeg::UnsupportedFeature;
 use thiserror::Error;
 use weezl::LzwError;
 
-use crate::{
-    structs::{
-        tags::{
-            CompressionMethod, PhotometricInterpretation, PlanarConfiguration, SampleFormat, Tag,
-        },
-        Offset, TagData,
-    },
-    ChunkType, ColorType,
+use crate::structs::tags::{
+    CompressionMethod, PhotometricInterpretation, PlanarConfiguration, SampleFormat, Tag,
 };
+use crate::structs::{Offset, TagData};
+use crate::{ChunkType, ColorType};
 
 /// Result of an image decoding/encoding process
 pub type TiffResult<T> = Result<T, TiffError>;

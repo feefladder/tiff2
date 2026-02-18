@@ -1,14 +1,17 @@
+use std::collections::BTreeMap;
+use std::fmt::Debug;
+use std::ops::Range;
+use std::sync::Arc;
+
 use bytes::Bytes;
 
-use crate::decoder::chunk::ChunkOpts;
-use crate::error::{TiffError, TiffFormatError, TiffResult, TiffUnsupportedError, UsageError};
+use crate::decoder::tile::ChunkOpts;
+use crate::error::{TiffError, TiffFormatError, TiffResult, TiffUnsupportedError};
 use crate::structs::tags::{
     CompressionMethod, PhotometricInterpretation, PlanarConfiguration, Predictor, SampleFormat, Tag,
 };
 use crate::structs::{Ifd, IfdEntry, Offset, TagData};
-use crate::{ByteOrder, ColorType};
-
-use std::{collections::BTreeMap, fmt::Debug, ops::Range, sync::Arc};
+use crate::ByteOrder;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct StripDecodeState {
@@ -445,9 +448,9 @@ impl Image {
 
 #[cfg(test)]
 mod test {
-    use crate::structs::{ifd::Directory, tags::TagType};
-
     use super::*;
+    use crate::structs::ifd::Directory;
+    use crate::structs::tags::TagType;
     fn build_dir() -> Directory {
         let mut dir = Directory::new();
         dir.insert(Tag::ImageWidth, IfdEntry::Value(TagData::from(42u32)));

@@ -1,12 +1,13 @@
+use std::ops::Range;
+
 use async_trait::async_trait;
 use bytes::Bytes;
 use log::error;
-use std::ops::Range;
-
-use crate::{decoder::CogReader, error::TiffResult};
-
 #[cfg(test)]
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+use crate::decoder::CogReader;
+use crate::error::TiffResult;
 
 #[cfg(test)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]

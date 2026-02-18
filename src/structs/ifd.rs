@@ -1,13 +1,67 @@
-use crate::{
-    decoder::EndianReader,
-    error::{TiffError, TiffFormatError, TiffResult, UsageError},
-    structs::{IfdEntry, Tag, TagData},
-    ByteOrder,
-};
+use std::collections::BTreeMap;
+use std::io;
+
 use log::debug;
-use std::{collections::BTreeMap, io};
+
+use crate::decoder::EndianReader;
+use crate::error::{TiffError, TiffFormatError, TiffResult, UsageError};
+use crate::structs::{IfdEntry, Tag, TagData};
+use crate::ByteOrder;
 
 pub type Directory = BTreeMap<Tag, IfdEntry>;
+
+/// The size of the `number of entries`
+///
+/// The start of an IFD is the number of entries in that IFD.
+///
+/// |small|big|
+/// |-----|---|
+/// |2    | 8 |
+///
+#[inline]
+#[must_use]
+pub const fn num_entries_size(bigtiff: bool) -> u64 {
+    if bigtiff {
+        8 // u64
+    } else {
+        2 // u16
+    }
+}
+
+/// The size of an ifd entry
+///
+/// |field       |small|big|
+/// |------------|:---:|:-:|
+/// |tag         | 2   | 2 |
+/// |type        | 2   | 2 |
+/// |count       | 4   | 8 |
+/// |value/offset| 4   | 8 |
+/// |total       | 12  | 20|
+#[inline]
+#[must_use]
+pub const fn entry_size(bigtiff: bool) -> u64 {
+    if bigtiff {
+        2 + 2 + 8 + 8
+    } else {
+        2 + 2 + 4 + 4
+    }
+}
+
+/// The size of an offset to an IFD
+///
+/// This is the same in the header as at the end of each IFD.
+///
+/// |small|big|
+/// |-----|---|
+/// |4    |8  |
+///
+pub const fn ifd_offset_size(bigtiff: bool) -> u64 {
+    if bigtiff {
+        8 // u64
+    } else {
+        4 // u32
+    }
+}
 
 #[derive(Debug, PartialEq, Default, Clone)]
 pub struct Ifd {
@@ -16,6 +70,10 @@ pub struct Ifd {
 
 /// Base IFD struct without any special-cased metadata
 impl Ifd {
+    /// The number of entries in this ifd
+    pub fn count(&self) -> usize {
+        self.data.len()
+    }
     /// Creates this ifd from a buffer.
     ///
     /// Tags that fit in the offset field are directly added as an
@@ -169,9 +227,11 @@ impl From<Directory> for Ifd {
 
 #[allow(unused_imports, clippy::useless_conversion)]
 mod test_ifd {
-    use super::*;
-    use crate::structs::{value::Value, Offset, TagData, TagType};
     use smallvec::smallvec;
+
+    use super::*;
+    use crate::structs::value::Value;
+    use crate::structs::{Offset, TagData, TagType};
 
     /// test reading multiple tags, esp. whether we skip over the offset properly
     #[test]
