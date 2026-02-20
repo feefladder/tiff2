@@ -10,6 +10,7 @@ use crate::structs::Tag;
 ///
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CacheMiss(pub Bound<usize>, pub Bound<usize>);
+
 impl Display for CacheMiss {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "cache miss for range ")?;
@@ -31,7 +32,7 @@ impl Display for CacheMiss {
 }
 impl Error for CacheMiss {}
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct MetaError {
     pub status: MetaErrorStatus,
@@ -39,7 +40,7 @@ pub struct MetaError {
     pub message: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum MetaErrorKind {
     InvalidTiff,
     InvalidBuffer,
@@ -83,7 +84,7 @@ impl MetaError {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum MetaErrorStatus {
     /// Reading from the provided buffer failed
     ///

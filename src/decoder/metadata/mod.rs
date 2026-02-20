@@ -2,19 +2,20 @@ use std::collections::BTreeMap;
 use std::io::Cursor;
 use std::ops::Range;
 
-use crate::decoder::metadata::ifd::IfdLoader;
 use crate::decoder::EndianReader;
-use crate::error::{TiffError, TiffFormatError, TiffResult};
-use crate::structs::{Ifd, IfdEntry, Tag, TagData};
+use crate::structs::Ifd;
 use crate::ByteOrder;
+use crate::{decoder::metadata::ifd::IfdLoader, structs::tiff::header_size};
 
 mod cog;
 pub mod error;
 mod ifd;
 use error::MetaError;
-use exn::{bail, ErrorExt, OptionExt, ResultExt};
+use exn::{bail, ResultExt};
+
 pub type MetaResult<T> = exn::Result<T, MetaError>;
 
+#[derive(Debug, Clone)]
 pub struct Tiff {
     /// Whether we are big or small tiff
     bigtiff: bool,
@@ -22,7 +23,11 @@ pub struct Tiff {
     byte_order: ByteOrder,
     /// offsets to ifds
     ifd_offsets: Vec<u64>,
-    /// all current ifds
+    /// all current ifds, indexed by offsets
+    ///
+    /// ```
+    /// let ifd_5 = self.ifds[self.ifd_offsets[5]]
+    /// ```
     ifds: BTreeMap<u64, Ifd>,
 }
 
@@ -93,13 +98,13 @@ pub struct Tiff {
 impl Tiff {
     /// The range required to parse the header
     ///
-    /// This is the required range for a bigtiff file
+    /// This is the required range for a bigtiff file, since we don't know whether it's big or small
     pub fn header_range() -> Range<u64> {
-        0..16
+        0..header_size(true)
     }
 
     pub fn from_header(buf: &[u8]) -> MetaResult<Self> {
-        if buf.len() < 16 {
+        if u64::try_from(buf.len()).unwrap() < header_size(true) {
             bail!(MetaError::invalid_buffer(
                 Self::header_range(),
                 format!("could not load header with buffer size of {}", buf.len()),
@@ -115,7 +120,7 @@ impl Tiff {
                 )));
             }
         };
-        let mut r = EndianReader::wrap(std::io::Cursor::new(&buf[2..32]), byte_order);
+        let mut r = EndianReader::wrap(std::io::Cursor::new(&buf[2..]), byte_order);
         let bigtiff = match r
             .read_u16()
             .or_raise(|| MetaError::permanent(format!("failed to read magic number")))?
@@ -168,27 +173,46 @@ impl Tiff {
 
     /// Get the range that holds the next ifd's count value
     ///
-    /// TODO: shold this return None on 0? e.g. at the end of the iterator?
-    pub fn next_ifd_offset(&self) -> u64 {
-        *self.ifd_offsets.last().unwrap()
+    /// Returns `None` if the value is `0` (indicating the end of the chain)
+    pub fn next_ifd_offset(&self) -> Option<u64> {
+        match self.ifd_offsets.last() {
+            None => unreachable!("proper opening should add at least one ifd offset"),
+            Some(0) => None,
+            Some(v) => Some(*v),
+        }
     }
 
-    pub fn ifd_loader(&mut self, buf: &[u8], offset: u64) -> MetaResult<IfdLoader> {
+    /// Get the ifd loader and insert the next offset into self
+    ///
+    /// Why do we have this ifd_loader concept at all? I mean the whole point
+    /// (sort of) is to be able to also fix ifds after the fact, so maybe those
+    /// functions are then exposed to two places anyways and ideally that'd be ?here?
+    ///
+    /// The main reason there's the [`IfdLoader`] is to have parity with
+    /// async-tiff, and split the metadata loading from the tiff that does
+    /// stuff... Maybe make it possible to re-create an ifdloader from an ifd?
+    ///
+    /// I think re-creating the loader is like totally acceptable. It is kind of
+    /// nice to have the ifd struct which just holds data and the loader that
+    /// knows how to load it??
+    pub fn ifd_loader(&mut self, buf: &[u8], offset: u64) -> MetaResult<(IfdLoader, u64)> {
         let (ifd_loader, next_ifd) =
             IfdLoader::load_ifd(buf, offset, self.bigtiff, self.byte_order)?;
         if self.ifd_offsets.contains(&next_ifd) {
             bail!(MetaError::permanent(format!(
-                "Cycle in offset detected at ifd {next_ifd}"
+                "Cycle in offsets detected at ifd {next_ifd}"
             )));
         }
-        self.ifd_offsets.push(next_ifd);
-        Ok(ifd_loader)
+        Ok((ifd_loader, next_ifd))
     }
 
-    pub fn insert_ifd(&mut self, offset: u64, ifd: Ifd) {
+    /// Insert the ifd corresponding to the given offset
+    pub fn insert_ifd(&mut self, offset: u64, ifd: Ifd, next_offset: u64) {
         if !self.ifd_offsets.contains(&offset) {
+            // this is actaully bad a
             self.ifd_offsets.push(offset);
         }
         self.ifds.insert(offset, ifd);
+        self.ifd_offsets.push(next_offset);
     }
 }

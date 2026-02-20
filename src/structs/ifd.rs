@@ -65,7 +65,9 @@ pub const fn ifd_offset_size(bigtiff: bool) -> u64 {
 
 #[derive(Debug, PartialEq, Default, Clone)]
 pub struct Ifd {
+    // TODO: should an Ifd know its offset?
     pub(crate) data: Directory,
+    // TODO: add custom tag registry/parsing
 }
 
 /// Base IFD struct without any special-cased metadata

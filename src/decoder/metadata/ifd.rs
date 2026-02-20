@@ -22,6 +22,7 @@ impl IfdLoader {
     pub fn count(&self) -> usize {
         self.ifd.count()
     }
+
     /// given a buffer holding the count value, get the number of entries
     fn ifd_entry_count(
         buf: &[u8],
@@ -51,7 +52,7 @@ impl IfdLoader {
     /// Given a buffer holding the ifd, get the underlying ifd
     ///
     /// This also reads the count of the ifd (first value). The exact required
-    /// size of this buffer cannot be known beforehand, but a safe assumption is
+    /// size of this buffer cannot be known beforehand, but a (very) safe assumption is
     /// ~1KiB. If it fails, it will give the exact required range.
     ///
     ///
@@ -66,6 +67,7 @@ impl IfdLoader {
         // act as if we have a cursor: move the start of the buffer
         ifd_buf = &ifd_buf[usize::try_from(num_entries_size(bigtiff)).unwrap()..];
 
+        // check if the entire ifd is in memory
         if u64::try_from(ifd_buf.len()).unwrap()
             < count * entry_size(bigtiff) + ifd_offset_size(bigtiff)
         {

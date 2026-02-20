@@ -4,16 +4,19 @@
 
 use std::{
     collections::BTreeMap,
-    ops::{Bound, Range, RangeBounds},
+    ops::{Bound, RangeBounds},
 };
 
 use bytes::Bytes;
 use exn::{OptionExt, ResultExt};
-use log::error;
+use log::{debug, error};
 
-use crate::decoder::metadata::{
-    error::{CacheMiss, MetaError},
-    MetaResult, Tiff,
+use crate::{
+    decoder::metadata::{
+        error::{CacheMiss, MetaError},
+        MetaResult, Tiff,
+    },
+    structs::num_entries_size,
 };
 
 pub struct CogCache {
@@ -33,43 +36,54 @@ impl CogCache {
 
     /// Load the next ifd
     ///
-    /// If all the ifd's values are not present in the cache, an error is returned
-    pub fn next(&mut self) -> MetaResult<()> {
-        let offset = self.tiff.next_ifd_offset();
-        let mut ifd_loader = self.tiff.ifd_loader(
-            &self
-                .slice(usize::try_from(offset).unwrap()..)
-                .or_raise(|| {
-                    MetaError::invalid_buffer(
-                        offset..offset + 1024,
-                        "failed to create ifd loader".into(),
-                    )
-                })?,
+    /// If all the ifd's values are not present in the cache, an error is
+    /// returned. This error may be ignored if this ifd is not of interest
+    pub fn next(&mut self) -> MetaResult<Option<u64>> {
+        let Some(offset) = self.tiff.next_ifd_offset() else {
+            return Ok(None);
+        };
+        println!("next ifd offset: {offset:x?}");
+        let (mut ifd_loader, next_ifd) = self.tiff.ifd_loader(
+            &self.slice(offset..).or_raise(|| {
+                // TODO: this is an advisory, too-small range which will only load the number-of-entries
+                // if the ifd is not in the cache at all, so a non-cog tiff
+                // (or an extremely small prefetch)
+                MetaError::invalid_buffer(
+                    offset..offset + num_entries_size(self.tiff.bigtiff),
+                    "failed to create ifd loader".into(),
+                )
+            })?,
             offset,
         )?;
-        // so the iterator magic breaks down here, because we can't give an
-        // iterator that borrows &ifd_loader and pass it to
-        // ifd_loader.load_ifd_values(&mut self)
+        // so the iterator magic
+        // (`ifd_loader.insert(ifd_loader.value_ranges().map(get_data))`) breaks
+        // down here, because we can't give an iterator that borrows &ifd_loader
+        // and pass it to ifd_loader.load_ifd_values(&mut self).
         //
-        // let's allocate some vec's
+        // Anyways that would be inserting stuff in an iterator we're iterating
+        //
+        // At most that's ~~one~~ _three_ allocations per ifd, so that's ok
+        //
+        // let's allocate some vecs
         let mut ifd_value_bufs = Vec::with_capacity(ifd_loader.count());
         // in the happy path, everything is loaded, so no allocations there
         let mut deferred_values = Vec::new();
         let mut deferred_tags = Vec::new();
+
+        // try to get all values from the cache
         for (t, range) in ifd_loader.value_ranges() {
-            match self
-                .slice(usize::try_from(range.start).unwrap()..usize::try_from(range.end).unwrap())
-            {
+            match self.slice(range.clone()) {
                 Ok(data) => ifd_value_bufs.push((t, data)),
                 Err(e) => {
                     error!("{e}");
+                    // insert magic caching/filtering strategies here
                     deferred_values.push(range);
                     deferred_tags.push(t);
                 }
             }
         }
         ifd_loader.load_ifd_values(offset, &mut ifd_value_bufs.into_iter())?;
-        self.tiff.insert_ifd(offset, ifd_loader.finish());
+        self.tiff.insert_ifd(offset, ifd_loader.finish(), next_ifd);
         if !deferred_values.is_empty() {
             let n = deferred_tags.len();
             Err(MetaError::incomplete_ifd(
@@ -80,7 +94,7 @@ impl CogCache {
             )
             .into())
         } else {
-            Ok(())
+            Ok(Some(offset))
         }
     }
 
@@ -89,7 +103,6 @@ impl CogCache {
     // deep clone:
     //
     // let mut new = BytesMut::from(self.cache.clone());
-    //
     //
     // So I think we need a fancy cache, otherwise there's something like
     // https://github.com/developmentseed/async-tiff/blob/538196d9a7b8988f1ae1fa2c8659abf3ba8e7c07/src/metadata/cache.rs#L41
@@ -114,12 +127,12 @@ impl CogCache {
     /// Get a slice from the cache
     ///
     /// This actually searches back-to-front, so `..=42` will give the smallest slice that contains `42`
-    fn slice(&self, range: impl RangeBounds<usize>) -> exn::Result<Bytes, CacheMiss> {
-        let start = range.start_bound();
-        let end = range.end_bound();
+    fn slice(&self, range: impl RangeBounds<u64>) -> exn::Result<Bytes, CacheMiss> {
+        let start = range.start_bound().map(|s| usize::try_from(*s).unwrap());
+        let end = range.end_bound().map(|e| usize::try_from(*e).unwrap());
         self.cache
             // make a range from 0..start
-            .range((Bound::Included(&0), start))
+            .range((Bound::Included(0), start))
             // find the last chunk that has the bounds
             .rfind(|(section_start, bytes)| match end {
                 Bound::Unbounded => true,
@@ -128,13 +141,13 @@ impl CogCache {
                 //         v
                 //   |--len--| section
                 // sstart    >=
-                Bound::Excluded(v) => bytes.len() + **section_start >= *v,
+                Bound::Excluded(v) => bytes.len() + **section_start >= v,
                 // the special case
                 //    |----|  req
                 //         v
                 //   |--len--| section
                 // sstart    >
-                Bound::Included(v) => bytes.len() + **section_start > *v,
+                Bound::Included(v) => bytes.len() + **section_start > v,
             })
             // So...
             .map(|(section_start, bytes)| {
@@ -143,7 +156,7 @@ impl CogCache {
                     end.map(|e| e - section_start),
                 ))
             })
-            .ok_or_raise(|| CacheMiss(start.map(|s| *s), end.map(|e| *e)))
+            .ok_or_raise(|| CacheMiss(start, end))
     }
 
     /// Finish metadata parsing and remove the cache
@@ -156,23 +169,29 @@ impl CogCache {
 
 #[cfg(test)]
 mod test {
+    use bytemuck::BoxBytes;
+    use exn::bail;
+
+    use crate::decoder::metadata::error::{MetaErrorKind, MetaErrorStatus};
+
     use super::*;
     use std::{collections::BTreeMap, ops::Range};
 
     #[test]
-    fn test_fancy_cache() {
+    fn test_too_fancy_cache() {
+        // This is a cache that is actually too fancy, it does checks/modifications that don't improve performance/memory use and only fragment the cache
         /// Get a slice from the cache
         ///
         /// This actually searches back-to-front, so `..=42` will give the smallest slice that contains `42`
         fn slice(
             cache: &BTreeMap<usize, Bytes>,
-            range: impl RangeBounds<usize>,
+            range: impl RangeBounds<u64>,
         ) -> exn::Result<Bytes, CacheMiss> {
-            let start = range.start_bound();
-            let end = range.end_bound();
+            let start = range.start_bound().map(|s| usize::try_from(*s).unwrap());
+            let end = range.end_bound().map(|e| usize::try_from(*e).unwrap());
             cache
                 // make a range from 0..start
-                .range((Bound::Included(&0), start))
+                .range((Bound::Included(0), start))
                 // find the last chunk that has the bounds
                 .rfind(|(section_start, bytes)| match end {
                     Bound::Unbounded => true,
@@ -181,13 +200,13 @@ mod test {
                     //         v
                     //   |--len--| section
                     // sstart    >=
-                    Bound::Excluded(v) => bytes.len() + **section_start >= *v,
+                    Bound::Excluded(v) => bytes.len() + **section_start >= v,
                     // the special case
                     //    |----|  req
                     //         v
                     //   |--len--| section
                     // sstart    >
-                    Bound::Included(v) => bytes.len() + **section_start > *v,
+                    Bound::Included(v) => bytes.len() + **section_start > v,
                 })
                 // So...
                 .map(|(section_start, bytes)| {
@@ -196,17 +215,17 @@ mod test {
                         end.map(|e| e - section_start),
                     ))
                 })
-                .ok_or_raise(|| CacheMiss(start.map(|s| *s), end.map(|e| *e)))
+                .ok_or_raise(|| CacheMiss(start, end))
         }
         let mut cache = BTreeMap::new();
         cache.insert(0, Bytes::copy_from_slice(&[42; 42]));
-        let desired_range = 10..32usize;
+        let desired_range = 10..32;
         assert_eq!(
             &slice(&cache, desired_range.clone()).unwrap()[..],
             &vec![42; (10..32).len()]
         );
 
-        // now there's the completely useless edge-case of adding a buffer that breaks everything, because we don't support broken slices
+        /// This is the part where it's too fancy now there's the completely useless edge-case of adding a buffer that breaks everything, because we don't support broken slices
         fn insert(cache: &mut BTreeMap<usize, Bytes>, offset: usize, mut data: Bytes) {
             // if there was a previous blob, truncate it (not sure if that is really needed though, but it is nice)
             // ```text
@@ -251,8 +270,12 @@ mod test {
                 .downcast_ref::<CacheMiss>()
                 .unwrap(),
             &CacheMiss(
-                desired_range.start_bound().map(|s| *s),
-                desired_range.end_bound().map(|e| *e)
+                desired_range
+                    .start_bound()
+                    .map(|s| usize::try_from(*s).unwrap()),
+                desired_range
+                    .end_bound()
+                    .map(|e| usize::try_from(*e).unwrap())
             )
         );
         assert_eq!(
@@ -271,5 +294,112 @@ mod test {
                 (13, Bytes::copy_from_slice(&[43; 43]))
             ])
         );
+    }
+
+    #[rustfmt::skip]
+    fn circular_tiff() -> Bytes {
+        Bytes::from_owner([
+        //    0     1    2  3
+            b'I', b'I',
+            42, 0,// header
+        //  4 5 6 7
+            8,0,0,0,       // first ifd offset, u32
+        //  8 9
+            0,0,           // first ifd entry count, u16
+        //   A B C D
+            14,0,0,0,       // next ifd offset, u32
+            0,0,            // second ifd entry count, u16
+            8,0,0,0         // next ifd offset (points to 0)
+        ])
+    }
+
+    #[tokio::test]
+    async fn test_async_copy() {
+        // for now everything is infallible
+        #[async_trait::async_trait]
+        trait AsyncRead {
+            async fn read_range(&self, range: Range<u64>) -> Bytes;
+            // yeah so I guess this is kind of sad, because we could coalesce_ranges downstream,
+            // so I guess just a &[Range<u64>]->&[Bytes] should suffice?
+            async fn read_ranges(&self, ranges: &[Range<u64>]) -> impl Iterator<Item = Bytes>;
+        }
+        async fn async_copy(reader: impl AsyncRead) -> MetaResult<Tiff> {
+            let prefetch = reader.read_range(0..1024 * 16).await;
+            let mut writer = CogCache::new(prefetch).unwrap();
+            while match writer.next() {
+                // safe to unwrap the downcast_ref because of `writer.next()` return type
+                Err(e) => match e.frame().error().downcast_ref::<MetaError>().unwrap() {
+                    MetaError {
+                        status: MetaErrorStatus::MissingRange { required },
+                        kind,
+                        message,
+                    } => {
+                        writer.insert(
+                            usize::try_from(required.start).unwrap(),
+                            reader.read_range(required.clone()).await,
+                        );
+                        true
+                        // so the idea is here that calling `next` which errors doesn't advance the iterator, so calling "next" again will retry
+                        // except that it may be the idea to skip ifds
+                    }
+                    // any other error is bad, why can't I raise without cloning?
+                    // ah well, whatevs
+                    e => bail!(e.clone()),
+                },
+                Ok(Some(v)) => true,
+                Ok(None) => false,
+            } {
+                println!("weee");
+            }
+            Ok(writer.finish())
+        }
+        #[async_trait::async_trait]
+        impl AsyncRead for Bytes {
+            async fn read_range(&self, range: Range<u64>) -> Bytes {
+                self.slice(range.start as usize..self.len().min(range.end as usize))
+            }
+            async fn read_ranges(&self, ranges: &[Range<u64>]) -> impl Iterator<Item = Bytes> {
+                ranges
+                    .iter()
+                    .map(|r| self.slice(r.start as usize..r.end as usize))
+            }
+        }
+        assert_eq!(
+            async_copy(circular_tiff())
+                .await
+                .unwrap_err()
+                .frame()
+                .error()
+                .downcast_ref::<MetaError>()
+                .unwrap(),
+            &MetaError {
+                message: "Cycle in offsets detected at ifd 8".into(),
+                status: MetaErrorStatus::Permanent,
+                kind: MetaErrorKind::InvalidTiff
+            }
+        )
+    }
+
+    #[test]
+    fn test_rangebounds() {
+        // sanity check on rangebounds
+        fn get_range(range: impl RangeBounds<u64>) -> Vec<u8> {
+            let datasource = [42u8; 42];
+            let start_bound = range.start_bound().map(|s| usize::try_from(*s).unwrap());
+            let end_bound = range.end_bound().map(|e| usize::try_from(*e).unwrap());
+            datasource[(start_bound, end_bound)].to_vec()
+        }
+        assert_eq!(get_range(2..10), vec![42; (2..10).len()]);
+        fn get_range_from_btree_map(range: impl RangeBounds<u64>) -> Vec<u8> {
+            let datasource = BTreeMap::from([(5, vec![42u8; 42])]);
+            let start_bound = range.start_bound().map(|s| usize::try_from(*s).unwrap());
+            let end_bound = range.end_bound().map(|e| usize::try_from(*e).unwrap());
+            datasource
+                .range((start_bound, end_bound))
+                .next()
+                .unwrap()
+                .1
+                .clone()
+        }
     }
 }
