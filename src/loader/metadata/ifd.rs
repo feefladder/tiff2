@@ -1,16 +1,14 @@
-use std::{io::Cursor, ops::Range};
+use std::io::Cursor;
+use std::ops::Range;
 
 use bytes::Bytes;
 use exn::{bail, OptionExt, ResultExt};
 
-use crate::{
-    decoder::{
-        metadata::{error::MetaError, MetaResult},
-        EndianReader,
-    },
-    structs::{entry_size, ifd_offset_size, num_entries_size, Ifd, IfdEntry, Tag, TagData},
-    ByteOrder,
-};
+use crate::loader::metadata::error::MetaError;
+use crate::loader::metadata::MetaResult;
+use crate::loader::EndianReader;
+use crate::structs::{entry_size, num_entries_size, offset_size, Ifd, IfdEntry, Tag, TagData};
+use crate::ByteOrder;
 
 pub struct IfdLoader {
     bigtiff: bool,
@@ -49,7 +47,7 @@ impl IfdLoader {
         Ok(count)
     }
 
-    /// Given a buffer holding the ifd, get the underlying ifd
+    /// Given a buffer holding the IFD, get the underlying IFD
     ///
     /// This also reads the count of the ifd (first value). The exact required
     /// size of this buffer cannot be known beforehand, but a (very) safe assumption is
@@ -69,13 +67,13 @@ impl IfdLoader {
 
         // check if the entire ifd is in memory
         if u64::try_from(ifd_buf.len()).unwrap()
-            < count * entry_size(bigtiff) + ifd_offset_size(bigtiff)
+            < count * entry_size(bigtiff) + offset_size(bigtiff)
         {
             bail!(MetaError::invalid_buffer(
                 offset
                     ..offset
                         + count * entry_size(bigtiff)
-                        + ifd_offset_size(bigtiff)
+                        + offset_size(bigtiff)
                         + num_entries_size(bigtiff),
                 format!("could not load IFD at offset {offset}")
             ))
@@ -100,6 +98,15 @@ impl IfdLoader {
         })
     }
 
+    /// Load deferred values from value ranges
+    ///
+    /// ```
+    /// let ifd_buf = [
+    ///     1,0, // number of entries
+    ///     1,1, // tag
+    ///
+    /// ];
+    /// ```
     pub fn load_ifd_values(
         &mut self,
         ifd_offset: u64,

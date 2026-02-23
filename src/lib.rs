@@ -17,10 +17,10 @@ pub mod structs;
 
 /// static decoding functions to be used with the Tiff/Image struct. Additionally an
 /// opinionated decoder, optimized for COGs (without the geo part).
-pub mod decoder;
+pub mod loader;
 /// static encoding functions to be used with Tiff/Image struct. Additionally,
 /// opinionated COG-building encoder
-pub mod encoder;
+pub mod saver;
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum ByteOrder {

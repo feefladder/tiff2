@@ -3,8 +3,8 @@ use std::io;
 
 use log::debug;
 
-use crate::decoder::EndianReader;
 use crate::error::{TiffError, TiffFormatError, TiffResult, UsageError};
+use crate::loader::EndianReader;
 use crate::structs::{IfdEntry, Tag, TagData};
 use crate::ByteOrder;
 
@@ -55,7 +55,7 @@ pub const fn entry_size(bigtiff: bool) -> u64 {
 /// |-----|---|
 /// |4    |8  |
 ///
-pub const fn ifd_offset_size(bigtiff: bool) -> u64 {
+pub const fn offset_size(bigtiff: bool) -> u64 {
     if bigtiff {
         8 // u64
     } else {
@@ -72,6 +72,9 @@ pub struct Ifd {
 
 /// Base IFD struct without any special-cased metadata
 impl Ifd {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&Tag, &IfdEntry)> {
+        self.data.iter()
+    }
     /// The number of entries in this ifd
     pub fn count(&self) -> usize {
         self.data.len()
@@ -232,7 +235,6 @@ mod test_ifd {
     use smallvec::smallvec;
 
     use super::*;
-    use crate::structs::value::Value;
     use crate::structs::{Offset, TagData, TagType};
 
     /// test reading multiple tags, esp. whether we skip over the offset properly

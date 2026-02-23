@@ -1,27 +1,18 @@
 use std::collections::HashMap;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::ops::Range;
 
 use smallvec::{smallvec, SmallVec};
 
-use crate::{
-    decoder::EndianReader,
-    error::{
-        TiffError,
-        TiffFormatError::{self, FloatExpected, SignedIntegerExpected, UnsignedIntegerExpected},
-        TiffResult,
-    },
-    structs::{
-        Tag,
-        TagType::{
-            self,
-            // self, ASCII, BYTE, DOUBLE, FLOAT, IFD, IFD8, LONG, RATIONAL, SBYTE, SHORT, SLONG,
-            // SRATIONAL, SSHORT, UNDEFINED, LONG8,
-        },
-    },
-    util::fix_endianness,
-    ByteOrder, NATIVE_ENDIAN,
+use crate::error::{
+    TiffError,
+    TiffFormatError::{self, FloatExpected, SignedIntegerExpected, UnsignedIntegerExpected},
+    TiffResult,
 };
+use crate::loader::EndianReader;
+use crate::structs::{Tag, TagType};
+use crate::util::fix_endianness;
+use crate::{ByteOrder, NATIVE_ENDIAN};
 
 pub type Directory = HashMap<Tag, IfdEntry>;
 
@@ -50,6 +41,23 @@ pub enum IfdEntry {
 }
 
 impl IfdEntry {
+    /// Extract tag type
+    ///
+    pub(crate) fn tag_type(&self) -> TagType {
+        match &self {
+            Self::Offset(o) => o.tag_type,
+            Self::Value(v) => v.tag_type(),
+        }
+    }
+
+    /// Get the number of elements in this entry
+    pub(crate) fn count(&self) -> u64 {
+        match &self {
+            Self::Offset(o) => o.count,
+            Self::Value(v) => u64::try_from(v.len()).unwrap(),
+        }
+    }
+
     /// Create this entry from an EndianReader
     ///
     /// The reader should have its cursor at the start of tag_type, not at tag
@@ -82,7 +90,10 @@ impl IfdEntry {
     ///     offset: 300,
     /// });
     /// ```
-    pub fn from_reader<R: Read + Seek>(r: &mut EndianReader<R>, bigtiff: bool) -> TiffResult<Self> {
+    pub(crate) fn from_reader<R: Read + Seek>(
+        r: &mut EndianReader<R>,
+        bigtiff: bool,
+    ) -> TiffResult<Self> {
         let t_u16 = r.read_u16()?;
         let tag_type =
             TagType::from_u16(t_u16).ok_or(TiffFormatError::InvalidTagValueType(t_u16))?;
@@ -110,7 +121,7 @@ impl IfdEntry {
         } else {
             // create a buffer for the offset
             let mut offset = TagData::new(tag_type, count.try_into()?);
-            r.read_exact(offset.buf_mut())?;
+            r.read_exact(offset.as_mut())?;
 
             // discard remaining bytes of offset
             let rem = if bigtiff {
@@ -125,13 +136,62 @@ impl IfdEntry {
 
             // fix endianness and return
             fix_endianness(
-                offset.buf_mut(),
+                offset.as_mut(),
                 r.byte_order,
                 NATIVE_ENDIAN,
                 8 * tag_type.primitive_size(),
             );
             Ok(IfdEntry::Value(offset))
         }
+    }
+
+    /// Write this entry to the writer
+    ///
+    /// ## Errors
+    ///
+    /// if the value doesn't fit in the offset field
+    pub(crate) fn write_to<W: Write + Seek>(
+        &self,
+        w: &mut EndianReader<W>,
+        bigtiff: bool,
+    ) -> TiffResult<()> {
+        match &self {
+            IfdEntry::Offset(o) => {
+                w.write_u16(o.tag_type.to_u16()).unwrap();
+                if bigtiff {
+                    w.write_u64(o.count).unwrap();
+                    w.write_u64(o.offset).unwrap();
+                } else {
+                    w.write_u32(u32::try_from(o.count)?).unwrap();
+                    w.write_u32(u32::try_from(o.offset)?).unwrap();
+                }
+            }
+            IfdEntry::Value(v) => {
+                w.write_u16(v.tag_type().to_u16()).unwrap();
+                if bigtiff {
+                    if v.as_ref().len() > 8 {
+                        todo!("proper error handling")
+                    }
+                    w.write_u64(u64::try_from(v.len())?).unwrap();
+                    // this part is broken, because we need to fix endianness
+                    // TODO: ditch the reader and make everything work on buffers, so we can fix endianness
+                    // or something...
+                    // I don't really like the EndianReader
+                    w.write(v.as_ref()).unwrap();
+                    w.seek(SeekFrom::Current(8 - i64::try_from(v.as_ref().len())?))
+                        .unwrap();
+                } else {
+                    if v.as_ref().len() > 4 {
+                        todo!("proper error handling")
+                    }
+                    w.write_u32(u32::try_from(v.len())?).unwrap();
+                    w.write(v.as_ref()).unwrap();
+                    w.seek(SeekFrom::Current(4 - i64::try_from(v.as_ref().len())?))
+                        .unwrap();
+                }
+            }
+        };
+        Ok(())
     }
 }
 
@@ -171,6 +231,7 @@ pub enum TagData {
 impl TagData {
     /// Create a new, zero-initialized version of Self.
     ///
+    #[inline]
     #[rustfmt::skip]
     pub fn new(tag_type: TagType, count: usize) -> Self {
         // from the comment [on this
@@ -196,6 +257,7 @@ impl TagData {
         }
     }
 
+    #[inline]
     #[rustfmt::skip]
     pub fn tag_type(&self) -> TagType {
         match self {
@@ -218,6 +280,7 @@ impl TagData {
         }
     }
 
+    #[inline]
     pub fn from_buffer(
         buf: &[u8],
         tag_type: TagType,
@@ -225,13 +288,13 @@ impl TagData {
         byte_order: ByteOrder,
     ) -> TiffResult<Self> {
         let mut e = Self::new(tag_type, count);
-        let req_len = e.buf_mut().len();
+        let req_len = e.as_mut().len();
         if req_len > buf.len() {
             return Err(TiffError::LimitsExceeded);
         }
-        e.buf_mut().copy_from_slice(&buf[..req_len]);
+        e.as_mut().copy_from_slice(&buf[..req_len]);
         fix_endianness(
-            e.buf_mut(),
+            e.as_mut(),
             byte_order,
             NATIVE_ENDIAN,
             tag_type.primitive_size() * 8,
@@ -239,29 +302,17 @@ impl TagData {
         Ok(e)
     }
 
-    /// Get the underlying data as a `&mut [u8]`
-    ///
-    ///
-    #[rustfmt::skip]
-    pub fn buf_mut(&mut self) -> &mut [u8] {
-        match self {
-            Self::Byte     (v) => bytemuck::cast_slice_mut(&mut v[..]),
-            Self::SByte    (v) => bytemuck::cast_slice_mut(&mut v[..]),
-            Self::Undefined(v) => bytemuck::cast_slice_mut(&mut v[..]),
-            Self::Ascii    (v) => bytemuck::cast_slice_mut(&mut v[..]),
-            Self::Short    (v) => bytemuck::cast_slice_mut(&mut v[..]),
-            Self::SShort   (v) => bytemuck::cast_slice_mut(&mut v[..]),
-            Self::Long     (v) => bytemuck::cast_slice_mut(&mut v[..]),
-            Self::SLong    (v) => bytemuck::cast_slice_mut(&mut v[..]),
-            Self::Ifd      (v) => bytemuck::cast_slice_mut(&mut v[..]),
-            Self::Long8    (v) => bytemuck::cast_slice_mut(&mut v[..]),
-            Self::SLong8   (v) => bytemuck::cast_slice_mut(&mut v[..]),
-            Self::Ifd8     (v) => bytemuck::cast_slice_mut(&mut v[..]),
-            Self::Float    (v) => bytemuck::cast_slice_mut(&mut v[..]),
-            Self::Double   (v) => bytemuck::cast_slice_mut(&mut v[..]),
-            Self::Rational (v) => bytemuck::cast_slice_mut(&mut v[..]),
-            Self::SRational(v) => bytemuck::cast_slice_mut(&mut v[..]),
-        }
+    #[inline]
+    pub fn to_buffer(&self, buffer: &mut [u8], byte_order: ByteOrder) -> usize {
+        let req_len = self.as_ref().len();
+        buffer[..req_len].copy_from_slice(self.as_ref());
+        fix_endianness(
+            &mut buffer[..req_len],
+            NATIVE_ENDIAN,
+            byte_order,
+            self.tag_type().primitive_size() * 8,
+        );
+        req_len
     }
 
     /// The length in values of the underlying datatype
@@ -290,6 +341,60 @@ impl TagData {
             Self::Double   (v) => v.len(),
             Self::Rational (v) => v.len(),
             Self::SRational(v) => v.len(),
+        }
+    }
+}
+
+impl AsMut<[u8]> for TagData {
+    /// Get the underlying data as a `&mut [u8]`
+    ///
+    #[inline]
+    #[rustfmt::skip]
+    fn as_mut(&mut self) -> &mut [u8] {
+        match self {
+            Self::Byte     (v) => bytemuck::cast_slice_mut(&mut v[..]),
+            Self::SByte    (v) => bytemuck::cast_slice_mut(&mut v[..]),
+            Self::Undefined(v) => bytemuck::cast_slice_mut(&mut v[..]),
+            Self::Ascii    (v) => bytemuck::cast_slice_mut(&mut v[..]),
+            Self::Short    (v) => bytemuck::cast_slice_mut(&mut v[..]),
+            Self::SShort   (v) => bytemuck::cast_slice_mut(&mut v[..]),
+            Self::Long     (v) => bytemuck::cast_slice_mut(&mut v[..]),
+            Self::SLong    (v) => bytemuck::cast_slice_mut(&mut v[..]),
+            Self::Ifd      (v) => bytemuck::cast_slice_mut(&mut v[..]),
+            Self::Long8    (v) => bytemuck::cast_slice_mut(&mut v[..]),
+            Self::SLong8   (v) => bytemuck::cast_slice_mut(&mut v[..]),
+            Self::Ifd8     (v) => bytemuck::cast_slice_mut(&mut v[..]),
+            Self::Float    (v) => bytemuck::cast_slice_mut(&mut v[..]),
+            Self::Double   (v) => bytemuck::cast_slice_mut(&mut v[..]),
+            Self::Rational (v) => bytemuck::cast_slice_mut(&mut v[..]),
+            Self::SRational(v) => bytemuck::cast_slice_mut(&mut v[..]),
+        }
+    }
+}
+
+impl AsRef<[u8]> for TagData {
+    /// Get the underlying data as a `&mut [u8]`
+    ///
+    #[inline]
+    #[rustfmt::skip]
+    fn as_ref(& self) -> &[u8] {
+        match self {
+            Self::Byte     (v) => bytemuck::cast_slice(& v[..]),
+            Self::SByte    (v) => bytemuck::cast_slice(& v[..]),
+            Self::Undefined(v) => bytemuck::cast_slice(& v[..]),
+            Self::Ascii    (v) => bytemuck::cast_slice(& v[..]),
+            Self::Short    (v) => bytemuck::cast_slice(& v[..]),
+            Self::SShort   (v) => bytemuck::cast_slice(& v[..]),
+            Self::Long     (v) => bytemuck::cast_slice(& v[..]),
+            Self::SLong    (v) => bytemuck::cast_slice(& v[..]),
+            Self::Ifd      (v) => bytemuck::cast_slice(& v[..]),
+            Self::Long8    (v) => bytemuck::cast_slice(& v[..]),
+            Self::SLong8   (v) => bytemuck::cast_slice(& v[..]),
+            Self::Ifd8     (v) => bytemuck::cast_slice(& v[..]),
+            Self::Float    (v) => bytemuck::cast_slice(& v[..]),
+            Self::Double   (v) => bytemuck::cast_slice(& v[..]),
+            Self::Rational (v) => bytemuck::cast_slice(& v[..]),
+            Self::SRational(v) => bytemuck::cast_slice(& v[..]),
         }
     }
 }

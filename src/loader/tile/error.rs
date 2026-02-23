@@ -5,8 +5,8 @@
 // TODO:
 use std::ops::Range;
 
-use crate::decoder::metadata::error::MetaErrorStatus;
-use crate::decoder::tile::Tile;
+use crate::loader::metadata::error::MetaErrorStatus;
+use crate::loader::tile::Tile;
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]

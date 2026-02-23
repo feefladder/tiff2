@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 
-use crate::decoder::tile::ChunkOpts;
 use crate::error::{TiffError, TiffFormatError, TiffResult, TiffUnsupportedError};
+use crate::loader::tile::ChunkOpts;
 use crate::structs::tags::{
     CompressionMethod, PhotometricInterpretation, PlanarConfiguration, Predictor, SampleFormat, Tag,
 };

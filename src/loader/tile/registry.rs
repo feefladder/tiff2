@@ -5,8 +5,8 @@ use std::io::{Cursor, Read};
 use flate2::bufread::ZlibDecoder;
 use weezl::LzwStatus;
 
-use crate::decoder::tile::ChunkOpts;
 use crate::error::{TiffError, TiffFormatError, TiffResult, TiffUnsupportedError};
+use crate::loader::tile::ChunkOpts;
 use crate::structs::tags::CompressionMethod;
 
 // from async-tiff

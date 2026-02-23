@@ -2,22 +2,16 @@
 //!
 //! Also to see if we can expose the iterator-like functionality
 
-use std::{
-    collections::BTreeMap,
-    ops::{Bound, RangeBounds},
-};
+use std::collections::BTreeMap;
+use std::ops::{Bound, RangeBounds};
 
 use bytes::Bytes;
 use exn::{OptionExt, ResultExt};
 use log::{debug, error};
 
-use crate::{
-    decoder::metadata::{
-        error::{CacheMiss, MetaError},
-        MetaResult, Tiff,
-    },
-    structs::num_entries_size,
-};
+use crate::loader::metadata::error::{CacheMiss, MetaError};
+use crate::loader::metadata::{MetaResult, Tiff};
+use crate::structs::num_entries_size;
 
 pub struct CogCache {
     cache: BTreeMap<usize, Bytes>,
@@ -169,13 +163,14 @@ impl CogCache {
 
 #[cfg(test)]
 mod test {
+    use std::collections::BTreeMap;
+    use std::ops::Range;
+
     use bytemuck::BoxBytes;
     use exn::bail;
 
-    use crate::decoder::metadata::error::{MetaErrorKind, MetaErrorStatus};
-
     use super::*;
-    use std::{collections::BTreeMap, ops::Range};
+    use crate::loader::metadata::error::{MetaErrorKind, MetaErrorStatus};
 
     #[test]
     fn test_too_fancy_cache() {

@@ -1,20 +1,18 @@
-use crate::{
-    error::TiffResult,
-    structs::{Offset, Tag, TagData},
-    util::fix_endianness,
-    ByteOrder, NATIVE_ENDIAN,
-};
+use std::collections::BTreeMap;
+use std::io::{self, BufRead, BufReader, Read, Take};
+use std::num::TryFromIntError;
+use std::ops::Range;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::{stream::StreamExt, TryStreamExt};
+use futures::stream::StreamExt;
+use futures::TryStreamExt;
 use log::debug;
-use std::{
-    collections::BTreeMap,
-    io::{self, BufRead, BufReader, Read, Take},
-    num::TryFromIntError,
-    ops::Range,
-};
+
+use crate::error::TiffResult;
+use crate::structs::{Offset, Tag, TagData};
+use crate::util::fix_endianness;
+use crate::{ByteOrder, NATIVE_ENDIAN};
 
 /// Trait for a CogReader to implement.
 ///
@@ -218,6 +216,17 @@ impl<R: io::Seek> io::Seek for EndianReader<R> {
     #[inline]
     fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
         self.reader.seek(pos)
+    }
+}
+
+impl<W: io::Write> io::Write for EndianReader<W> {
+    #[inline]
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.reader.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.reader.flush()
     }
 }
 

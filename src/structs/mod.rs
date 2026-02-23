@@ -2,7 +2,7 @@ mod entry;
 pub use entry::{Directory, IfdEntry, Offset, TagData};
 /// IFD struct for non-images
 mod ifd;
-pub use ifd::{entry_size, ifd_offset_size, num_entries_size, Ifd};
+pub use ifd::{entry_size, num_entries_size, offset_size, Ifd};
 /// IFD struct and functions for IFDs related to images
 mod image;
 pub use image::{Image, StripDecodeState, TileAttributes};
@@ -13,9 +13,6 @@ pub use tags::{Tag, TagType};
 /// re-implemented for more specific tiff types
 pub mod tiff;
 pub use tiff::Tiff;
-/// Tag Value type and convenience functions
-/// to be deprecated in favour of `BufferedEntry`
-pub mod value;
 
 pub struct Point<T> {
     pub x: T,

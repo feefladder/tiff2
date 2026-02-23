@@ -6,8 +6,8 @@ use log::error;
 #[cfg(test)]
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
-use crate::decoder::CogReader;
 use crate::error::TiffResult;
+use crate::loader::CogReader;
 
 #[cfg(test)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]

@@ -3,11 +3,11 @@ use std::ops::Range;
 
 use bytes::Bytes;
 
-use crate::decoder::decoding_result::DataType;
-use crate::decoder::tile::predictor::{unpredict_float, unpredict_hdiff};
-use crate::decoder::tile::registry::DecoderRegistry;
-use crate::decoder::TileData;
 use crate::error::{TiffError, TiffResult, TiffUnsupportedError, UsageError};
+use crate::loader::decoding_result::DataType;
+use crate::loader::tile::predictor::{unpredict_float, unpredict_hdiff};
+use crate::loader::tile::registry::DecoderRegistry;
+use crate::loader::TileData;
 use crate::structs::tags::{
     CompressionMethod, PhotometricInterpretation, PlanarConfiguration, Predictor, SampleFormat,
 };

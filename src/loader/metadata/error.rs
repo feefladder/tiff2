@@ -1,8 +1,6 @@
-use std::{
-    error::Error,
-    fmt::Display,
-    ops::{Bound, Range},
-};
+use std::error::Error;
+use std::fmt::Display;
+use std::ops::{Bound, Range};
 
 use crate::structs::Tag;
 
@@ -10,6 +8,72 @@ use crate::structs::Tag;
 ///
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CacheMiss(pub Bound<usize>, pub Bound<usize>);
+
+/// The main metadata-related error
+///
+///
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct MetaError {
+    /// Course-grained status
+    ///
+    /// Based on this, a retry/raise decision can be made
+    pub status: MetaErrorStatus,
+    /// Finer grained details of the error
+    ///
+    /// Based on this, the behaviour of the retry/raise can be adjusted
+    pub kind: MetaErrorKind,
+    /// User-facing ino
+    pub message: String,
+}
+
+/// The error status.
+///
+/// This is a coarse-grained "Can I retry" flag.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MetaErrorStatus {
+    /// Reading from the provided buffer failed
+    ///
+    /// please retry the operation, providing the required range
+    MissingRange {
+        required: Range<u64>,
+    },
+    /// Reading from the provided buffers failed
+    ///
+    /// please retry the operation, providing the required ranges
+    MissingRanges {
+        // should this become like a dyn Iterator<Item=Range<u64>>
+        required: Vec<Range<u64>>,
+    },
+    Permanent,
+}
+
+/// The kind of error
+///
+/// This is a more fine-grained "what should I do?" type of error
+#[derive(Debug, Clone, PartialEq)]
+pub enum MetaErrorKind {
+    /// The tiff file was invalid/corrupted
+    ///
+    /// This can be a variety of reasons, such as a cycle in offsets, an invalid
+    /// tag value etc. Generally, this type of error is not solvable.
+    ///
+    /// However, if the reader is broken, this error can also be thrown.
+    InvalidTiff,
+    /// The provided buffer for an operation was invalid
+    InvalidBuffer,
+    /// An ImageFileDirectory was not completely loaded
+    IncompleteIfd {
+        ifd_offset: u64,
+        missing_tags: Vec<Tag>,
+    },
+    /// Everything went well, but more data is needed.
+    ///
+    /// A middleware should intercept non-fatal errors to become this error.
+    ///
+    /// _Can the order of entropy be reversed?_
+    NeedMoreData,
+}
 
 impl Display for CacheMiss {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -31,24 +95,6 @@ impl Display for CacheMiss {
     }
 }
 impl Error for CacheMiss {}
-
-#[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
-pub struct MetaError {
-    pub status: MetaErrorStatus,
-    pub kind: MetaErrorKind,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum MetaErrorKind {
-    InvalidTiff,
-    InvalidBuffer,
-    IncompleteIfd {
-        ifd_offset: u64,
-        missing_tags: Vec<Tag>,
-    },
-}
 
 impl MetaError {
     pub(crate) fn permanent(message: String) -> Self {
@@ -84,23 +130,12 @@ impl MetaError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum MetaErrorStatus {
-    /// Reading from the provided buffer failed
-    ///
-    /// please retry the operation, providing the required range
-    MissingRange {
-        required: Range<u64>,
-    },
-    /// Reading from the provided buffers failed
-    ///
-    /// please retry the operation, providing the required ranges
-    MissingRanges {
-        // should this become like a dyn Iterator<Item=Range<u64>>
-        required: Vec<Range<u64>>,
-    },
-    Permanent,
+impl std::fmt::Display for MetaError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.status, self.message)
+    }
 }
+impl std::error::Error for MetaError {}
 
 impl std::fmt::Display for MetaErrorStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -115,13 +150,3 @@ impl std::fmt::Display for MetaErrorStatus {
         }
     }
 }
-
-#[derive(Debug, Clone)]
-pub struct IntermediateResult;
-
-impl std::fmt::Display for MetaError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.status, self.message)
-    }
-}
-impl std::error::Error for MetaError {}

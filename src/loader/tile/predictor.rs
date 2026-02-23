@@ -1,5 +1,5 @@
-use crate::decoder::tile::ChunkOpts;
 use crate::error::{TiffError, TiffResult, TiffUnsupportedError};
+use crate::loader::tile::ChunkOpts;
 use crate::util::fix_endianness;
 use crate::NATIVE_ENDIAN;
 

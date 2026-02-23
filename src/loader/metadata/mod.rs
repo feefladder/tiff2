@@ -2,12 +2,13 @@ use std::collections::BTreeMap;
 use std::io::Cursor;
 use std::ops::Range;
 
-use crate::decoder::EndianReader;
+use crate::loader::metadata::ifd::IfdLoader;
+use crate::loader::EndianReader;
+use crate::structs::tiff::header_size;
 use crate::structs::Ifd;
 use crate::ByteOrder;
-use crate::{decoder::metadata::ifd::IfdLoader, structs::tiff::header_size};
 
-mod cog;
+mod cache;
 pub mod error;
 mod ifd;
 use error::MetaError;
