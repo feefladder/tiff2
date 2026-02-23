@@ -25,9 +25,12 @@ pub struct Offset {
 }
 
 impl Offset {
+    pub(crate) fn len(&self) -> u64 {
+        self.count * u64::try_from(self.tag_type.size()).unwrap()
+    }
     /// get the in-file byte range required to load this Tag
     pub fn range(&self) -> Range<u64> {
-        self.offset..self.offset + self.count * u64::try_from(self.tag_type.size()).unwrap()
+        self.offset..self.offset + self.len()
     }
 }
 

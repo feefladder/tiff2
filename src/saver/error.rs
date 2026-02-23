@@ -61,6 +61,16 @@ impl SaverError {
             message,
         }
     }
+
+    pub(crate) fn unfinished_ifd(todo_tags: impl Iterator<Item = Tag>, message: String) -> Self {
+        Self {
+            status: SaverErrorStatus::EasyFix,
+            message,
+            kind: SaverErrorKind::IncompleteIfd {
+                missing_tags: todo_tags.collect(),
+            },
+        }
+    }
 }
 
 impl Display for SaverError {

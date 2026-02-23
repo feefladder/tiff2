@@ -72,6 +72,7 @@ pub struct Ifd {
 
 /// Base IFD struct without any special-cased metadata
 impl Ifd {
+    /// Iterate this IFD in increasing tag-order
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&Tag, &IfdEntry)> {
         self.data.iter()
     }
@@ -79,6 +80,7 @@ impl Ifd {
     pub fn count(&self) -> usize {
         self.data.len()
     }
+
     /// Creates this ifd from a buffer.
     ///
     /// Tags that fit in the offset field are directly added as an
