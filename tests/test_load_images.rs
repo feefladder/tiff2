@@ -6,8 +6,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use image::{DynamicImage, ImageBuffer, Luma, Rgb, Rgba};
 use log::{error, info};
-use tiff2::decoder::{ChunkDecoder, CogReader, CogReaderExt, Decoder};
 use tiff2::error::{TiffError, TiffResult};
+use tiff2::loader::{ChunkDecoder, CogReader, CogReaderExt, Decoder};
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 

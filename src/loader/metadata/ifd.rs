@@ -104,7 +104,6 @@ impl IfdLoader {
     /// let ifd_buf = [
     ///     1,0, // number of entries
     ///     1,1, // tag
-    ///
     /// ];
     /// ```
     pub fn load_ifd_values(

@@ -1,8 +1,13 @@
 /* global GeoTIFF:false, plotty:false */
 // const { Pool, fromUrl } = GeoTIFF;
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
+use std::time::Instant;
+
 use log::{error, info};
-use std::{collections::BTreeMap, fs, path::Path, time::Instant};
-use tiff2::{decoder::Decoder, error::TiffResult};
+use tiff2::error::TiffResult;
+use tiff2::loader::Decoder;
 
 mod common;
 use common::{img_print, TokioFile};

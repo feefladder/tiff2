@@ -1,6 +1,10 @@
+use std::collections::BTreeMap;
+use std::fs;
+use std::time::Instant;
+
 use log::{error, info};
-use std::{collections::BTreeMap, fs, time::Instant};
-use tiff2::{decoder::Decoder, error::TiffResult};
+use tiff2::error::TiffResult;
+use tiff2::loader::Decoder;
 
 mod common;
 use common::{img_print, TokioFile};

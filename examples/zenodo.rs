@@ -1,12 +1,11 @@
+use std::time::{Duration, Instant};
+
 use async_trait::async_trait;
 use image::{DynamicImage, ImageBuffer, Luma};
 use log::{error, info};
 use reqwest::header::RANGE;
-use std::time::{Duration, Instant};
-use tiff2::{
-    decoder::{CogReader, Decoder, TileData},
-    error::{TiffError, TiffResult},
-};
+use tiff2::error::{TiffError, TiffResult};
+use tiff2::loader::{CogReader, Decoder, TileData};
 use tokio::time::sleep;
 use viuer::ViuError;
 

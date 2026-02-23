@@ -459,6 +459,7 @@ impl MetaCache for GenericReader {
     }
 }
 ```
+
 ## Tag Registry?
 
 Yeah, so this is mainly the real reason I'm writing this now, is that there was
@@ -832,4 +833,4 @@ Now, the age-old question: What does GDAL do?
 
 that's for another time folks.
 
-The other time is now, GDAL [in its ghost area](https://gdal.org/en/stable/drivers/raster/cog.html#header-ghost-area) has a key that says "BLOCK_ORDER=ROW_MAJOR" with really not any other options. There's [this crate](https://github.com/paulchernoch/hilbert) for hilbert curves with some comments that made me re-evaluate my interactions on repsitories earlier. (poor maintainer). 
+The other time is now, GDAL [in its ghost area](https://gdal.org/en/stable/drivers/raster/cog.html#header-ghost-area) has a key that says "BLOCK_ORDER=ROW_MAJOR" with really not any other options. There's [this crate](https://github.com/paulchernoch/hilbert) for hilbert curves with some comments that made me re-evaluate my interactions on repsitories earlier. (poor maintainer).

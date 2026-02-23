@@ -3,12 +3,10 @@ use std::io::{self, Seek};
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
-use tiff2::{
-    decoder::EndianReader,
-    error::TiffResult,
-    structs::{Directory, IfdEntry, Tag},
-    ByteOrder,
-};
+use tiff2::error::TiffResult;
+use tiff2::loader::EndianReader;
+use tiff2::structs::{Directory, IfdEntry, Tag};
+use tiff2::ByteOrder;
 
 fn parse_ifd_serial(buf: &[u8], byte_order: ByteOrder, bigtiff: bool) -> (Directory, u64) {
     // maybe make this a parameter (num_entries), since we'd need to read
