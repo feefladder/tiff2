@@ -170,19 +170,6 @@ impl ChunkOpts {
     fn xy2i(&self, x: u32, y: u32) -> usize {
         usize::try_from(x).unwrap() + usize::try_from(y * self.chunks_across()).unwrap()
     }
-    // /// Samples per pixel within chunk.
-    // ///
-    // /// In planar config, samples are stored in separate strips/chunks, also called bands.
-    // ///
-    // /// Example with `bits_per_sample = [8, 8, 8]` and `PhotometricInterpretation::RGB`:
-    // /// * `PlanarConfiguration::Chunky` -> 3 (RGBRGBRGB...)
-    // /// * `PlanarConfiguration::Planar` -> 1 (RRR...) (GGG...) (BBB...)
-    // pub fn samples_per_pixel(&self) -> usize {
-    //     match self.planar_config {
-    //         PlanarConfiguration::Chunky => self.samples.into(),
-    //         PlanarConfiguration::Planar => 1,
-    //     }
-    // }
 
     pub fn input_row_stride(&self, x: u32) -> TiffResult<usize> {
         match self.predictor {

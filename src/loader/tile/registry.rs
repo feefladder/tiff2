@@ -74,7 +74,7 @@ pub trait Decoder: Debug + Send + Sync {
     fn decode_chunk(
         &self,
         in_buf: &[u8],
-        out_bufs: &mut [u8],
+        out_buf: &mut [u8],
         chunk_opts: &ChunkOpts,
     ) -> TiffResult<()>;
 }
@@ -143,11 +143,11 @@ impl Decoder for ZstdDecoder {
     fn decode_chunk(
         &self,
         buf: &[u8],
-        out_bufs: &mut [&mut [u8]],
+        out_buf: &mut [&mut [u8]],
         chunk_opts: &ChunkOpts,
     ) -> TiffResult<()> {
         let mut decoder = zstd::Decoder::new(Cursor::new(buf))?;
-        for out_buf in out_bufs {
+        for out_buf in out_buf {
             decoder.read_exact(out_buf)?;
         }
         Ok(())
@@ -164,7 +164,7 @@ impl Decoder for JpegDecoder {
     fn decode_chunk(
         &self,
         buf: &[u8],
-        out_bufs: &mut [&mut [u8]],
+        out_buf: &mut [&mut [u8]],
         chunk_opts: &ChunkOpts,
     ) -> TiffResult<()> {
         use crate::structs::tags::PhotometricInterpretation;
@@ -237,11 +237,7 @@ impl Decoder for JpegDecoder {
 
         // copying data, so sad
         let data = decoder.decode()?;
-        let mut buf_start = 0;
-        for out_buf in out_bufs {
-            out_buf.copy_from_slice(&data[buf_start..buf_start + out_buf.len()]);
-            buf_start += out_buf.len();
-        }
+        out_buf.copy_from_slice(&data[buf_start..buf_start + out_buf.len()]);
         Ok(())
     }
 }

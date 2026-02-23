@@ -1,8 +1,8 @@
 use exn::{bail, ResultExt};
 use smallvec::smallvec;
 
-use crate::saver::error::SaverError;
-use crate::saver::SaverResult;
+use crate::saver::metadata::error::SaverError;
+use crate::saver::metadata::SaverResult;
 use crate::structs::{entry_size, num_entries_size, offset_size, Ifd, IfdEntry, Tag, TagData};
 use crate::ByteOrder;
 

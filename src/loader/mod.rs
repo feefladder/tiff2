@@ -95,7 +95,7 @@ mod cogreader_impls;
 /// }
 /// assert_eq!(in_diffed, in_shuffled);
 /// ```
-pub fn unpredict_f32(input: &mut [u8], output: &mut [u8], samples: usize) {
+pub(crate) fn unpredict_f32(input: &mut [u8], output: &mut [u8], samples: usize) {
     // reverse horizontal differencing
     for i in samples..input.len() {
         input[i] = input[i].wrapping_add(input[i - samples]);
@@ -120,7 +120,7 @@ pub fn unpredict_f32(input: &mut [u8], output: &mut [u8], samples: usize) {
 /// floating point prediction first shuffles the bytes and then uses horizontal
 /// differencing
 /// Also fixes byte order if needed (tiff's->native)
-fn unpredict_f64(input: &mut [u8], output: &mut [u8], samples: usize) {
+pub(crate) fn unpredict_f64(input: &mut [u8], output: &mut [u8], samples: usize) {
     for i in samples..input.len() {
         input[i] = input[i].wrapping_add(input[i - samples]);
     }
