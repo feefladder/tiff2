@@ -63,7 +63,7 @@ impl IfdSaver {
     /// Given an IFD and a buffer, write the IFD to the buffer
     ///
     /// TODO: how should it treat the IFD? also defer non-inlined values?
-    pub fn from_ifd(offset: u64, ifd: Ifd, bigtiff: bool, byte_order: ByteOrder) -> Self {
+    pub fn from_ifd(ifd: Ifd, offset: u64, bigtiff: bool, byte_order: ByteOrder) -> Self {
         Self {
             offset,
             bigtiff,
@@ -100,9 +100,10 @@ impl IfdSaver {
                 )
             ))
         }
-        // we can unwrap here, because the key type is u16, so it cannot overflow u64
+        // we can unwrap here, because the BtreeMap key type is u16, so it cannot overflow u64
         let count = u64::try_from(self.ifd.count()).unwrap();
         // all good: start writing
+        // offset is our in-buffer cursor position
         let mut offset = if self.bigtiff {
             TagData::Long8(smallvec![count])
         } else {
@@ -177,10 +178,8 @@ mod test_ifd {
     use smallvec::smallvec;
 
     use super::*;
-    use crate::{
-        structs::{Offset, TagData, TagType},
-        NATIVE_ENDIAN,
-    };
+    use crate::structs::{Offset, TagData, TagType};
+    use crate::NATIVE_ENDIAN;
 
     #[test]
     fn test_sanity() {
@@ -213,7 +212,7 @@ mod test_ifd {
                 ])
             };
             let mut res = vec![0;buf.len()];
-            IfdSaver::from_ifd(0, ifd, false, ByteOrder::LittleEndian).write(&mut res, 0).unwrap();
+            IfdSaver::from_ifd(ifd, 0,  false, ByteOrder::LittleEndian).write(&mut res, 0).unwrap();
             assert_eq!(&res, &buf);
         }
     }
@@ -221,7 +220,6 @@ mod test_ifd {
     #[test]
     fn test_todo_small() {
         let ifd_saver = IfdSaver::from_ifd(
-            0,
             Ifd {
                 data: BTreeMap::from([
                     // this one fits
@@ -236,6 +234,7 @@ mod test_ifd {
                     ),
                 ]),
             },
+            0,
             false,
             NATIVE_ENDIAN,
         );
@@ -248,7 +247,6 @@ mod test_ifd {
     #[test]
     fn test_todo_big() {
         let ifd_saver = IfdSaver::from_ifd(
-            0,
             Ifd {
                 data: BTreeMap::from([
                     // this one fits
@@ -263,6 +261,7 @@ mod test_ifd {
                     ),
                 ]),
             },
+            0,
             true,
             NATIVE_ENDIAN,
         );
@@ -279,7 +278,6 @@ mod test_ifd {
     #[test]
     fn test_write_todo_small() {
         let ifd_saver = IfdSaver::from_ifd(
-            0,
             Ifd {
                 data: BTreeMap::from([
                     // this one fits
@@ -294,6 +292,7 @@ mod test_ifd {
                     ),
                 ]),
             },
+            0,
             false,
             NATIVE_ENDIAN,
         );
@@ -316,7 +315,6 @@ mod test_ifd {
     #[test]
     fn test_write_todo_big() {
         let ifd_saver = IfdSaver::from_ifd(
-            0,
             Ifd {
                 data: BTreeMap::from([
                     // this one fits
@@ -331,6 +329,7 @@ mod test_ifd {
                     ),
                 ]),
             },
+            0,
             true,
             NATIVE_ENDIAN,
         );
@@ -354,7 +353,6 @@ mod test_ifd {
     #[test]
     fn test_write_fitting_offset_small() {
         let ifd_saver = IfdSaver::from_ifd(
-            0,
             Ifd {
                 data: BTreeMap::from([
                     // this one doesn't fit
@@ -377,6 +375,7 @@ mod test_ifd {
                     ),
                 ]),
             },
+            0,
             false,
             NATIVE_ENDIAN,
         );
@@ -399,7 +398,6 @@ mod test_ifd {
     #[test]
     fn test_write_fitting_offset_big() {
         let ifd_saver = IfdSaver::from_ifd(
-            0,
             Ifd {
                 data: BTreeMap::from([
                     // this one doesn't fit
@@ -422,6 +420,7 @@ mod test_ifd {
                     ),
                 ]),
             },
+            0,
             true,
             NATIVE_ENDIAN,
         );
@@ -444,7 +443,6 @@ mod test_ifd {
     #[test]
     fn test_write_need_big_entry_count() {
         let ifd_saver = IfdSaver::from_ifd(
-            0,
             Ifd {
                 data: BTreeMap::from([(
                     Tag::ImageWidth,
@@ -455,6 +453,7 @@ mod test_ifd {
                     }),
                 )]),
             },
+            0,
             false,
             NATIVE_ENDIAN,
         );
@@ -474,7 +473,6 @@ mod test_ifd {
     #[test]
     fn test_write_need_big_entry_offset() {
         let ifd_saver = IfdSaver::from_ifd(
-            0,
             Ifd {
                 data: BTreeMap::from([(
                     Tag::ImageWidth,
@@ -485,6 +483,7 @@ mod test_ifd {
                     }),
                 )]),
             },
+            0,
             false,
             NATIVE_ENDIAN,
         );
@@ -504,10 +503,10 @@ mod test_ifd {
     #[test]
     fn test_write_need_big_next_ifd_offset() {
         let ifd_saver = IfdSaver::from_ifd(
-            0,
             Ifd {
                 data: BTreeMap::from([]),
             },
+            0,
             false,
             NATIVE_ENDIAN,
         );
@@ -527,10 +526,10 @@ mod test_ifd {
     #[test]
     fn test_write_too_small_buf() {
         let ifd_saver = IfdSaver::from_ifd(
-            0,
             Ifd {
                 data: BTreeMap::from([]),
             },
+            0,
             false,
             NATIVE_ENDIAN,
         );
@@ -563,7 +562,7 @@ mod test_ifd {
         assert_eq!(f32::from_le_bytes([0x42,0,0,0]),f32::from_bits(0x00_00_00_42));
         assert_eq!(f32::from_be_bytes([0,0,0,0x42]),f32::from_bits(0x00_00_00_42));
         let cases = [
-        //       tag type  count      offset    next ifd
+        // n     tag type  count      offset    next ifd
         //       // /  \  /     \   /        \  /     \
         ([1,0, 1,1, 1, 0, 1,0,0,0, 42, 0, 0, 0, 0,0,0,0], ByteOrder::LittleEndian, TagData::Byte      (smallvec![42])                ),
         ([0,1, 1,1, 0, 1, 0,0,0,1, 42, 0, 0, 0, 0,0,0,0], ByteOrder::BigEndian,    TagData::Byte      (smallvec![42])                ),
@@ -593,7 +592,7 @@ mod test_ifd {
                 data: BTreeMap::from([(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Value(data))])
             };
             let mut res = vec![0;buf.len()];
-            IfdSaver::from_ifd(0, ifd, false, byte_order).write(&mut res, 0).unwrap();
+            IfdSaver::from_ifd(ifd, 0, false, byte_order).write(&mut res, 0).unwrap();
             assert_eq!(&res, &buf);
         }
     }
@@ -608,7 +607,7 @@ mod test_ifd {
         assert_eq!(f32::from_le_bytes([0x42,0,0,0]),f32::from_bits(0x00_00_00_42));
         assert_eq!(f32::from_be_bytes([0,0,0,0x42]),f32::from_bits(0x00_00_00_42));
         let cases = [
-        //                 tag   type       count            offset                next ifd
+        //  entry_count    tag   type       count            offset             next_ifd_offset
         //                  //  /   \ 1 2 3 4 5 6 7 8   1  2  3  4  5  6  7  8  1 2 3 4 5 6 7 8
         ([1,0,0,0,0,0,0,0, 1,1, 1, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0, 0,0,0,0,0,0,0,0], ByteOrder::LittleEndian, TagData::Byte      (smallvec![42])                ),
         ([0,0,0,0,0,0,0,1, 1,1, 0, 1, 0,0,0,0,0,0,0,1, 42, 0, 0, 0, 0, 0, 0, 0, 0,0,0,0,0,0,0,0], ByteOrder::BigEndian,    TagData::Byte      (smallvec![42])                ),
@@ -642,7 +641,6 @@ mod test_ifd {
         ([0,0,0,0,0,0,0,1, 1,1, 0, 5, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0,43, 0,0,0,0,0,0,0,0], ByteOrder::BigEndian,    TagData::Rational  (smallvec![[42, 43]])          ),
         ([1,0,0,0,0,0,0,0, 1,1, 10,0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0,43, 0, 0, 0, 0,0,0,0,0,0,0,0], ByteOrder::LittleEndian, TagData::SRational (smallvec![[42, 43]])          ),
         ([0,0,0,0,0,0,0,1, 1,1, 0,10, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0,43, 0,0,0,0,0,0,0,0], ByteOrder::BigEndian,    TagData::SRational (smallvec![[42, 43]])          ),
-        // we special-case IFD
         ];
         for (buf, byte_order, data) in cases {
             println!("Trying {data:?} with {byte_order:?}, should become  {buf:?}");
@@ -650,7 +648,7 @@ mod test_ifd {
                 data: BTreeMap::from([(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Value(data))])
             };
             let mut res = vec![0;buf.len()];
-            IfdSaver::from_ifd(0, ifd, true, byte_order).write(&mut res, 0).unwrap();
+            IfdSaver::from_ifd(ifd, 0, true, byte_order).write(&mut res, 0).unwrap();
             assert_eq!(&res, &buf);
         }
     }
@@ -665,8 +663,8 @@ mod test_ifd {
         assert_eq!(f32::from_le_bytes([0x42,0,0,0]),f32::from_bits(0x00_00_00_42));
         assert_eq!(f32::from_be_bytes([0,0,0,0x42]),f32::from_bits(0x00_00_00_42));
         let cases = [
-        //  tag type  count    offset      next ifd
-        //  // /  \  /     \   /     \     /     \
+        // n    tag  type  count    offset      next ifd
+        //      //  /  \  /     \   /     \     /     \
         ([1,0, 1,1, 1, 0, 4,0,0,0, 42,42,42,42, 0,0,0,0], ByteOrder::LittleEndian, TagData::Byte      (smallvec![42; 4]) ),
         ([0,1, 1,1, 0, 1, 0,0,0,4, 42,42,42,42, 0,0,0,0], ByteOrder::BigEndian,    TagData::Byte      (smallvec![42; 4]) ),
         ([1,0, 1,1, 6, 0, 4,0,0,0, 42,42,42,42, 0,0,0,0], ByteOrder::LittleEndian, TagData::SByte     (smallvec![42; 4]) ),
@@ -680,7 +678,7 @@ mod test_ifd {
         ([1,0, 1,1, 8, 0, 2,0,0,0, 42, 0,42, 0, 0,0,0,0], ByteOrder::LittleEndian, TagData::SShort    (smallvec![42; 2]) ),
         ([0,1, 1,1, 0, 8, 0,0,0,2,  0,42, 0,42, 0,0,0,0], ByteOrder::BigEndian,    TagData::SShort    (smallvec![42; 2]) ),
         ([0,1, 1,1, 0, 2, 0,0,0,4, b'A',b'B',b'C',0, 0,0,0,0], ByteOrder::BigEndian, TagData::Ascii("ABC\0".as_bytes().into())),
-        // others don't fit, neither 8-types and we special-case IFD
+        // others don't fit, neither 8-types
         ];
         for (buf, byte_order, data) in cases {
             println!("Trying {data:?} with {byte_order:?}, should become  {buf:?}");
@@ -688,7 +686,7 @@ mod test_ifd {
                 data: BTreeMap::from([(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Value(data))])
             };
             let mut res = vec![0;buf.len()];
-            IfdSaver::from_ifd(0, ifd, false, byte_order).write(&mut res, 0).unwrap();
+            IfdSaver::from_ifd(ifd, 0, false, byte_order).write(&mut res, 0).unwrap();
             assert_eq!(&res, &buf);
         }
     }
@@ -703,7 +701,7 @@ mod test_ifd {
         assert_eq!(f32::from_le_bytes([0x42,0,0,0]),f32::from_bits(0x00_00_00_42));
         assert_eq!(f32::from_be_bytes([0,0,0,0x42]),f32::from_bits(0x00_00_00_42));
         let cases = [
-        //                 tag   type       count            offset
+        //   n_entries      tag   type       count            offset            next_ifd_offset
         //                  //  /   \ 1 2 3 4 5 6 7 8   1  2  3  4  5  6  7  8  1 2 3 4 5 6 7 8
         ([1,0,0,0,0,0,0,0, 1,1, 1, 0, 8,0,0,0,0,0,0,0, 42,42,42,42,42,42,42,42, 0,0,0,0,0,0,0,0], ByteOrder::LittleEndian, TagData::Byte      (smallvec![42                ; 8])),
         ([0,0,0,0,0,0,0,1, 1,1, 0, 1, 0,0,0,0,0,0,0,8, 42,42,42,42,42,42,42,42, 0,0,0,0,0,0,0,0], ByteOrder::BigEndian,    TagData::Byte      (smallvec![42                ; 8])),
@@ -725,7 +723,6 @@ mod test_ifd {
         ([0,0,0,0,0,0,0,1, 1,1, 0,13, 0,0,0,0,0,0,0,2,  0, 0, 0,42, 0, 0, 0,42, 0,0,0,0,0,0,0,0], ByteOrder::BigEndian,    TagData::Ifd       (smallvec![42                ; 2])),
         ([1,0,0,0,0,0,0,0, 1,1,11, 0, 2,0,0,0,0,0,0,0, 42, 0, 0, 0,42, 0, 0, 0, 0,0,0,0,0,0,0,0], ByteOrder::LittleEndian, TagData::Float     (smallvec![f32::from_bits(42); 2])),
         ([0,0,0,0,0,0,0,1, 1,1, 0,11, 0,0,0,0,0,0,0,2,  0, 0, 0,42, 0, 0, 0,42, 0,0,0,0,0,0,0,0], ByteOrder::BigEndian,    TagData::Float     (smallvec![f32::from_bits(42); 2])),
-        // we special-case IFD
         ];
         for (buf, byte_order, data) in cases {
             println!("Trying {data:?} with {byte_order:?}, should become  {buf:?}");
@@ -733,7 +730,7 @@ mod test_ifd {
                 data: BTreeMap::from([(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Value(data))])
             };
             let mut res = vec![0;buf.len()];
-            IfdSaver::from_ifd(0, ifd, true, byte_order).write(&mut res, 0).unwrap();
+            IfdSaver::from_ifd(ifd, 0, true, byte_order).write(&mut res, 0).unwrap();
             assert_eq!(&res, &buf);
         }
     }
@@ -748,7 +745,7 @@ mod test_ifd {
         assert_eq!(f32::from_le_bytes([0x42,0,0,0]),f32::from_bits(0x00_00_00_42));
         assert_eq!(f32::from_be_bytes([0,0,0,0x42]),f32::from_bits(0x00_00_00_42));
         let cases = [
-        //       tag type  count    offset      next ifd
+        // n    tag type  count    offset      next ifd
         //       // /  \  /     \   /     \     /     \
         ([1,0, 1,1, 1, 0, 5,0,0,0, 42, 0, 0, 0, 0,0,0,0], ByteOrder::LittleEndian, 5, TagType::BYTE      ),
         ([0,1, 1,1, 0, 1, 0,0,0,5,  0, 0, 0,42, 0,0,0,0], ByteOrder::BigEndian   , 5, TagType::BYTE      ),
@@ -776,7 +773,7 @@ mod test_ifd {
         ([0,1, 1,1, 0, 5, 0,0,0,1,  0, 0, 0,42, 0,0,0,0], ByteOrder::BigEndian   , 1, TagType::RATIONAL  ),
         ([1,0, 1,1, 10,0, 1,0,0,0, 42, 0, 0, 0, 0,0,0,0], ByteOrder::LittleEndian, 1, TagType::SRATIONAL ),
         ([0,1, 1,1, 0,10, 0,0,0,1,  0, 0, 0,42, 0,0,0,0], ByteOrder::BigEndian   , 1, TagType::SRATIONAL ),
-        // Double doesn't fit, neither 8-types and we special-case IFD
+        // Double doesn't fit, neither 8-types
         ];
         for (buf, byte_order, count, tag_type) in cases {
             println!("Trying {tag_type:?} with {byte_order:?}, should become  {buf:?}");
@@ -784,7 +781,7 @@ mod test_ifd {
                 data: BTreeMap::from([(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Offset(Offset { tag_type, count, offset: 42 }))])
             };
             let mut res = vec![0;buf.len()];
-            IfdSaver::from_ifd(0, ifd, false, byte_order).write(&mut res, 0).unwrap();
+            IfdSaver::from_ifd(ifd, 0, false, byte_order).write(&mut res, 0).unwrap();
             assert_eq!(&res, &buf);
         }
     }
@@ -799,8 +796,8 @@ mod test_ifd {
         assert_eq!(f32::from_le_bytes([0x42,0,0,0]),f32::from_bits(0x00_00_00_42));
         assert_eq!(f32::from_be_bytes([0,0,0,0x42]),f32::from_bits(0x00_00_00_42));
         let cases = [
-        //1,0,0,0,0,0,0,0, tag   type       count            offset
-        //0,0,0,0,0,0,0,1,  //  /   \ 1 2 3 4 5 6 7 8   1  2  3  4  5  6  7  8  1 2 3 4 5 6 7 8
+        //  entry_count    tag   type       count            offset             next_ifd_offset
+        //                  //  /   \ 1 2 3 4 5 6 7 8   1  2  3  4  5  6  7  8  1 2 3 4 5 6 7 8
         ([1,0,0,0,0,0,0,0, 1,1, 1, 0, 9,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0, 0,0,0,0,0,0,0,0], ByteOrder::LittleEndian, 9, TagType::BYTE      ),
         ([0,0,0,0,0,0,0,1, 1,1, 0, 1, 0,0,0,0,0,0,0,9,  0, 0, 0, 0, 0, 0, 0,42, 0,0,0,0,0,0,0,0], ByteOrder::BigEndian   , 9, TagType::BYTE      ),
         ([1,0,0,0,0,0,0,0, 1,1, 6, 0, 9,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0, 0,0,0,0,0,0,0,0], ByteOrder::LittleEndian, 9, TagType::SBYTE     ),
@@ -833,7 +830,6 @@ mod test_ifd {
         ([0,0,0,0,0,0,0,1, 1,1, 0, 5, 0,0,0,0,0,0,0,2,  0, 0, 0, 0, 0, 0, 0,42, 0,0,0,0,0,0,0,0], ByteOrder::BigEndian   , 2, TagType::RATIONAL  ),
         ([1,0,0,0,0,0,0,0, 1,1,10, 0, 2,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0, 0,0,0,0,0,0,0,0], ByteOrder::LittleEndian, 2, TagType::SRATIONAL ),
         ([0,0,0,0,0,0,0,1, 1,1, 0,10, 0,0,0,0,0,0,0,2,  0, 0, 0, 0, 0, 0, 0,42, 0,0,0,0,0,0,0,0], ByteOrder::BigEndian   , 2, TagType::SRATIONAL ),
-        // we special-case IFD
         ];
         for (buf, byte_order, count, tag_type) in cases {
             println!("Trying {tag_type:?} with {byte_order:?}, should become  {buf:?}");
@@ -841,7 +837,7 @@ mod test_ifd {
                 data: BTreeMap::from([(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Offset(Offset { tag_type, count, offset: 42 }))])
             };
             let mut res = vec![0;buf.len()];
-            IfdSaver::from_ifd(0, ifd, true, byte_order).write(&mut res, 0).unwrap();
+            IfdSaver::from_ifd(ifd, 0, true, byte_order).write(&mut res, 0).unwrap();
             assert_eq!(&res, &buf);
         }
     }

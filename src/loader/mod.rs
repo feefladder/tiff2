@@ -3,16 +3,9 @@ use crate::util::fix_endianness;
 use crate::{ByteOrder, ColorType, NATIVE_ENDIAN};
 
 pub(crate) mod metadata;
-mod reader;
+pub use metadata::*;
 pub(crate) mod tile;
-pub use reader::{CogReader, CogReaderExt, EndianReader};
-
-// mod image_decoder;
-// pub use image_decoder::ImageDecoder;
-mod decoding_result;
-pub use decoding_result::TileData;
-
-mod cogreader_impls;
+pub use tile::*;
 
 /// Reverse floating point prediction
 ///
@@ -20,7 +13,7 @@ mod cogreader_impls;
 /// differencing
 /// also performs byte-order conversion if needed.
 ///
-/// ```
+/// ```ignore
 /// let samples = 1;
 /// let input = [42.0f32, 43.0];
 /// let in_be_bytes: Vec<u8> = input.iter().flat_map(|f| f.to_be_bytes()).collect();
@@ -43,7 +36,7 @@ mod cogreader_impls;
 /// assert_eq!(vec![0x42, 0x42, 0x28, 0x2c, 0, 0, 0, 0], in_shuffled);
 /// let mut in_diffed = vec![0x42u8, 0, 230, 4, 212, 0, 0, 0];
 /// // let's see if we can do horizontal differencing without an extra copy...
-/// let prev = in_diffed[..samples].clone();
+/// let mut prev = in_diffed[..samples].to_vec();
 /// // [1 2 3 4 5 6 7 8] samples = 2
 /// // [1 2]| |
 /// //   \--2 |          i=0; i=-2%2=0; in[i].wrapping_sub(prev[i%samples])

@@ -1,19 +1,18 @@
 use std::collections::BTreeMap;
-use std::io::Cursor;
-use std::ops::Range;
 
-use crate::loader::EndianReader;
+use bytes::Bytes;
+use exn::{bail, ensure};
+use smallvec::smallvec;
+
 use crate::structs::tiff::header_size;
-use crate::structs::Ifd;
+use crate::structs::{Ifd, TagData, TagType, Tiff};
 use crate::ByteOrder;
-use crate::{loader::metadata::ifd::IfdLoader, structs::Tiff};
 
 mod cache;
 pub mod error;
-mod ifd;
-use bytes::Bytes;
 use error::MetaError;
-use exn::{bail, ResultExt};
+mod ifd;
+pub use ifd::IfdLoader;
 
 pub type MetaResult<T> = exn::Result<T, MetaError>;
 
@@ -42,7 +41,7 @@ pub type MetaResult<T> = exn::Result<T, MetaError>;
 /// TODO: should there be a intermediate trait?
 ///
 /// Anyways, some functions of the intermediate:
-/// ```
+/// ```ignore
 /// trait TiffLoader {
 ///     fn next_ifd_offset(&self) -> Option<u64>;
 ///     /// get the if loader and next offset
@@ -95,7 +94,7 @@ impl TiffLoader for Tiff {
 /// since tiff files are conservatively characterized as icing sprinkled on a
 /// cake, rather than a left-to-right coherent file format. Also, what would a nice api look like?
 ///
-/// ```
+/// ```ignore
 /// let tiff_builder: TiffLoader = TiffLoader::new();
 /// let SyncReader = File::new("some_path");
 /// let AsyncReader = EHttpReader::new_async("https://example.com/file.tiff");
@@ -107,7 +106,7 @@ impl TiffLoader for Tiff {
 /// ...or something
 ///
 /// where the (Async)Copy looks like
-/// ```
+/// ```ignore
 /// let ranges = reader.fetch_ranges([0..1024*16]);
 /// while let Err(RequiredRangesNotLoaded(req_ranges: &[Range<u64>])) = loader.load_tiff(ranges) {
 ///     ranges = reader.fetch_ranges(req_ranges)(.await)?;
@@ -117,7 +116,7 @@ impl TiffLoader for Tiff {
 /// but then the question is, how to give the user more control? Like ideally,
 /// it'd be some sort of iterator:
 ///
-/// ```
+/// ```ignore
 /// // this opens the tiff, consolidating byte_order, bigtiff and next_ifd
 /// builder.open(reader.fetch(tiff_builder.start()).await?);
 ///
@@ -138,13 +137,13 @@ impl TiffLoader for Tiff {
 ///
 /// and how to middlewares? like how to add some intermediate (sync) cache?
 ///
-/// ```
+/// ```ignore
 /// let builder = TiffLoader::new().with_cache(CogCache::new())
 /// ```
 ///
 /// Or basically, have some `retry_sync` `retry_async` methods:
 ///
-/// ```
+/// ```ignore
 /// let f = File::open("some.tiff");
 /// builder.open().retry_with(|ranges| f.fetch(ranges));
 /// drop(f);
@@ -154,71 +153,58 @@ impl TiffLoader for Tiff {
 ///     .retry_with_async(async |ranges| f.fetch(ranges));
 /// ```
 impl Tiff {
-    /// The range required to parse the header
-    ///
-    /// This is the required range for a bigtiff file, since we don't know whether it's big or small
-    pub fn header_range() -> Range<u64> {
-        0..header_size(true)
-    }
-
     pub fn from_header(buf: &[u8]) -> MetaResult<Self> {
-        if u64::try_from(buf.len()).unwrap() < header_size(true) {
-            bail!(MetaError::invalid_buffer(
-                Self::header_range(),
+        ensure!(
+            u64::try_from(buf.len()).unwrap() >= header_size(false),
+            MetaError::invalid_buffer(
+                0..header_size(false),
                 format!("could not load header with buffer size of {}", buf.len()),
-            ));
-        }
-        let byte_order = match <&[u8; 2]>::try_from(&buf[0..2]) {
-            Ok(b"II") => ByteOrder::LittleEndian,
-            Ok(b"MM") => ByteOrder::BigEndian,
+            )
+        );
+        let byte_order = match <&[u8; 2]>::try_from(&buf[0..2]).unwrap() {
+            b"II" => ByteOrder::LittleEndian,
+            b"MM" => ByteOrder::BigEndian,
             e => {
                 bail!(MetaError::permanent(format!(
-                    "Failed to parse byte order mark, found {:?}",
+                    "failed to parse byte order mark, found {:x?}",
                     e
                 )));
             }
         };
-        let mut r = EndianReader::wrap(std::io::Cursor::new(&buf[2..]), byte_order);
-        let bigtiff = match r
-            .read_u16()
-            .or_raise(|| MetaError::permanent(format!("failed to read magic number")))?
+        let bigtiff = match u16::try_from(
+            TagData::from_buffer(&buf[2..], TagType::SHORT, 1, byte_order).unwrap(),
+        )
+        .unwrap()
         {
             42 => false,
             43 => {
-                if r.read_u16().or_raise(|| {
-                    MetaError::permanent("Failed to read bigtiff offset bytesize".to_string())
-                })? != 8
-                {
-                    bail!(MetaError::permanent(
-                        "bigtiff offset byte size not 8".to_string()
-                    ));
-                }
-                if r.read_u16().or_raise(|| {
-                    MetaError::permanent("failed to read bigtiff reserved '0'".to_string())
-                })? != 0
-                {
-                    bail!(MetaError::permanent(
-                        "bigtiff reserved '0' not 0".to_string()
+                ensure!(
+                    u64::try_from(buf.len()).unwrap() >= header_size(true),
+                    MetaError::invalid_buffer(
+                        0..header_size(true),
+                        format!("could not load header with buffer size of {}", buf.len()),
+                    )
+                );
+                let osize_zero =
+                    TagData::from_buffer(&buf[4..], TagType::SHORT, 2, byte_order).unwrap();
+                ensure!(
+                    osize_zero == TagData::Short(smallvec![8, 0]),
+                    MetaError::permanent(format!(
+                        "[offset_size, 0] should be [8,0], was {osize_zero:?}"
                     ))
-                }
+                );
                 true
             }
-            v => {
-                return Err(MetaError::permanent(format!(
-                    "magic number {v:?} should be either 42 or 43"
-                ))
-                .into())
-            }
+            v => bail!(MetaError::permanent(format!(
+                "magic number {v:?} should be either 42 or 43"
+            ))),
         };
         let ifd_offsets = vec![if bigtiff {
-            r.read_u64()
-                .or_raise(|| MetaError::permanent("failed to read next ifd offset".to_string()))?
+            u64::try_from(TagData::from_buffer(&buf[8..], TagType::LONG8, 1, byte_order).unwrap())
+                .unwrap()
         } else {
-            u64::from(
-                r.read_u32().or_raise(|| {
-                    MetaError::permanent("failed to read next ifd offset".to_string())
-                })?,
-            )
+            u64::try_from(TagData::from_buffer(&buf[4..], TagType::LONG, 1, byte_order).unwrap())
+                .unwrap()
         }];
         let res = Self {
             bigtiff,
@@ -255,7 +241,7 @@ impl Tiff {
     /// knows how to load it??
     pub fn ifd_loader(&self, buf: &[u8], offset: u64) -> MetaResult<(IfdLoader, u64)> {
         let (ifd_loader, next_ifd) =
-            IfdLoader::load_ifd(buf, offset, self.bigtiff, self.byte_order)?;
+            IfdLoader::from_buffer(buf, offset, self.bigtiff, self.byte_order)?;
         if self.ifd_offsets.contains(&next_ifd) {
             bail!(MetaError::permanent(format!(
                 "Cycle in offsets detected at ifd {next_ifd}"
@@ -272,5 +258,150 @@ impl Tiff {
         }
         self.ifds.insert(offset, ifd);
         self.ifd_offsets.push(next_offset);
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_from_header_small_le() {
+        assert_eq!(
+            Tiff::from_header(&[b'I', b'I', 42, 0, header_size(false) as u8, 0, 0, 0,]).unwrap(),
+            Tiff {
+                ifds: BTreeMap::new(),
+                ifd_offsets: vec![header_size(false)],
+                bigtiff: false,
+                byte_order: ByteOrder::LittleEndian,
+            }
+        );
+    }
+
+    #[test]
+    fn test_from_header_small_be() {
+        assert_eq!(
+            Tiff::from_header(&[b'M', b'M', 0, 42, 0, 0, 0, header_size(false) as u8]).unwrap(),
+            Tiff {
+                ifds: BTreeMap::new(),
+                ifd_offsets: vec![header_size(false)],
+                bigtiff: false,
+                byte_order: ByteOrder::BigEndian,
+            }
+        );
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_from_header_big_le() {
+        assert_eq!(
+            Tiff::from_header(&[
+                b'I',b'I',
+                43,0,
+                8,0,
+                0,0,
+                header_size(true) as u8,0,0,0,0,0,0,0,
+            ]).unwrap(),
+            Tiff {
+                ifds: BTreeMap::new(),
+                ifd_offsets: vec![header_size(true)],
+                bigtiff: true,
+                byte_order: ByteOrder::LittleEndian,
+            }
+        );
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_from_header_big_be() {
+        assert_eq!(
+            Tiff::from_header(&[
+                b'M',b'M',
+                0,43,
+                0,8,
+                0,0,
+                0,0,0,0,0,0,0,header_size(true) as u8
+            ]).unwrap(),
+            Tiff {
+                ifds: BTreeMap::new(),
+                ifd_offsets: vec![header_size(true)],
+                bigtiff: true,
+                byte_order: ByteOrder::BigEndian,
+            }
+        );
+    }
+
+    #[test]
+    fn test_too_short_buf_small() {
+        assert_eq!(
+            Tiff::from_header(&[])
+                .unwrap_err()
+                .frame()
+                .error()
+                .downcast_ref::<MetaError>()
+                .unwrap(),
+            &MetaError::invalid_buffer(
+                0..header_size(false),
+                "could not load header with buffer size of 0".into()
+            )
+        )
+    }
+
+    #[test]
+    fn test_invalid_bom() {
+        assert_eq!(
+            Tiff::from_header(&[0; header_size(false) as _])
+                .unwrap_err()
+                .frame()
+                .error()
+                .downcast_ref::<MetaError>()
+                .unwrap(),
+            &MetaError::permanent("failed to parse byte order mark, found [0, 0]".into())
+        );
+    }
+
+    #[test]
+    fn test_invalid_magic() {
+        assert_eq!(
+            //                  |   bom  | |magic||  offset  |
+            Tiff::from_header(&[b'I', b'I', 41, 0, 0, 0, 0, 0,])
+                .unwrap_err()
+                .frame()
+                .error()
+                .downcast_ref::<MetaError>()
+                .unwrap(),
+            &MetaError::permanent("magic number 41 should be either 42 or 43".into())
+        );
+    }
+
+    #[test]
+    fn test_too_short_buf_big() {
+        assert_eq!(
+            //                  |   bom  | |magic||osize_zero|
+            Tiff::from_header(&[b'I', b'I', 43, 0, 0, 0, 0, 0,])
+                .unwrap_err()
+                .frame()
+                .error()
+                .downcast_ref::<MetaError>()
+                .unwrap(),
+            &MetaError::invalid_buffer(
+                0..header_size(true),
+                "could not load header with buffer size of 8".into()
+            )
+        );
+    }
+
+    #[test]
+    fn test_invalid_osize_zero() {
+        assert_eq!(
+            //                  |   bom  | |magic||osize_zero||0  1  2  3  4  5  6  7|
+            Tiff::from_header(&[b'I', b'I', 43, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+                .unwrap_err()
+                .frame()
+                .error()
+                .downcast_ref::<MetaError>()
+                .unwrap(),
+            &MetaError::permanent("[offset_size, 0] should be [8,0], was Short([0, 0])".into())
+        );
     }
 }

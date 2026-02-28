@@ -4,22 +4,21 @@ use std::ops::Range;
 use bytes::Bytes;
 
 use crate::error::{TiffError, TiffResult, TiffUnsupportedError, UsageError};
-use crate::loader::decoding_result::DataType;
 use crate::loader::tile::predictor::{unpredict_float, unpredict_hdiff};
-use crate::loader::tile::registry::DecoderRegistry;
-use crate::loader::TileData;
 use crate::structs::tags::{
     CompressionMethod, PhotometricInterpretation, PlanarConfiguration, Predictor, SampleFormat,
 };
+use crate::structs::{TileData, TileDataType};
 use crate::util::fix_endianness;
 use crate::{ByteOrder, ColorType, NATIVE_ENDIAN};
 
-mod error;
+pub mod error;
 mod predictor;
 mod registry;
+pub use registry::DecoderRegistry;
 
 pub struct TileServer<'a> {
-    dtype: DataType,
+    dtype: TileDataType,
     chunk_opts: ChunkOpts,
     tile_offsets: Cow<'a, [u64]>,
     tile_byte_counts: Cow<'a, [u32]>,
@@ -56,7 +55,7 @@ impl<'a> TileServer<'a> {
 pub struct Tile {
     x: u32,
     y: u32,
-    dtype: DataType,
+    dtype: TileDataType,
     chunk_opts: ChunkOpts,
     compressed_bytes: Bytes,
 }

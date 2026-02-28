@@ -1,23 +1,14 @@
 use std::any::type_name;
-use std::collections::HashMap;
-use std::io::{Read, Seek, SeekFrom, Write};
 use std::ops::Range;
 
-use exn::{Exn, ResultExt};
+use exn::{ensure, Exn, ResultExt};
 use smallvec::{smallvec, SmallVec};
 
-use crate::error::{
-    TiffError,
-    TiffFormatError::{self, FloatExpected, SignedIntegerExpected, UnsignedIntegerExpected},
-    TiffResult,
-};
-use crate::loader::EndianReader;
+use crate::error::{TiffError, TiffResult};
 use crate::structs::error::CastError;
-use crate::structs::{Tag, TagType};
+use crate::structs::TagType;
 use crate::util::fix_endianness;
 use crate::{ByteOrder, NATIVE_ENDIAN};
-
-pub type Directory = HashMap<Tag, IfdEntry>;
 
 /// an offset into the field
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -63,142 +54,6 @@ impl IfdEntry {
             Self::Value(v) => u64::try_from(v.len()).unwrap(),
         }
     }
-
-    /// Create this entry from an EndianReader
-    ///
-    /// The reader should have its cursor at the start of tag_type, not at tag
-    ///
-    /// If the value fits in the offset field, it will be converted
-    /// ```
-    /// # use tiff2::ByteOrder;
-    /// # use tiff2::{tags::TagType, TagData::Value, entry::IfdEntry, decoder::EndianReader};
-    /// let entry_buf = [
-    ///     0x03, 0x00,                         // Type (SHORT)
-    ///     0x01, 0x00, 0x00, 0x00,             // Count (1)
-    ///     0x2C, 0x01, 0x00, 0x00,             // Offset = Value (300)
-    /// ];
-    /// let mut r = EndianReader::wrap(std::io::Cursor::new(entry_buf), ByteOrder::LittleEndian);
-    /// assert_eq!(IfdEntry::from_reader(&mut r, false).unwrap(), IfdEntry::Value(TagData::Short(300)));
-    /// ```
-    /// Otherwise an offset is saved
-    /// ```
-    /// # use tiff2::ByteOrder;
-    /// # use tiff2::{tags::TagType, TagData::Value, entry::IfdEntry, decoder::EndianReader};
-    /// let entry_buf = [
-    ///     0x03, 0x00,                         // Type (SHORT)
-    ///     0x03, 0x00, 0x00, 0x00,             // Count (3)
-    ///     0x2C, 0x01, 0x00, 0x00,             // Offset = Value (300)
-    /// ];
-    /// let mut r = EndianReader::wrap(std::io::Cursor::new(entry_buf), ByteOrder::LittleEndian);
-    /// assert_eq!(IfdEntry::from_reader(&mut r, false).unwrap(), IfdEntry::Offset{
-    ///     tag_type: TagType::SHORT,
-    ///     count: 3,
-    ///     offset: 300,
-    /// });
-    /// ```
-    pub(crate) fn from_reader<R: Read + Seek>(
-        r: &mut EndianReader<R>,
-        bigtiff: bool,
-    ) -> TiffResult<Self> {
-        let t_u16 = r.read_u16()?;
-        let tag_type =
-            TagType::from_u16(t_u16).ok_or(TiffFormatError::InvalidTagValueType(t_u16))?;
-
-        let count: u64 = if bigtiff {
-            r.read_u64()?
-        } else {
-            r.read_u32()?.into()
-        };
-
-        let Some(value_bytes) = count.checked_mul(tag_type.size().try_into()?) else {
-            return Err(TiffError::LimitsExceeded);
-        };
-        if (!bigtiff && value_bytes > 4) || value_bytes > 8 {
-            // we are too big, just insert the offset for now
-            Ok(IfdEntry::Offset(Offset {
-                tag_type,
-                count,
-                offset: if bigtiff {
-                    r.read_u64()?
-                } else {
-                    r.read_u32()?.into()
-                },
-            }))
-        } else {
-            // create a buffer for the offset
-            let mut offset = TagData::new(tag_type, count.try_into()?);
-            r.read_exact(offset.as_mut())?;
-
-            // discard remaining bytes of offset
-            let rem = if bigtiff {
-                8 - offset.len() * tag_type.size()
-            } else {
-                4 - offset.len() * tag_type.size()
-            };
-            if rem != 0 {
-                r.seek(SeekFrom::Current(rem.try_into()?))?;
-            }
-            // std::io::copy(&mut r.as_ref().take(rem), &mut std::io::sink());
-
-            // fix endianness and return
-            fix_endianness(
-                offset.as_mut(),
-                r.byte_order,
-                NATIVE_ENDIAN,
-                8 * tag_type.primitive_size(),
-            );
-            Ok(IfdEntry::Value(offset))
-        }
-    }
-
-    // /// Write this entry to the writer
-    // ///
-    // /// ## Errors
-    // ///
-    // /// if the value doesn't fit in the offset field
-    // pub(crate) fn write_to<W: Write + Seek>(
-    //     &self,
-    //     w: &mut EndianReader<W>,
-    //     bigtiff: bool,
-    // ) -> TiffResult<()> {
-    //     match &self {
-    //         IfdEntry::Offset(o) => {
-    //             w.write_u16(o.tag_type.to_u16()).unwrap();
-    //             if bigtiff {
-    //                 w.write_u64(o.count).unwrap();
-    //                 w.write_u64(o.offset).unwrap();
-    //             } else {
-    //                 w.write_u32(u32::try_from(o.count)?).unwrap();
-    //                 w.write_u32(u32::try_from(o.offset)?).unwrap();
-    //             }
-    //         }
-    //         IfdEntry::Value(v) => {
-    //             w.write_u16(v.tag_type().to_u16()).unwrap();
-    //             if bigtiff {
-    //                 if v.as_ref().len() > 8 {
-    //                     todo!("proper error handling")
-    //                 }
-    //                 w.write_u64(u64::try_from(v.len())?).unwrap();
-    //                 // this part is broken, because we need to fix endianness
-    //                 // TODO: ditch the reader and make everything work on buffers, so we can fix endianness
-    //                 // or something...
-    //                 // I don't really like the EndianReader
-    //                 w.write(v.as_ref()).unwrap();
-    //                 w.seek(SeekFrom::Current(8 - i64::try_from(v.as_ref().len())?))
-    //                     .unwrap();
-    //             } else {
-    //                 if v.as_ref().len() > 4 {
-    //                     todo!("proper error handling")
-    //                 }
-    //                 w.write_u32(u32::try_from(v.len())?).unwrap();
-    //                 w.write(v.as_ref()).unwrap();
-    //                 w.seek(SeekFrom::Current(4 - i64::try_from(v.as_ref().len())?))
-    //                     .unwrap();
-    //             }
-    //         }
-    //     };
-    //     Ok(())
-    // }
 }
 
 /// Entry with buffered data that is properly aligned.
@@ -206,9 +61,11 @@ impl IfdEntry {
 /// Therefore, it is an enum over all possible tag types, to also be able to
 /// easily distinguish them (not needing to keep [`TagType`] around)
 /// ```
+/// # use std::io::Read;
+/// use tiff2::structs::{TagType, TagData};
 /// # let mut reader = std::io::Cursor::new(vec![42u8;42]);
 /// let mut entry = TagData::new(TagType::FLOAT, 42);
-/// reader.read_exact((&mut entry).into())
+/// reader.read_exact(entry.as_mut());
 /// ```
 #[derive(Debug, PartialEq, Clone)]
 #[non_exhaustive]
@@ -286,6 +143,17 @@ impl TagData {
         }
     }
 
+    /// Create this `TagData` from a buffer
+    ///
+    /// Errors if the buffer is too small
+    /// ```
+    /// use tiff2::ByteOrder;
+    /// use tiff2::structs::{TagType, TagData};
+    /// const tag_type: TagType = TagType::LONG;
+    /// const count: usize = 42;
+    /// let buf = [42;tag_type.size()*count -1];
+    /// assert!(TagData::from_buffer(&buf, tag_type, count, ByteOrder::LittleEndian).is_err());
+    /// ```
     #[inline]
     pub fn from_buffer(
         buf: &[u8],
@@ -324,9 +192,13 @@ impl TagData {
     /// The length in values of the underlying datatype
     ///
     /// ```
-    /// let ascii = TagData::Ascii(smallvec!::from(b"hello world");//
-    /// let fracs = TagData::Rational(smallvec![43,42, 42,43]); // 43/42 42/43
-    /// assert_eq!(fracs.len(), 2)
+    /// # use smallvec::{smallvec, SmallVec};
+    /// # use tiff2::structs::TagData;
+    /// let ascii = TagData::Ascii(SmallVec::from_vec(b"hello world\0".to_vec()));//
+    /// assert_eq!(ascii.len(), 12);
+    ///
+    /// let fracs = TagData::Rational(smallvec![[43,42], [42,43]]); // 43/42 42/43
+    /// assert_eq!(fracs.len(), 2);
     /// ```
     #[rustfmt::skip]
     pub fn len(&self) -> usize {
@@ -379,7 +251,7 @@ impl AsMut<[u8]> for TagData {
 }
 
 impl AsRef<[u8]> for TagData {
-    /// Get the underlying data as a `&mut [u8]`
+    /// Get the underlying data as a `&[u8]`
     ///
     #[inline]
     #[rustfmt::skip]
@@ -409,19 +281,17 @@ macro_rules! impl_tagdata_casts {
     (
         $target:ty,
         [$($from_small:ident),*],
-        $from_exact:ident,
+        [$($from_exact:ident),+],
         [$($from_large:ident),*]
     ) => {
         impl TryFrom<&TagData> for $target {
             type Error = Exn<CastError>;
 
             fn try_from(val: &TagData) -> Result<Self, Self::Error> {
-                if val.len() != 1 {
-                    return Err(CastError::multiple_values(val.len()).into());
-                }
+                ensure!(val.len() == 1,CastError::multiple_values(val.len()));
                 match val {
                     $(TagData::$from_small(v) => Ok(Self::from(v[0])),)*
-                    TagData::$from_exact(v) => Ok(v[0]),
+                    $(TagData::$from_exact(v) => Ok(v[0]),)+
                     $(TagData::$from_large(v) => Self::try_from(v[0]).or_raise(|| CastError::overflow(v[0] as _, type_name::<$target>())),)*
                     _ => Err(CastError::invalid_cast(val.tag_type(), type_name::<$target>()).into()),
                 }
@@ -436,12 +306,12 @@ macro_rules! impl_tagdata_casts {
             }
         }
 
-        // Inverse: Convert from integer to TagData
-        impl From<$target> for TagData {
-            fn from(value: $target) -> Self {
-                TagData::$from_exact(smallvec![value])
-            }
-        }
+        // // Inverse: Convert from integer to TagData
+        // impl From<$target> for TagData {
+        //     fn from(value: $target) -> Self {
+        //         TagData::$from_exact(smallvec![value])
+        //     }
+        // }
 
         impl TryFrom<TagData> for Vec<$target> {
             type Error = Exn<CastError>;
@@ -450,7 +320,7 @@ macro_rules! impl_tagdata_casts {
                 match val {
                     // https://stackoverflow.com/q/48308759/14681457
                     $(TagData::$from_small(v) => Ok(v.into_iter().map(<$target>::from).collect()),)*
-                    TagData::$from_exact(v) => Ok(v.into_vec()),
+                    $(TagData::$from_exact(v) => Ok(v.into_vec()),)+
                     $(TagData::$from_large(v) => Ok(v.into_iter().map(|v| <$target>::try_from(v).or_raise(|| CastError::overflow(v as _, type_name::<Vec<$target>>()))).collect::<Result<Self, _>>()?),)*
                     _ => Err(CastError::invalid_cast(val.tag_type(), type_name::<$target>()).into()),
                 }
@@ -461,7 +331,7 @@ macro_rules! impl_tagdata_casts {
             type Error = CastError;
             fn try_from(val: &'a TagData) -> Result<Self, Self::Error> {
                 match &val {
-                    TagData::$from_exact(v) => Ok(&v),
+                    $(TagData::$from_exact(v) => Ok(&v),)+
                     _ => Err(CastError::invalid_cast(val.tag_type(), type_name::<&[$target]>())),
                 }
             }
@@ -472,31 +342,31 @@ macro_rules! impl_tagdata_casts {
             type Error = CastError;
             fn try_from(val: &'a mut TagData) -> Result<Self, Self::Error> {
                 match val {
-                    TagData::$from_exact(ref mut v) => Ok(v),
+                    $(TagData::$from_exact(ref mut v) => Ok(v),)+
                     _ => Err(CastError::invalid_cast(val.tag_type(), type_name::<&mut [$target]>())),
                 }
             }
         }
 
-        // Slice conversion
-        impl From<&[$target]> for TagData {
-            fn from(slice: &[$target]) -> Self {
-                TagData::$from_exact(SmallVec::from(slice))
-            }
-        }
+        // // Slice conversion
+        // impl From<&[$target]> for TagData {
+        //     fn from(slice: &[$target]) -> Self {
+        //         TagData::$from_exact(SmallVec::from(slice))
+        //     }
+        // }
 
-        // Vector consumption
-        impl From<Vec<$target>> for TagData {
-            fn from(vec: Vec<$target>) -> Self {
-                TagData::$from_exact(SmallVec::from(vec))
-            }
-        }
+        // // Vector consumption
+        // impl From<Vec<$target>> for TagData {
+        //     fn from(vec: Vec<$target>) -> Self {
+        //         $(TagData::$from_exact(SmallVec::from(vec)))+
+        //     }
+        // }
 
-        impl From<SmallVec<[$target; 8/std::mem::size_of::<$target>()]>> for TagData {
-            fn from(smallvec: SmallVec<[$target; 8/std::mem::size_of::<$target>()]>) -> Self {
-                TagData::$from_exact(smallvec)
-            }
-        }
+        // impl From<SmallVec<[$target; 8/std::mem::size_of::<$target>()]>> for TagData {
+        //     fn from(smallvec: SmallVec<[$target; 8/std::mem::size_of::<$target>()]>) -> Self {
+        //         TagData::$from_exact(smallvec)
+        //     }
+        // }
     };
 }
 
@@ -505,18 +375,18 @@ pub use macro_impls::*;
 #[rustfmt::skip]
 mod macro_impls {
     use super::*;
-    impl_tagdata_casts!(u8, [Ascii, Undefined], Byte,[Short, Ifd, Long, Ifd8, Long8]   );
-    impl_tagdata_casts!(u16,                   [Byte],Short,[Ifd, Long, Ifd8, Long8]   );
-    impl_tagdata_casts!(u32,                   [Byte, Short, Ifd],Long,[Ifd8, Long8]   );
-    impl_tagdata_casts!(u64,                   [Byte, Short, Ifd, Long, Ifd8],Long8, []);
+    impl_tagdata_casts!(u8, [Ascii, Undefined],[Byte],[Short,Ifd, Long, Ifd8, Long8]   );
+    impl_tagdata_casts!(u16,                   [Byte],[Short],[Ifd, Long, Ifd8, Long8]   );
+    impl_tagdata_casts!(u32,                   [Byte, Short], [Ifd, Long],[Ifd8, Long8]   );
+    impl_tagdata_casts!(u64,                   [Byte, Short, Ifd, Long],[Ifd8, Long8], []);
 
-    impl_tagdata_casts!(i8, [], SByte,[SShort, SLong, SLong8]   );
-    impl_tagdata_casts!(i16,   [SByte],SShort,[SLong, SLong8]   );
-    impl_tagdata_casts!(i32,   [SByte, SShort],SLong,[SLong8]   );
-    impl_tagdata_casts!(i64,   [SByte, SShort, SLong],SLong8, []);
+    impl_tagdata_casts!(i8, [],[SByte],[SShort, SLong, SLong8]   );
+    impl_tagdata_casts!(i16,   [SByte],[SShort],[SLong, SLong8]   );
+    impl_tagdata_casts!(i32,   [SByte, SShort],[SLong],[SLong8]   );
+    impl_tagdata_casts!(i64,   [SByte, SShort, SLong],[SLong8], []);
 
-    impl_tagdata_casts!(f32, [], Float,          []);
-    impl_tagdata_casts!(f64,    [Float], Double, []);
+    impl_tagdata_casts!(f32, [],[Float],          []);
+    impl_tagdata_casts!(f64,    [Float],[Double], []);
 
     // #[cfg(target_pointer_width = "32")]
     // impl_try_from_processed_entry!(usize, [Byte],Short,[Ifd, Long, Ifd8, Long8], UnsignedIntegerExpected);
@@ -524,48 +394,44 @@ mod macro_impls {
     // impl_try_from_processed_entry!(usize, [Byte,Short, Long, Ifd, Ifd8], Long8, [], UnsignedIntegerExpected);
 }
 impl TryFrom<&TagData> for (u32, u32) {
-    type Error = TiffError;
+    type Error = Exn<CastError>;
 
     fn try_from(val: &TagData) -> Result<Self, Self::Error> {
-        if val.len() != 2 {
-            return Err(TiffFormatError::InconsistentSizesEncountered(val.clone()).into());
-        }
+        ensure!(val.len() == 1, CastError::multiple_values(val.len()));
         match &val {
             TagData::Rational(v) => Ok((v[0][0], v[0][1])),
-            _ => Err(TiffFormatError::RationalExpected(val.clone()).into()),
+            _ => Err(CastError::invalid_cast(val.tag_type(), type_name::<(u32, u32)>()).into()),
         }
     }
 }
 
 impl TryFrom<&TagData> for (i32, i32) {
-    type Error = TiffError;
+    type Error = Exn<CastError>;
 
     fn try_from(val: &TagData) -> Result<Self, Self::Error> {
-        if val.len() != 2 {
-            return Err(TiffFormatError::InconsistentSizesEncountered(val.clone()).into());
-        }
+        ensure!(val.len() == 1, CastError::multiple_values(val.len()));
         match &val {
             TagData::SRational(v) => Ok((v[0][0], v[0][1])),
-            _ => Err(TiffFormatError::SignedRationalExpected(val.clone()).into()),
+            _ => Err(CastError::invalid_cast(val.tag_type(), type_name::<(i32, i32)>()).into()),
         }
     }
 }
 
 impl<'a> TryFrom<&'a TagData> for &'a str {
-    type Error = TiffError;
+    type Error = Exn<CastError>;
 
     fn try_from(val: &'a TagData) -> Result<Self, Self::Error> {
         match val {
             TagData::Byte(v) | TagData::Ascii(v) | TagData::Undefined(v) => {
                 if v.is_ascii() && v.ends_with(&[0]) {
-                    let v = std::str::from_utf8(v)?;
+                    let v = std::str::from_utf8(v).unwrap();
                     let v = v.trim_matches(char::from(0));
                     Ok(v)
                 } else {
-                    Err(TiffFormatError::InvalidTag.into())
+                    Err(CastError::invalid_string(v.clone()).into())
                 }
             }
-            _ => Err(TiffFormatError::AsciiExpected(val.clone()).into()),
+            _ => Err(CastError::invalid_cast(val.tag_type(), type_name::<(i32, i32)>()).into()),
         }
     }
 }
@@ -573,523 +439,137 @@ impl<'a> TryFrom<&'a TagData> for &'a str {
 #[cfg(test)]
 #[allow(unused_imports, clippy::useless_conversion)]
 mod test_entry {
+    use std::any::type_name;
     use std::io;
-
-    use TagType::{
-        ASCII,
-        // SINGLE BYTE
-        BYTE,
-        DOUBLE,
-        FLOAT,
-        IFD,
-        IFD8,
-        // 4-BYTE
-        LONG,
-        // 8-BYTE
-        LONG8,
-        RATIONAL,
-        SBYTE,
-        // 2-BYTE
-        SHORT,
-        SLONG,
-        SLONG8,
-        SRATIONAL,
-        SSHORT,
-        UNDEFINED,
-    };
 
     use super::*;
     use crate::ByteOrder;
+    use TagType::*;
 
     #[test]
     fn test_bufferedentry_into_u8slice() {
-        let data = vec![42u8; 42];
-        let entry = TagData::from(data.clone());
-        assert_eq!(<&[u8]>::try_from(&entry).unwrap(), data);
+        let data = smallvec![42u8; 42];
+        let entry = TagData::Byte(data.clone());
+        assert_eq!(<&[u8]>::try_from(&entry).unwrap(), &data[..]);
     }
 
-    // /// test conversion for single value, slice and too big numbers
-    // /// actually not nice that
-    // macro_rules! test_bufferedentry_into {
-    //     ($t:ty,  $name:ident, $(($type:ident, $st:ty)),+) => {
-    //         #[test]
-    //         fn $name() {
-    //             let val = 42 as $t;
-    //             $(
-    //                 let source_val = val as $st;
-    //                 let e = TagData::$type(vec![source_val]);
-    //                 println!("testing for single type {}, {:?}", std::any::type_name::<$t>(), $type);
-    //                 dbg!(&e);
-    //                 // test is ok: test assertion
-    //                 assert_eq!(val, <$t>::try_from(&e).unwrap());
+    /// test conversion for single value, slice and too big numbers
+    /// actually not nice that
+    macro_rules! test_tagdata_into_single {
+        ($t:ty,  $name:ident, $(($type:ident, $st:ty)),+) => {
+            #[test]
+            fn $name() {
+                let val = 42 as $t;
+                $(
+                    let source_val = val as $st;
+                    let e = TagData::$type(smallvec![source_val]);
+                    println!("testing for single type {}, {:?}", std::any::type_name::<$t>(), e);
+                    dbg!(&e);
+                    // test is ok: test assertion
+                    assert_eq!(val, <$t>::try_from(&e).unwrap());
 
-    //                 // test for overflow handling
-    //                 if std::mem::size_of::<$t>() < std::mem::size_of::<$st>() {
-    //                     let sv = <$st>::MAX;
-    //                     println!("{sv} should not fit in {}", std::any::type_name::<$t>());
-    //                     let entry = TagData::$type(vec![sv]);
-    //                     // https://stackoverflow.com/a/68919527/14681457
-    //                     match <$t>::try_from(&entry) {
-    //                         Ok(v) => panic!("{v}"),
-    //                         Err(e) => {
-    //                             println!("{e:?}");
-    //                             assert!(matches!(e, TiffError::IntSizeError(_)));
-    //                         },
-    //                     }
-    //                 }
+                    // test for overflow handling
+                    if std::mem::size_of::<$t>() < std::mem::size_of::<$st>() {
+                        let sv = <$st>::MAX;
+                        println!("{sv} should not fit in {}", std::any::type_name::<$t>());
+                        let entry = TagData::$type(smallvec![sv]);
+                        // https://stackoverflow.com/a/68919527/14681457
+                        println!("{e:?}");
+                        assert_eq!(
+                            <$t>::try_from(&entry)
+                                .unwrap_err()
+                                .frame()
+                                .error()
+                                .downcast_ref::<CastError>()
+                                .unwrap(),
+                            &CastError::overflow(sv.into(), type_name::<$t>())
+                        );
+                    }
 
-    //             )+
+                )+
 
-    //         }
-    //     };
-    // }
-
-    // // macro_rules! test_bufferedentry_into_wrongsize {
-    // //     ($t:ty, $name:ident, $($type:ident),+) => {
-    // //         #[test]
-    // //         fn $name() {
-    // //           let size = std::mem::size_of::<$t>();
-    // //           $(
-    // //             let e = TagData::$type(vec![0]) BufferedEntry{tag_type: $tag_type, count: 1, data: vec![0; size + 1]};
-    // //             println!("testing for type {}, {:?}", std::any::type_name::<$t>(), $tag_type);
-    // //             let TiffError::FormatError(err) = <$t>::try_from(&e).unwrap_err() else {
-    // //                 panic!("wrong error type, should be InconsistentSizesEncountered")
-    // //             };
-    // //             assert_eq!(
-    // //                 err,
-    // //                 TiffFormatError::InconsistentSizesEncountered(e.clone()),
-    // //             );
-
-    // //             let e = BufferedEntry{tag_type: $tag_type, count: 2, data: vec![0; size * 2]};
-    // //             println!("testing for type {}, {:?}", std::any::type_name::<$t>(), $tag_type);
-    // //             let TiffError::FormatError(err) = <$t>::try_from(&e).unwrap_err() else {
-    // //                 panic!("wrong error type, should be InconsistentSizesEncountered")
-    // //             };
-    // //             assert_eq!(
-    // //                 err,
-    // //                 TiffFormatError::InconsistentSizesEncountered(e.clone()),
-    // //             );
-    // //           )+
-    // //         }
-    // //     };
-    // // }
-
-    // macro_rules! test_bufferedentry_into_no_int {
-    //     ($t:ty, $name:ident, $($type:ident),+) => {
-    //         #[test]
-    //         fn $name() {
-    //             $(
-    //                 let z = 0 as $t;
-    //                 let e = TagData::$type(vec![z]);//BufferedEntry{tag_type: $tag_type , count: 1, data: vec![0; $tag_type.size()]};
-    //                 println!("testing for type {}, {:?}", std::any::type_name::<$t>(), $type);
-    //                 dbg!(&e);
-    //                 // First check: converting data manually
-    //                 // assert_eq!(val, <$t>::from_ne_bytes(e.data.as_slice().try_into().unwrap()));
-    //                 // sanity: sizes match
-    //                 // assert_eq!(e.data.len(), e.tag_type.size());
-    //                 // test is ok: test assertion
-    //                 let TiffError::FormatError(err) = <$t>::try_from(&e).unwrap_err() else {
-    //                     panic!("wrong error type, should be InconsistentSizesEncountered")
-    //                 };
-    //                 assert_eq!(
-    //                     err,
-    //                     TiffFormatError::SignedIntegerExpected(e.clone()),
-    //                 );
-    //             )+
-    //         }
-    //     };
-    // }
-
-    // macro_rules! test_bufferedentry_into_no_uint {
-    //     ($t:ty, $name:ident, $($tag_type:expr),+) => {
-    //         #[test]
-    //         fn $name() {
-    //             $(
-    //                 let z = 0 as $t;
-    //                 let e = TagData::$type(vec![z])//BufferedEntry{tag_type: $tag_type , count: 1, data: vec![0; $tag_type.size()]};
-    //                 println!("testing for type {}, {:?}", std::any::type_name::<$t>(), $tag_type);
-    //                 dbg!(&e);
-    //                 // First check: converting data manually
-    //                 // assert_eq!(val, <$t>::from_ne_bytes(e.data.as_slice().try_into().unwrap()));
-    //                 // sanity: sizes match
-    //                 assert_eq!(e.data.len(), e.tag_type.size());
-    //                 // test is ok: test assertion
-    //                 let TiffError::FormatError(err) = <$t>::try_from(&e).unwrap_err() else {
-    //                     panic!("wrong error type, should be InconsistentSizesEncountered")
-    //                 };
-    //                 assert_eq!(
-    //                     err,
-    //                     TiffFormatError::UnsignedIntegerExpected(e.clone()),
-    //                 );
-    //             )+
-    //         }
-    //     };
-    // }
-
-    // macro_rules! test_bufferedentry_into_no_float {
-    //     ($t:ty, $name:ident, $($tag_type:expr),+) => {
-    //         #[test]
-    //         fn $name() {
-    //             $(
-    //                 let e = BufferedEntry{tag_type: $tag_type , count: 1, data: vec![0; $tag_type.size()]};
-    //                 println!("testing for type {}, {:?}", std::any::type_name::<$t>(), $tag_type);
-    //                 dbg!(&e);
-    //                 // First check: converting data manually
-    //                 // assert_eq!(val, <$t>::from_ne_bytes(e.data.as_slice().try_into().unwrap()));
-    //                 // sanity: sizes match
-    //                 assert_eq!(e.data.len(), e.tag_type.size());
-    //                 // test is ok: test assertion
-    //                 let TiffError::FormatError(err) = <$t>::try_from(&e).unwrap_err() else {
-    //                     panic!("wrong error type, should be InconsistentSizesEncountered")
-    //                 };
-    //                 assert_eq!(
-    //                     err,
-    //                     TiffFormatError::FloatExpected(e.clone()),
-    //                 );
-    //             )+
-    //         }
-    //     };
-    // }
-
-    // #[rustfmt::skip]
-    // mod into{
-    //     use super::*;
-
-    //     test_bufferedentry_into!(f32, test_f32_into_type,  (Float, f32));//, (DOUBLE, f64));
-    //     test_bufferedentry_into!(f64, test_f64_into_type,  (Float, f32), (Double, f64));
-    //     test_bufferedentry_into!(u8 ,  test_u8_into_type,  ( Byte, u8), ( Short, u16), (Ifd, u32), ( Long, u32), (Ifd8, u64), ( Long8, u64));
-    //     test_bufferedentry_into!(u16, test_u16_into_type,  ( Byte, u8), ( Short, u16), (Ifd, u32), ( Long, u32), (Ifd8, u64), ( Long8, u64));
-    //     test_bufferedentry_into!(u32, test_u32_into_type,  ( Byte, u8), ( Short, u16), (Ifd, u32), ( Long, u32), (Ifd8, u64), ( Long8, u64));
-    //     test_bufferedentry_into!(u64, test_u64_into_type,  ( Byte, u8), ( Short, u16), (Ifd, u32), ( Long, u32), (Ifd8, u64), ( Long8, u64));
-    //     test_bufferedentry_into!(i8 ,  test_i8_into_type,  (SByte, i8), (SShort, i16),             (SLong, i32),              (SLong8, i64));
-    //     test_bufferedentry_into!(i16, test_i16_into_type,  (SByte, i8), (SShort, i16),             (SLong, i32),              (SLong8, i64));
-    //     test_bufferedentry_into!(i32, test_i32_into_type,  (SByte, i8), (SShort, i16),             (SLong, i32),              (SLong8, i64));
-    //     test_bufferedentry_into!(i64, test_i64_into_type,  (SByte, i8), (SShort, i16),             (SLong, i32),              (SLong8, i64));
-
-    //     // test_bufferedentry_into_wrongsize!(u8 , test_into_wrongsize_1, Byte , SByte , Undefined, Ascii);
-    //     // test_bufferedentry_into_wrongsize!(u16, test_into_wrongsize_2, Short, SShort);
-    //     // test_bufferedentry_into_wrongsize!(u32, test_into_wrongsize_4, Long, SLong , Ifd , Float );
-    //     // test_bufferedentry_into_wrongsize!(u64, test_into_wrongsize_8, Long8, SLong8, Ifd8, Double, Rational, SRational);
-
-    //     test_bufferedentry_into_no_int! (i8 , test_i8_into_noint    , Byte,  Short, Undefined, Ascii,  Long, Ifd, Long8, Ifd8, Rational, SRational, Float, Double);
-    //     test_bufferedentry_into_no_uint!(u8 , test_u8_into_nouint   ,SByte, SShort, Undefined, Ascii, SLong,     SLong8,       Rational, SRational, Float, Double);
-    //     test_bufferedentry_into_no_float!(f32, test_f32_into_nofloat, Byte,  Short, Undefined, Ascii,  Long, Ifd, Long8, Ifd8, Rational, SRational,        Double,
-    //                                                                  SByte, SShort,                   SLong,     SLong8);
-    //     test_bufferedentry_into_no_float!(f64, test_f62_into_nofloat, Byte,  Short, Undefined, Ascii,  Long, Ifd, Long8, Ifd8, Rational, SRational,
-    //                                                                  SByte, SShort,                   SLong,     SLong8);
-    // }
-
-    // macro_rules! test_bufferedentry_into_slice {
-    //     ($t:ty, $tag_type:expr, $name:ident) => {
-    //         #[test]
-    //         fn $name() {
-    //             let v = vec![42 as $t; 2];
-    //             let e = BufferedEntry {
-    //                 tag_type: $tag_type,
-    //                 count: 2,
-    //                 data: bytemuck::cast_slice(&v[..]).to_vec(),
-    //             };
-    //             println!("testing for type {}", std::any::type_name::<$t>());
-    //             dbg!(&e);
-    //             // assert_eq!(v, <$t>::from_ne_bytes(e.data.as_slice().try_into().unwrap()));
-    //             assert_eq!(
-    //                 e.data.len(),
-    //                 e.tag_type.size() * usize::try_from(e.count).unwrap()
-    //             );
-    //             assert_eq!(v, <&[$t]>::try_from(&e).unwrap());
-    //         }
-    //     };
-    // }
-
-    // #[rustfmt::skip]
-    // mod into_slice {
-    //     use super::*;
-
-    //     test_bufferedentry_into_slice!(i8 , SBYTE , test_i8_slice     );
-    //     test_bufferedentry_into_slice!(i16, SSHORT, test_i16_slice    );
-    //     test_bufferedentry_into_slice!(i32, SLONG , test_i32_slice    );
-    //     test_bufferedentry_into_slice!(i64, SLONG8, test_i64_slice    );
-    //     test_bufferedentry_into_slice!(u8 , BYTE  , test_u8_slice     );
-    //     test_bufferedentry_into_slice!(u16, SHORT , test_u16_slice    );
-    //     test_bufferedentry_into_slice!(u32, IFD   , test_u32_ifd_slice);
-    //     test_bufferedentry_into_slice!(u32, LONG  , test_u32_slice    );
-    //     test_bufferedentry_into_slice!(u64, IFD8  , test_u64_ifd_slice);
-    //     test_bufferedentry_into_slice!(u64, LONG8 , test_u64_slice    );
-    //     test_bufferedentry_into_slice!(f32, FLOAT , test_f32_slice    );
-    //     test_bufferedentry_into_slice!(f64, DOUBLE, test_f64_slice    );
-    // }
-
-    // -----------------------------------------------------------------
-    // tests below are copy-pasted from Ifd. Make sure to update there
-    // accordingly
-    // -----------------------------------------------------------------
-
-    #[test]
-    #[rustfmt::skip]
-    fn test_single_fits_notbig() {
-        // personal sanity checks
-        assert_eq!(u16::from_le_bytes([42,0]),42);
-        assert_eq!(u16::from_be_bytes([0,42]),42);
-        assert_eq!(f32::from_le_bytes([0x42,0,0,0]),f32::from_bits(0x00_00_00_42));
-        assert_eq!(f32::from_be_bytes([0,0,0,0x42]),f32::from_bits(0x00_00_00_42));
-        let cases = [
-        // type   count      offset
-        // / \   /     \   /       \
-        ([ 1, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, TagData::Byte      (smallvec![42])                ),
-        ([ 0, 1, 0,0,0,1, 42, 0, 0, 0], ByteOrder::BigEndian,    TagData::Byte      (smallvec![42])                ),
-        ([ 6, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, TagData::SByte     (smallvec![42])                ),
-        ([ 0, 6, 0,0,0,1, 42, 0, 0, 0], ByteOrder::BigEndian,    TagData::SByte     (smallvec![42])                ),
-        ([ 7, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, TagData::Undefined (smallvec![42])                ),
-        ([ 0, 7, 0,0,0,1, 42, 0, 0, 0], ByteOrder::BigEndian,    TagData::Undefined (smallvec![42])                ),
-        ([ 2, 0, 1,0,0,0,  0, 0, 0, 0], ByteOrder::LittleEndian, TagData::Ascii     (smallvec![0 ])                ),
-        ([ 0, 2, 0,0,0,1,  0, 0, 0, 0], ByteOrder::BigEndian,    TagData::Ascii     (smallvec![0 ])                ),
-        ([ 3, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, TagData::Short     (smallvec![42])                ),
-        ([ 0, 3, 0,0,0,1,  0,42, 0, 0], ByteOrder::BigEndian,    TagData::Short     (smallvec![42])                ),
-        ([ 8, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, TagData::SShort    (smallvec![42])                ),
-        ([ 0, 8, 0,0,0,1,  0,42, 0, 0], ByteOrder::BigEndian,    TagData::SShort    (smallvec![42])                ),
-        ([ 4, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, TagData::Long      (smallvec![42])                ),
-        ([ 0, 4, 0,0,0,1,  0, 0, 0,42], ByteOrder::BigEndian,    TagData::Long      (smallvec![42])                ),
-        ([ 9, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, TagData::SLong     (smallvec![42])                ),
-        ([ 0, 9, 0,0,0,1,  0, 0, 0,42], ByteOrder::BigEndian,    TagData::SLong     (smallvec![42])                ),
-        ([13, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, TagData::Ifd       (smallvec![42])                ),
-        ([ 0,13, 0,0,0,1,  0, 0, 0,42], ByteOrder::BigEndian,    TagData::Ifd       (smallvec![42])                ),
-        ([11, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, TagData::Float     (smallvec![f32::from_bits(42)])),
-        ([ 0,11, 0,0,0,1,  0, 0, 0,42], ByteOrder::BigEndian,    TagData::Float     (smallvec![f32::from_bits(42)])),
-        // Double doesn't fit, neither 8-types and we special-case IFD
-        ];
-        for (buf, byte_order, res) in cases {
-            let mut r = EndianReader::wrap(io::Cursor::new(buf), byte_order);
-            assert_eq!(IfdEntry::from_reader(&mut r, false).unwrap(), IfdEntry::Value(res.try_into().unwrap()));
-            assert_eq!(r.stream_position().unwrap(), buf.len() as u64);
-        }
+            }
+        };
     }
 
-    #[test]
-    #[rustfmt::skip]
-    fn test_single_fits_big() {
-        // personal sanity checks
-        assert_eq!(u16::from_le_bytes([42,0]),42);
-        assert_eq!(u16::from_be_bytes([0,42]),42);
-
-        assert_eq!(f32::from_le_bytes([0x42,0,0,0]),f32::from_bits(0x00_00_00_42));
-        assert_eq!(f32::from_be_bytes([0,0,0,0x42]),f32::from_bits(0x00_00_00_42));
-        let cases = [
-        //type       count            offset
-        // / \  1 2 3 4 5 6 7 8   1  2  3  4  5  6  7  8
-        ([ 1, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, TagData::Byte      (smallvec![42])                ),
-        ([ 0, 1, 0,0,0,0,0,0,0,1, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::BigEndian,    TagData::Byte      (smallvec![42])                ),
-        ([ 6, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, TagData::SByte     (smallvec![42])                ),
-        ([ 0, 6, 0,0,0,0,0,0,0,1, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::BigEndian,    TagData::SByte     (smallvec![42])                ),
-        ([ 7, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, TagData::Undefined (smallvec![42])                ),
-        ([ 0, 7, 0,0,0,0,0,0,0,1, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::BigEndian,    TagData::Undefined (smallvec![42])                ),
-        ([ 2, 0, 1,0,0,0,0,0,0,0,  0, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, TagData::Ascii     (smallvec![0 ])                ),
-        ([ 0, 2, 0,0,0,0,0,0,0,1,  0, 0, 0, 0, 0, 0, 0, 0], ByteOrder::BigEndian,    TagData::Ascii     (smallvec![0 ])                ),
-        ([ 3, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, TagData::Short     (smallvec![42])                ),
-        ([ 0, 3, 0,0,0,0,0,0,0,1,  0,42, 0, 0, 0, 0, 0, 0], ByteOrder::BigEndian,    TagData::Short     (smallvec![42])                ),
-        ([ 8, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, TagData::SShort    (smallvec![42])                ),
-        ([ 0, 8, 0,0,0,0,0,0,0,1,  0,42, 0, 0, 0, 0, 0, 0], ByteOrder::BigEndian,    TagData::SShort    (smallvec![42])                ),
-        ([ 4, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, TagData::Long      (smallvec![42])                ),
-        ([ 0, 4, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0, 0], ByteOrder::BigEndian,    TagData::Long      (smallvec![42])                ),
-        ([ 9, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, TagData::SLong     (smallvec![42])                ),
-        ([ 0, 9, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0, 0], ByteOrder::BigEndian,    TagData::SLong     (smallvec![42])                ),
-        ([13, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, TagData::Ifd       (smallvec![42])                ),
-        ([ 0,13, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0, 0], ByteOrder::BigEndian,    TagData::Ifd       (smallvec![42])                ),
-        ([16, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, TagData::Long8     (smallvec![42])                ),
-        ([ 0,16, 0,0,0,0,0,0,0,1,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian,    TagData::Long8     (smallvec![42])                ),
-        ([17, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, TagData::SLong8    (smallvec![42])                ),
-        ([ 0,17, 0,0,0,0,0,0,0,1,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian,    TagData::SLong8    (smallvec![42])                ),
-        ([18, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, TagData::Ifd8      (smallvec![42])                ),
-        ([ 0,18, 0,0,0,0,0,0,0,1,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian,    TagData::Ifd8      (smallvec![42])                ),
-        ([11, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, TagData::Float     (smallvec![f32::from_bits(42)])),
-        ([ 0,11, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0, 0], ByteOrder::BigEndian,    TagData::Float     (smallvec![f32::from_bits(42)])),
-        ([12, 0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, TagData::Double    (smallvec![f64::from_bits(42)])),
-        ([ 0,12, 0,0,0,0,0,0,0,1,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian,    TagData::Double    (smallvec![f64::from_bits(42)])),
-        ([ 5, 0, 1,0,0,0,0,0,0,0,  42,0, 0, 0,43, 0, 0, 0], ByteOrder::LittleEndian, TagData::Rational  (smallvec![[42, 43]])          ),
-        ([ 0, 5, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0,43], ByteOrder::BigEndian,    TagData::Rational  (smallvec![[42, 43]])          ),
-        ([ 10,0, 1,0,0,0,0,0,0,0, 42, 0, 0, 0,43, 0, 0, 0], ByteOrder::LittleEndian, TagData::SRational (smallvec![[42, 43]])          ),
-        ([ 0,10, 0,0,0,0,0,0,0,1,  0, 0, 0,42, 0, 0, 0,43], ByteOrder::BigEndian,    TagData::SRational (smallvec![[42, 43]])          ),
-        // we special-case IFD
-        ];
-        for (buf, byte_order, res) in cases {
-            println!("testing {res:?}");
-            let mut r = EndianReader::wrap(io::Cursor::new(buf), byte_order);
-            assert_eq!(IfdEntry::from_reader(&mut r, true).unwrap(), IfdEntry::Value(res.try_into().unwrap()));
-            assert_eq!(r.stream_position().unwrap(), buf.len() as u64);
-        }
+    macro_rules! test_tagdata_into_invalid_cast {
+        ($t:ty, $name:ident, $($type:ident),+) => {
+            #[test]
+            fn $name() {
+                $(
+                    let z = 0 as $t;
+                    let e = TagData::$type(smallvec![0;16]);
+                    println!("testing for type {}, {:?}", std::any::type_name::<$t>(), $type);
+                    // First check: converting data manually
+                    assert_eq!(z, <$t>::from_ne_bytes(e.as_ref().try_into().unwrap()));
+                    // sanity: sizes match
+                    assert_eq!(e.as_ref().len(), e.tag_type().size());
+                    // test is ok: test assertion
+                    assert_eq!(
+                        <$t>::try_from(&e).unwrap_err(),
+                        &CastError::invalid_cast(e.tag_type(), type_name::<$t>()),
+                    );
+                )+
+            }
+        };
     }
 
-    #[test]
     #[rustfmt::skip]
-    fn test_fits_multi_notbig() {
-        // personal sanity checks
-        assert_eq!(u16::from_le_bytes([42,0]),42);
-        assert_eq!(u16::from_be_bytes([0,42]),42);
+    mod into{
+        use super::*;
+        use TagData::*;
+        // test_tagdata_into_single!(f32, test_f32_into_type,  (Float, f32));//, (DOUBLE, f64));
+        // test_tagdata_into_single!(f64, test_f64_into_type,  (Float, f32), (Double, f64));
+        test_tagdata_into_single!(u8 ,  test_u8_into_type,  ( Byte, u8), ( Short, u16), (Ifd, u32), ( Long, u32), (Ifd8, u64), ( Long8, u64));
+        test_tagdata_into_single!(u16, test_u16_into_type,  ( Byte, u8), ( Short, u16), (Ifd, u32), ( Long, u32), (Ifd8, u64), ( Long8, u64));
+        test_tagdata_into_single!(u32, test_u32_into_type,  ( Byte, u8), ( Short, u16), (Ifd, u32), ( Long, u32), (Ifd8, u64), ( Long8, u64));
+        test_tagdata_into_single!(u64, test_u64_into_type,  ( Byte, u8), ( Short, u16), (Ifd, u32), ( Long, u32), (Ifd8, u64), ( Long8, u64));
+        test_tagdata_into_single!(i8 ,  test_i8_into_type,  (SByte, i8), (SShort, i16),             (SLong, i32),              (SLong8, i64));
+        test_tagdata_into_single!(i16, test_i16_into_type,  (SByte, i8), (SShort, i16),             (SLong, i32),              (SLong8, i64));
+        test_tagdata_into_single!(i32, test_i32_into_type,  (SByte, i8), (SShort, i16),             (SLong, i32),              (SLong8, i64));
+        test_tagdata_into_single!(i64, test_i64_into_type,  (SByte, i8), (SShort, i16),             (SLong, i32),              (SLong8, i64));
 
-        assert_eq!(f32::from_le_bytes([0x42,0,0,0]),f32::from_bits(0x00_00_00_42));
-        assert_eq!(f32::from_be_bytes([0,0,0,0x42]),f32::from_bits(0x00_00_00_42));
-        let cases = [
-        //n_tags tag type  count    offset
-        // //    // /  \  /     \   /     \
-        ([1, 0, 4,0,0,0, 42,42,42,42], ByteOrder::LittleEndian, TagData::Byte      (smallvec![42; 4]) ),
-        ([0, 1, 0,0,0,4, 42,42,42,42], ByteOrder::BigEndian,    TagData::Byte      (smallvec![42; 4]) ),
-        ([6, 0, 4,0,0,0, 42,42,42,42], ByteOrder::LittleEndian, TagData::SByte     (smallvec![42; 4]) ),
-        ([0, 6, 0,0,0,4, 42,42,42,42], ByteOrder::BigEndian,    TagData::SByte     (smallvec![42; 4]) ),
-        ([7, 0, 4,0,0,0, 42,42,42,42], ByteOrder::LittleEndian, TagData::Undefined (smallvec![42; 4]) ),
-        ([0, 7, 0,0,0,4, 42,42,42,42], ByteOrder::BigEndian,    TagData::Undefined (smallvec![42; 4]) ),
-        ([2, 0, 4,0,0,0, 42,42,42, 0], ByteOrder::LittleEndian, TagData::Ascii     ("***\0".as_bytes().into())),
-        ([0, 2, 0,0,0,4, 42,42,42, 0], ByteOrder::BigEndian,    TagData::Ascii     ("***\0".as_bytes().into())),
-        ([3, 0, 2,0,0,0, 42, 0,42, 0], ByteOrder::LittleEndian, TagData::Short     (smallvec![42; 2]) ),
-        ([0, 3, 0,0,0,2,  0,42, 0,42], ByteOrder::BigEndian,    TagData::Short     (smallvec![42; 2]) ),
-        ([8, 0, 2,0,0,0, 42, 0,42, 0], ByteOrder::LittleEndian, TagData::SShort    (smallvec![42; 2]) ),
-        ([0, 8, 0,0,0,2,  0,42, 0,42], ByteOrder::BigEndian,    TagData::SShort    (smallvec![42; 2]) ),
-        ([0, 2, 0,0,0,4, b'A',b'B',b'C',0], ByteOrder::BigEndian, TagData::Ascii("ABC\0".as_bytes().into())),
-        // others don't fit, neither 8-types and we special-case IFD
-        ];
-        for (buf, byte_order, res) in cases {
-            let mut r = EndianReader::wrap(io::Cursor::new(buf), byte_order);
-            assert_eq!(IfdEntry::from_reader(&mut r, false).unwrap(), IfdEntry::Value(res.try_into().unwrap()));
-            assert_eq!(r.stream_position().unwrap(), buf.len() as u64);
-        }
+        // test_bufferedentry_into_wrongsize!(u8 , test_into_wrongsize_1, Byte , SByte , Undefined, Ascii);
+        // test_bufferedentry_into_wrongsize!(u16, test_into_wrongsize_2, Short, SShort);
+        // test_bufferedentry_into_wrongsize!(u32, test_into_wrongsize_4, Long, SLong , Ifd , Float );
+        // test_bufferedentry_into_wrongsize!(u64, test_into_wrongsize_8, Long8, SLong8, Ifd8, Double, Rational, SRational);
+
+        // test_tagdata_into_invalid_cast! (i8 , test_i8_into_noint    , Byte,  Short, Undefined, Ascii,  Long, Ifd, Long8, Ifd8, Rational, SRational, Float, Double);
+        // test_tagdata_into_invalid_cast! (u8 , test_u8_into_nouint   ,SByte, SShort, Undefined, Ascii, SLong,     SLong8,       Rational, SRational, Float, Double);
+        // test_tagdata_into_invalid_cast! (f32, test_f32_into_nofloat, Byte,  Short, Undefined, Ascii,  Long, Ifd, Long8, Ifd8, Rational, SRational,        Double,
+        //                                                              SByte, SShort,                   SLong,     SLong8);
+        // test_bufferedentry_into_no_float!(f64, test_f62_into_nofloat, Byte,  Short, Undefined, Ascii,  Long, Ifd, Long8, Ifd8, Rational, SRational,
+        //                                                              SByte, SShort,                   SLong,     SLong8);
     }
 
-    #[test]
-    #[rustfmt::skip]
-    fn test_fits_multi_big() {
-        // personal sanity checks
-        assert_eq!(u16::from_le_bytes([42,0]),42);
-        assert_eq!(u16::from_be_bytes([0,42]),42);
-
-        assert_eq!(f32::from_le_bytes([0x42,0,0,0]),f32::from_bits(0x00_00_00_42));
-        assert_eq!(f32::from_be_bytes([0,0,0,0x42]),f32::from_bits(0x00_00_00_42));
-        let cases = [
-        // type       count            offset
-        // / \  1 2 3 4 5 6 7 8   1  2  3  4  5  6  7  8
-        ([ 1, 0, 8,0,0,0,0,0,0,0, 42,42,42,42,42,42,42,42], ByteOrder::LittleEndian, TagData::Byte      (smallvec![42                ; 8])),
-        ([ 0, 1, 0,0,0,0,0,0,0,8, 42,42,42,42,42,42,42,42], ByteOrder::BigEndian,    TagData::Byte      (smallvec![42                ; 8])),
-        ([ 6, 0, 8,0,0,0,0,0,0,0, 42,42,42,42,42,42,42,42], ByteOrder::LittleEndian, TagData::SByte     (smallvec![42                ; 8])),
-        ([ 0, 6, 0,0,0,0,0,0,0,8, 42,42,42,42,42,42,42,42], ByteOrder::BigEndian,    TagData::SByte     (smallvec![42                ; 8])),
-        ([ 7, 0, 8,0,0,0,0,0,0,0, 42,42,42,42,42,42,42,42], ByteOrder::LittleEndian, TagData::Undefined (smallvec![42                ; 8])),
-        ([ 0, 7, 0,0,0,0,0,0,0,8, 42,42,42,42,42,42,42,42], ByteOrder::BigEndian,    TagData::Undefined (smallvec![42                ; 8])),
-        ([ 2, 0, 8,0,0,0,0,0,0,0, 42,42,42,42,42,42,42, 0], ByteOrder::LittleEndian, TagData::Ascii     ("*******\0".as_bytes().into()   )),
-        ([ 0, 2, 0,0,0,0,0,0,0,8, 42,42,42,42,42,42,42, 0], ByteOrder::BigEndian,    TagData::Ascii     ("*******\0".as_bytes().into()   )),
-        ([ 3, 0, 4,0,0,0,0,0,0,0, 42, 0,42, 0,42, 0,42, 0], ByteOrder::LittleEndian, TagData::Short     (smallvec![42                ; 4])),
-        ([ 0, 3, 0,0,0,0,0,0,0,4,  0,42, 0,42, 0,42, 0,42], ByteOrder::BigEndian,    TagData::Short     (smallvec![42                ; 4])),
-        ([ 8, 0, 4,0,0,0,0,0,0,0, 42, 0,42, 0,42, 0,42, 0], ByteOrder::LittleEndian, TagData::SShort    (smallvec![42                ; 4])),
-        ([ 0, 8, 0,0,0,0,0,0,0,4,  0,42, 0,42, 0,42, 0,42], ByteOrder::BigEndian,    TagData::SShort    (smallvec![42                ; 4])),
-        ([ 4, 0, 2,0,0,0,0,0,0,0, 42, 0, 0, 0,42, 0, 0, 0], ByteOrder::LittleEndian, TagData::Long      (smallvec![42                ; 2])),
-        ([ 0, 4, 0,0,0,0,0,0,0,2,  0, 0, 0,42, 0, 0, 0,42], ByteOrder::BigEndian,    TagData::Long      (smallvec![42                ; 2])),
-        ([ 9, 0, 2,0,0,0,0,0,0,0, 42, 0, 0, 0,42, 0, 0, 0], ByteOrder::LittleEndian, TagData::SLong     (smallvec![42                ; 2])),
-        ([ 0, 9, 0,0,0,0,0,0,0,2,  0, 0, 0,42, 0, 0, 0,42], ByteOrder::BigEndian,    TagData::SLong     (smallvec![42                ; 2])),
-        ([13, 0, 2,0,0,0,0,0,0,0, 42, 0, 0, 0,42, 0, 0, 0], ByteOrder::LittleEndian, TagData::Ifd       (smallvec![42                ; 2])),
-        ([ 0,13, 0,0,0,0,0,0,0,2,  0, 0, 0,42, 0, 0, 0,42], ByteOrder::BigEndian,    TagData::Ifd       (smallvec![42                ; 2])),
-        ([11, 0, 2,0,0,0,0,0,0,0, 42, 0, 0, 0,42, 0, 0, 0], ByteOrder::LittleEndian, TagData::Float     (smallvec![f32::from_bits(42); 2])),
-        ([ 0,11, 0,0,0,0,0,0,0,2,  0, 0, 0,42, 0, 0, 0,42], ByteOrder::BigEndian,    TagData::Float     (smallvec![f32::from_bits(42); 2])),
-        // we special-case IFD
-        ];
-        for (buf, byte_order, res) in cases {
-            let mut r = EndianReader::wrap(io::Cursor::new(buf), byte_order);
-            assert_eq!(IfdEntry::from_reader(&mut r, true).unwrap(), IfdEntry::Value(res.try_into().unwrap()));
-            assert_eq!(r.stream_position().unwrap(), buf.len() as u64);
-        }
+    macro_rules! test_bufferedentry_into_slice {
+        ($t:ty, $tag_type:ident, $name:ident) => {
+            #[test]
+            fn $name() {
+                let v = smallvec![42 as $t; 2];
+                let e = TagData::$tag_type(v.clone());
+                println!("testing for type {}", std::any::type_name::<$t>());
+                dbg!(&e);
+                assert_eq!(&v[..], <&[$t]>::try_from(&e).unwrap());
+            }
+        };
     }
 
-    #[test]
     #[rustfmt::skip]
-    fn test_notfits_notbig() {
-        // personal sanity checks
-        assert_eq!(u16::from_le_bytes([42,0]),42);
-        assert_eq!(u16::from_be_bytes([0,42]),42);
+    mod into_slice {
+        use super::*;
 
-        assert_eq!(f32::from_le_bytes([0x42,0,0,0]),f32::from_bits(0x00_00_00_42));
-        assert_eq!(f32::from_be_bytes([0,0,0,0x42]),f32::from_bits(0x00_00_00_42));
-        let cases = [
-        // type  count    offset
-        // /\   /     \   /     \
-        ([ 1, 0, 5,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, 5, TagType::BYTE      ),
-        ([ 0, 1, 0,0,0,5,  0, 0, 0,42], ByteOrder::BigEndian   , 5, TagType::BYTE      ),
-        ([ 6, 0, 5,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, 5, TagType::SBYTE     ),
-        ([ 0, 6, 0,0,0,5,  0, 0, 0,42], ByteOrder::BigEndian   , 5, TagType::SBYTE     ),
-        ([ 7, 0, 5,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, 5, TagType::UNDEFINED ),
-        ([ 0, 7, 0,0,0,5,  0, 0, 0,42], ByteOrder::BigEndian   , 5, TagType::UNDEFINED ),
-        ([ 2, 0, 5,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, 5, TagType::ASCII     ),
-        ([ 0, 2, 0,0,0,5,  0, 0, 0,42], ByteOrder::BigEndian   , 5, TagType::ASCII     ),
-        ([ 3, 0, 3,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, 3, TagType::SHORT     ),
-        ([ 0, 3, 0,0,0,3,  0, 0, 0,42], ByteOrder::BigEndian   , 3, TagType::SHORT     ),
-        ([ 8, 0, 3,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, 3, TagType::SSHORT    ),
-        ([ 0, 8, 0,0,0,3,  0, 0, 0,42], ByteOrder::BigEndian   , 3, TagType::SSHORT    ),
-        ([ 4, 0, 2,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, 2, TagType::LONG      ),
-        ([ 0, 4, 0,0,0,2,  0, 0, 0,42], ByteOrder::BigEndian   , 2, TagType::LONG      ),
-        ([13, 0, 2,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, 2, TagType::IFD       ),
-        ([ 0,13, 0,0,0,2,  0, 0, 0,42], ByteOrder::BigEndian   , 2, TagType::IFD       ),
-        ([ 9, 0, 2,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, 2, TagType::SLONG     ),
-        ([ 0, 9, 0,0,0,2,  0, 0, 0,42], ByteOrder::BigEndian   , 2, TagType::SLONG     ),
-        ([ 11,0, 2,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, 2, TagType::FLOAT     ),
-        ([ 0,11, 0,0,0,2,  0, 0, 0,42], ByteOrder::BigEndian   , 2, TagType::FLOAT     ),
-        ([ 12,0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, 1, TagType::DOUBLE    ),
-        ([ 0,12, 0,0,0,1,  0, 0, 0,42], ByteOrder::BigEndian   , 1, TagType::DOUBLE    ),
-        ([ 5, 0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, 1, TagType::RATIONAL  ),
-        ([ 0, 5, 0,0,0,1,  0, 0, 0,42], ByteOrder::BigEndian   , 1, TagType::RATIONAL  ),
-        ([ 10,0, 1,0,0,0, 42, 0, 0, 0], ByteOrder::LittleEndian, 1, TagType::SRATIONAL ),
-        ([ 0,10, 0,0,0,1,  0, 0, 0,42], ByteOrder::BigEndian   , 1, TagType::SRATIONAL ),
-        // Double doesn't fit, neither 8-types and we special-case IFD
-        ];
-        for (buf, byte_order, count, tag_type) in cases {
-            let mut r = EndianReader::wrap(io::Cursor::new(buf), byte_order);
-            assert_eq!(IfdEntry::from_reader(&mut r, false).unwrap(), IfdEntry::Offset(Offset { tag_type, count, offset: 42 }));
-            assert_eq!(r.stream_position().unwrap(), buf.len() as u64);
-        }
-    }
-
-    #[test]
-    #[rustfmt::skip]
-    fn test_notfits_big() {
-        // personal sanity checks
-        assert_eq!(u16::from_le_bytes([42,0]),42);
-        assert_eq!(u16::from_be_bytes([0,42]),42);
-
-        assert_eq!(f32::from_le_bytes([0x42,0,0,0]),f32::from_bits(0x00_00_00_42));
-        assert_eq!(f32::from_be_bytes([0,0,0,0x42]),f32::from_bits(0x00_00_00_42));
-        let cases = [
-        // type       count            offset
-        // / \  1 2 3 4 5 6 7 8   1  2  3  4  5  6  7  8
-        ([ 1, 0, 9,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, 9, TagType::BYTE      ),
-        ([ 0, 1, 0,0,0,0,0,0,0,9,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian   , 9, TagType::BYTE      ),
-        ([ 6, 0, 9,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, 9, TagType::SBYTE     ),
-        ([ 0, 6, 0,0,0,0,0,0,0,9,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian   , 9, TagType::SBYTE     ),
-        ([ 7, 0, 9,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, 9, TagType::UNDEFINED ),
-        ([ 0, 7, 0,0,0,0,0,0,0,9,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian   , 9, TagType::UNDEFINED ),
-        ([ 2, 0, 9,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, 9, TagType::ASCII     ),
-        ([ 0, 2, 0,0,0,0,0,0,0,9,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian   , 9, TagType::ASCII     ),
-        ([ 3, 0, 5,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, 5, TagType::SHORT     ),
-        ([ 0, 3, 0,0,0,0,0,0,0,5,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian   , 5, TagType::SHORT     ),
-        ([ 8, 0, 5,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, 5, TagType::SSHORT    ),
-        ([ 0, 8, 0,0,0,0,0,0,0,5,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian   , 5, TagType::SSHORT    ),
-        ([ 4, 0, 3,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, 3, TagType::LONG      ),
-        ([ 0, 4, 0,0,0,0,0,0,0,3,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian   , 3, TagType::LONG      ),
-        ([ 9, 0, 3,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, 3, TagType::SLONG     ),
-        ([ 0, 9, 0,0,0,0,0,0,0,3,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian   , 3, TagType::SLONG     ),
-        ([13, 0, 3,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, 3, TagType::IFD       ),
-        ([ 0,13, 0,0,0,0,0,0,0,3,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian   , 3, TagType::IFD       ),
-        ([16, 0, 3,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, 3, TagType::LONG8     ),
-        ([ 0,16, 0,0,0,0,0,0,0,3,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian   , 3, TagType::LONG8     ),
-        ([17, 0, 3,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, 3, TagType::SLONG8    ),
-        ([ 0,17, 0,0,0,0,0,0,0,3,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian   , 3, TagType::SLONG8    ),
-        ([18, 0, 3,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, 3, TagType::IFD8      ),
-        ([ 0,18, 0,0,0,0,0,0,0,3,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian   , 3, TagType::IFD8      ),
-        ([11, 0, 3,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, 3, TagType::FLOAT     ),
-        ([ 0,11, 0,0,0,0,0,0,0,3,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian   , 3, TagType::FLOAT     ),
-        ([12, 0, 2,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, 2, TagType::DOUBLE    ),
-        ([ 0,12, 0,0,0,0,0,0,0,2,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian   , 2, TagType::DOUBLE    ),
-        ([ 5, 0, 2,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, 2, TagType::RATIONAL  ),
-        ([ 0, 5, 0,0,0,0,0,0,0,2,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian   , 2, TagType::RATIONAL  ),
-        ([10, 0, 2,0,0,0,0,0,0,0, 42, 0, 0, 0, 0, 0, 0, 0], ByteOrder::LittleEndian, 2, TagType::SRATIONAL ),
-        ([ 0,10, 0,0,0,0,0,0,0,2,  0, 0, 0, 0, 0, 0, 0,42], ByteOrder::BigEndian   , 2, TagType::SRATIONAL ),
-        // we special-case IFD
-        ];
-        for (buf, byte_order, count, tag_type) in cases {
-            let mut r = EndianReader::wrap(io::Cursor::new(buf), byte_order);
-            assert_eq!(IfdEntry::from_reader(&mut r, true).unwrap(), IfdEntry::Offset(Offset { tag_type, count, offset: 42 }));
-            assert_eq!(r.stream_position().unwrap(), buf.len() as u64);
-        }
+        test_bufferedentry_into_slice!(i8 , SByte , test_i8_slice     );
+        test_bufferedentry_into_slice!(i16, SShort, test_i16_slice    );
+        test_bufferedentry_into_slice!(i32, SLong , test_i32_slice    );
+        test_bufferedentry_into_slice!(i64, SLong8, test_i64_slice    );
+        test_bufferedentry_into_slice!(u8 , Byte  , test_u8_slice     );
+        test_bufferedentry_into_slice!(u16, Short , test_u16_slice    );
+        test_bufferedentry_into_slice!(u32, Ifd   , test_u32_ifd_slice);
+        test_bufferedentry_into_slice!(u32, Long  , test_u32_slice    );
+        test_bufferedentry_into_slice!(u64, Ifd8  , test_u64_ifd_slice);
+        test_bufferedentry_into_slice!(u64, Long8 , test_u64_slice    );
+        test_bufferedentry_into_slice!(f32, Float , test_f32_slice    );
+        test_bufferedentry_into_slice!(f64, Double, test_f64_slice    );
     }
 }

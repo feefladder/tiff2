@@ -16,16 +16,19 @@ use crate::structs::tags::CompressionMethod;
 /// override the default decoder implementations.
 ///
 /// ```
-/// use tiff2::decoder::DecoderRegistry;
+/// use tiff2::loader::DecoderRegistry;
 ///
 /// // Default registry includes Deflate, LZW, JPEG, ZSTD.
 /// let registry = DecoderRegistry::default();
+/// assert_eq!(registry.0.len(), 4);
 ///
 /// // Empty registry for manual configuration.
 /// let empty = DecoderRegistry::empty();
+/// assert_eq!(empty.0.len(), 0);
 /// ```
 #[derive(Debug)]
-pub struct DecoderRegistry(HashMap<CompressionMethod, Box<dyn Decoder>>);
+#[non_exhaustive]
+pub struct DecoderRegistry(pub HashMap<CompressionMethod, Box<dyn Decoder>>);
 
 impl DecoderRegistry {
     /// Create a new decoder registry with no decoders registered

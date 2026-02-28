@@ -1,5 +1,6 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use rand::{Rng, SeedableRng};
+use criterion::{criterion_group, criterion_main, Criterion};
+use rand::{RngExt, SeedableRng};
+use std::hint::black_box;
 ///
 /// [1 2 3 4 5 6 7 8] n_samp = 2
 /// [1 2]| |
@@ -68,7 +69,7 @@ fn benchmark_horizontal_difference(c: &mut Criterion) {
     for input_size in input_sizes {
         for sample_size in sample_sizes {
             let mut rng = rand::rngs::StdRng::seed_from_u64(input_size + sample_size);
-            let data: Vec<u8> = (0..input_size).map(|_| rng.gen()).collect();
+            let data: Vec<u8> = (0..input_size).map(|_| rng.random()).collect();
             // Run the benchmarks
             c.bench_function(&format!("hdiff_ssamp_buf{input_size}_{sample_size}"), |b| {
                 b.iter(|| {

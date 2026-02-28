@@ -1,10 +1,10 @@
-use crate::{
-    saver::metadata::{error::SaverError, ifd::IfdSaver},
-    structs::{TagData, Tiff},
-    ByteOrder,
-};
 use exn::ResultExt;
 use smallvec::smallvec;
+
+use crate::saver::metadata::error::SaverError;
+use crate::saver::metadata::ifd::IfdSaver;
+use crate::structs::{TagData, Tiff};
+use crate::ByteOrder;
 
 pub mod error;
 mod ifd;
@@ -42,8 +42,8 @@ impl Tiff {
 
     fn ifd_saver(&self, ifd_offset: u64) -> IfdSaver {
         IfdSaver::from_ifd(
-            ifd_offset,
             self.ifds[&ifd_offset].clone(),
+            ifd_offset,
             self.bigtiff,
             self.byte_order,
         )
@@ -140,6 +140,9 @@ mod test {
 
     #[test]
     fn test_save_tiff_roundtrip_single_tile_hack() {
+        // this is a round-trip test, mainly to get a feel for the more low-level apis
+        // the hack is that in stead of having multiple tiles, all offsets refer to the same tile
+        // Also tile ranges are incorrect for edge tiles
         let tile_data = [42u8; 8 * 8];
         let tiff = Tiff {
             ifds: BTreeMap::from([(

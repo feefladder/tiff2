@@ -3,6 +3,8 @@ use crate::ByteOrder;
 /// Fix endianness. use the constant NATIVE_ENDIAN for conversion to the host
 ///
 /// ```
+/// use tiff2::{NATIVE_ENDIAN, ByteOrder};
+/// use tiff2::util::fix_endianness;
 /// // assuming we're on a little-endian system
 /// let mut val = 42u64.to_be_bytes();
 /// fix_endianness(&mut val, ByteOrder::BigEndian, NATIVE_ENDIAN, 64);

@@ -1,12 +1,10 @@
 use bytes::buf;
 use exn::bail;
 
-use crate::{
-    error::{TiffError, TiffResult, TiffUnsupportedError},
-    loader::tile::ChunkOpts,
-    util::fix_endianness,
-    ByteOrder, NATIVE_ENDIAN,
-};
+use crate::error::{TiffError, TiffResult, TiffUnsupportedError};
+use crate::loader::tile::ChunkOpts;
+use crate::util::fix_endianness;
+use crate::{ByteOrder, NATIVE_ENDIAN};
 
 pub(crate) fn predict_hdiff(buffer: &mut [u8], chopts: &ChunkOpts, tile_x: u32) -> TiffResult<()> {
     let output_row_stride = chopts.output_row_stride(tile_x)?;

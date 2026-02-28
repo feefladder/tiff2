@@ -1,13 +1,15 @@
 use std::fmt::Display;
 
+use smallvec::SmallVec;
+
 use crate::structs::TagType;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CastError {
     pub kind: CastErrorKind,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum CastErrorKind {
     InvalidCast {
         tag_type: TagType,
@@ -19,6 +21,9 @@ pub enum CastErrorKind {
     },
     MultipleValues {
         number_of_values: usize,
+    },
+    InvalidString {
+        str: SmallVec<[u8; 8]>,
     },
 }
 
@@ -43,6 +48,12 @@ impl CastError {
             kind: CastErrorKind::MultipleValues { number_of_values },
         }
     }
+
+    pub(crate) fn invalid_string(str: SmallVec<[u8; 8]>) -> Self {
+        Self {
+            kind: CastErrorKind::InvalidString { str },
+        }
+    }
 }
 
 impl Display for CastError {
@@ -64,6 +75,7 @@ impl Display for CastErrorKind {
                 tag_type,
                 target_type,
             } => write!(f, "casting {tag_type:?} to {target_type} is invalid"),
+            CastErrorKind::InvalidString { str } => write!(f, "string {str:?} not 0-ended ASCII"),
         }
     }
 }

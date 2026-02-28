@@ -33,33 +33,6 @@ pub const NATIVE_ENDIAN: ByteOrder = ByteOrder::BigEndian;
 #[cfg(target_endian = "little")]
 pub const NATIVE_ENDIAN: ByteOrder = ByteOrder::LittleEndian;
 
-macro_rules! cast_fn {
-    ($name:ident, $type:ty, $length:literal) => {
-        /// cast a $lenght-byte array to $type, respecting byte order
-        #[inline(always)]
-        pub fn $name(&self, bytes: [u8; $length]) -> $type {
-            match self {
-                ByteOrder::LittleEndian => <$type>::from_le_bytes(bytes),
-                ByteOrder::BigEndian => <$type>::from_be_bytes(bytes),
-            }
-        }
-    };
-}
-
-impl ByteOrder {
-    cast_fn!(u8, u8, 1);
-    cast_fn!(i8, i8, 1);
-    cast_fn!(u16, u16, 2);
-    cast_fn!(i16, i16, 2);
-    cast_fn!(u32, u32, 4);
-    cast_fn!(i32, i32, 4);
-    cast_fn!(u64, u64, 8);
-    cast_fn!(i64, i64, 8);
-
-    cast_fn!(f32, f32, 4);
-    cast_fn!(f64, f64, 8);
-}
-
 #[derive(Debug, Copy, Clone, PartialEq)]
 /// Chunk type of the internal representation
 pub enum ChunkType {

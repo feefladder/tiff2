@@ -1,9 +1,10 @@
-use crate::{error::TiffResult, loader::tile::ChunkOpts, structs::tags::CompressionMethod};
-use std::{
-    collections::HashMap,
-    fmt::Debug,
-    io::{Cursor, Read},
-};
+use std::collections::HashMap;
+use std::fmt::Debug;
+use std::io::{Cursor, Read};
+
+use crate::error::TiffResult;
+use crate::loader::tile::ChunkOpts;
+use crate::structs::tags::CompressionMethod;
 
 #[derive(Debug)]
 pub struct EncoderRegistry(HashMap<CompressionMethod, Box<dyn Encoder>>);

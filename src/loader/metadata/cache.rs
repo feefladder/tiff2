@@ -7,11 +7,10 @@ use std::ops::{Bound, RangeBounds};
 
 use bytes::Bytes;
 use exn::{OptionExt, ResultExt};
-use log::{debug, error};
 
 use crate::loader::metadata::error::{CacheMiss, MetaError};
 use crate::loader::metadata::{MetaResult, Tiff, TiffLoader};
-use crate::structs::num_entries_size;
+use crate::structs::{num_entries_size, IfdEntry, TagData};
 
 pub struct CogCache {
     cache: BTreeMap<usize, Bytes>,
@@ -71,35 +70,37 @@ impl CogCache {
             })?,
             offset,
         )?;
-        // so the iterator magic
-        // (`ifd_loader.insert(ifd_loader.value_ranges().map(get_data))`) breaks
-        // down here, because we can't give an iterator that borrows &ifd_loader
-        // and pass it to ifd_loader.load_ifd_values(&mut self).
-        //
-        // Anyways that would be inserting stuff in an iterator we're iterating
-        //
-        // At most that's ~~one~~ _three_ allocations per ifd, so that's ok
-        //
-        // let's allocate some vecs
-        let mut ifd_value_bufs = Vec::with_capacity(ifd_loader.count());
         // in the happy path, everything is loaded, so no allocations there
         let mut deferred_values = Vec::new();
         let mut deferred_tags = Vec::new();
 
         // try to get all values from the cache
-        for (t, range) in ifd_loader.value_ranges() {
-            match self.slice(range.clone()) {
-                Ok(data) => ifd_value_bufs.push((t, data)),
+        for (t, entry) in ifd_loader.deferred_values_mut() {
+            let IfdEntry::Offset(o) = entry else {
+                unreachable!()
+            };
+            match self.slice(o.range().clone()) {
+                Ok(data) => {
+                    *entry = IfdEntry::Value(
+                        TagData::from_buffer(
+                            &data,
+                            o.tag_type,
+                            o.count as usize,
+                            self.tiff.byte_order,
+                        )
+                        .unwrap(),
+                    )
+                }
                 Err(e) => {
-                    error!("{e}");
                     // insert magic caching/filtering strategies here
-                    deferred_values.push(range);
-                    deferred_tags.push(t);
+                    // For now, we just error at the end with all deferred values
+                    deferred_values.push(o.range());
+                    deferred_tags.push(*t);
                 }
             }
         }
-        ifd_loader.load_ifd_values(offset, &mut ifd_value_bufs.into_iter())?;
         self.tiff.insert_ifd(offset, ifd_loader.finish(), next_ifd);
+
         if !deferred_values.is_empty() {
             let n = deferred_tags.len();
             Err(MetaError::incomplete_ifd(
@@ -366,7 +367,7 @@ mod test {
                 Ok(Some(v)) => true,
                 Ok(None) => false,
             } {
-                println!("weee");
+                // println!("weee");
             }
             Ok(writer.finish())
         }

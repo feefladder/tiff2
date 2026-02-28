@@ -243,7 +243,7 @@ mod tag_type {
     impl TagType {
         /// Returns the size of the type in bytes. Useful for determining total
         /// buffer size.
-        pub fn size(&self) -> usize {
+        pub const fn size(&self) -> usize {
             match self {
                 BYTE | ASCII | SBYTE | UNDEFINED => 1,
                 SHORT | SSHORT => 2,
@@ -253,7 +253,7 @@ mod tag_type {
             }
         }
         /// returns the size of the underlying datatype. Useful for byte-order manipulations.
-        pub fn primitive_size(&self) -> u8 {
+        pub const fn primitive_size(&self) -> u8 {
             match self {
                 BYTE | ASCII | SBYTE | UNDEFINED => 1,
                 SHORT | SSHORT => 2,

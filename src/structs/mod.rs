@@ -1,7 +1,8 @@
 mod entry;
-pub use entry::{Directory, IfdEntry, Offset, TagData};
+pub use entry::{IfdEntry, Offset, TagData};
 /// IFD struct for non-images
 mod ifd;
+pub(crate) use ifd::offset_tag_type;
 pub use ifd::{entry_size, num_entries_size, offset_size, Ifd};
 /// IFD struct and functions for IFDs related to images
 // mod image;
@@ -14,6 +15,8 @@ pub use tags::{Tag, TagType};
 pub mod tiff;
 pub use tiff::Tiff;
 pub mod error;
+mod tile;
+pub use tile::{TileData, TileDataType};
 
 pub struct Point<T> {
     pub x: T,
