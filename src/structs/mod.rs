@@ -4,8 +4,8 @@ pub use entry::{Directory, IfdEntry, Offset, TagData};
 mod ifd;
 pub use ifd::{entry_size, num_entries_size, offset_size, Ifd};
 /// IFD struct and functions for IFDs related to images
-mod image;
-pub use image::{Image, StripDecodeState, TileAttributes};
+// mod image;
+// pub use image::{Image, StripDecodeState, TileAttributes};
 /// Tags: type, and important ones here
 pub mod tags;
 pub use tags::{Tag, TagType};
@@ -13,6 +13,7 @@ pub use tags::{Tag, TagType};
 /// re-implemented for more specific tiff types
 pub mod tiff;
 pub use tiff::Tiff;
+pub mod error;
 
 pub struct Point<T> {
     pub x: T,

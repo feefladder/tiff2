@@ -1,7 +1,9 @@
+use std::any::type_name;
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::ops::Range;
 
+use exn::{Exn, ResultExt};
 use smallvec::{smallvec, SmallVec};
 
 use crate::error::{
@@ -10,6 +12,7 @@ use crate::error::{
     TiffResult,
 };
 use crate::loader::EndianReader;
+use crate::structs::error::CastError;
 use crate::structs::{Tag, TagType};
 use crate::util::fix_endianness;
 use crate::{ByteOrder, NATIVE_ENDIAN};
@@ -148,54 +151,54 @@ impl IfdEntry {
         }
     }
 
-    /// Write this entry to the writer
-    ///
-    /// ## Errors
-    ///
-    /// if the value doesn't fit in the offset field
-    pub(crate) fn write_to<W: Write + Seek>(
-        &self,
-        w: &mut EndianReader<W>,
-        bigtiff: bool,
-    ) -> TiffResult<()> {
-        match &self {
-            IfdEntry::Offset(o) => {
-                w.write_u16(o.tag_type.to_u16()).unwrap();
-                if bigtiff {
-                    w.write_u64(o.count).unwrap();
-                    w.write_u64(o.offset).unwrap();
-                } else {
-                    w.write_u32(u32::try_from(o.count)?).unwrap();
-                    w.write_u32(u32::try_from(o.offset)?).unwrap();
-                }
-            }
-            IfdEntry::Value(v) => {
-                w.write_u16(v.tag_type().to_u16()).unwrap();
-                if bigtiff {
-                    if v.as_ref().len() > 8 {
-                        todo!("proper error handling")
-                    }
-                    w.write_u64(u64::try_from(v.len())?).unwrap();
-                    // this part is broken, because we need to fix endianness
-                    // TODO: ditch the reader and make everything work on buffers, so we can fix endianness
-                    // or something...
-                    // I don't really like the EndianReader
-                    w.write(v.as_ref()).unwrap();
-                    w.seek(SeekFrom::Current(8 - i64::try_from(v.as_ref().len())?))
-                        .unwrap();
-                } else {
-                    if v.as_ref().len() > 4 {
-                        todo!("proper error handling")
-                    }
-                    w.write_u32(u32::try_from(v.len())?).unwrap();
-                    w.write(v.as_ref()).unwrap();
-                    w.seek(SeekFrom::Current(4 - i64::try_from(v.as_ref().len())?))
-                        .unwrap();
-                }
-            }
-        };
-        Ok(())
-    }
+    // /// Write this entry to the writer
+    // ///
+    // /// ## Errors
+    // ///
+    // /// if the value doesn't fit in the offset field
+    // pub(crate) fn write_to<W: Write + Seek>(
+    //     &self,
+    //     w: &mut EndianReader<W>,
+    //     bigtiff: bool,
+    // ) -> TiffResult<()> {
+    //     match &self {
+    //         IfdEntry::Offset(o) => {
+    //             w.write_u16(o.tag_type.to_u16()).unwrap();
+    //             if bigtiff {
+    //                 w.write_u64(o.count).unwrap();
+    //                 w.write_u64(o.offset).unwrap();
+    //             } else {
+    //                 w.write_u32(u32::try_from(o.count)?).unwrap();
+    //                 w.write_u32(u32::try_from(o.offset)?).unwrap();
+    //             }
+    //         }
+    //         IfdEntry::Value(v) => {
+    //             w.write_u16(v.tag_type().to_u16()).unwrap();
+    //             if bigtiff {
+    //                 if v.as_ref().len() > 8 {
+    //                     todo!("proper error handling")
+    //                 }
+    //                 w.write_u64(u64::try_from(v.len())?).unwrap();
+    //                 // this part is broken, because we need to fix endianness
+    //                 // TODO: ditch the reader and make everything work on buffers, so we can fix endianness
+    //                 // or something...
+    //                 // I don't really like the EndianReader
+    //                 w.write(v.as_ref()).unwrap();
+    //                 w.seek(SeekFrom::Current(8 - i64::try_from(v.as_ref().len())?))
+    //                     .unwrap();
+    //             } else {
+    //                 if v.as_ref().len() > 4 {
+    //                     todo!("proper error handling")
+    //                 }
+    //                 w.write_u32(u32::try_from(v.len())?).unwrap();
+    //                 w.write(v.as_ref()).unwrap();
+    //                 w.seek(SeekFrom::Current(4 - i64::try_from(v.as_ref().len())?))
+    //                     .unwrap();
+    //             }
+    //         }
+    //     };
+    //     Ok(())
+    // }
 }
 
 /// Entry with buffered data that is properly aligned.
@@ -402,77 +405,75 @@ impl AsRef<[u8]> for TagData {
     }
 }
 
-macro_rules! impl_try_from_processed_entry {
+macro_rules! impl_tagdata_casts {
     (
         $target:ty,
         [$($from_small:ident),*],
         $from_exact:ident,
-        [$($from_large:ident),*],
-        $error_type:ident
+        [$($from_large:ident),*]
     ) => {
         impl TryFrom<&TagData> for $target {
-            type Error = TiffError;
+            type Error = Exn<CastError>;
 
             fn try_from(val: &TagData) -> Result<Self, Self::Error> {
                 if val.len() != 1 {
-                    return Err(TiffFormatError::InconsistentSizesEncountered(val.clone()).into());
+                    return Err(CastError::multiple_values(val.len()).into());
                 }
                 match val {
                     $(TagData::$from_small(v) => Ok(Self::from(v[0])),)*
                     TagData::$from_exact(v) => Ok(v[0]),
-                    $(TagData::$from_large(v) => Ok(Self::try_from(v[0])?),)*
-                    _ => Err($error_type(val.clone()).into()),
+                    $(TagData::$from_large(v) => Self::try_from(v[0]).or_raise(|| CastError::overflow(v[0] as _, type_name::<$target>())),)*
+                    _ => Err(CastError::invalid_cast(val.tag_type(), type_name::<$target>()).into()),
                 }
             }
         }
 
         impl TryFrom<TagData> for $target {
-            type Error = TiffError;
+            type Error = Exn<CastError>;
 
             fn try_from(val: TagData) -> Result<Self, Self::Error> {
-                if val.len() != 1 {
-                    return Err(TiffFormatError::InconsistentSizesEncountered(val.clone()).into());
-                }
-                match val {
-                    $(TagData::$from_small(v) => Ok(Self::from(v[0])),)*
-                    TagData::$from_exact(v) => Ok(v[0]),
-                    $(TagData::$from_large(v) => Ok(Self::try_from(v[0])?),)*
-                    _ => Err($error_type(val.clone()).into()),
-                }
+                <$target>::try_from(&val)
+            }
+        }
+
+        // Inverse: Convert from integer to TagData
+        impl From<$target> for TagData {
+            fn from(value: $target) -> Self {
+                TagData::$from_exact(smallvec![value])
             }
         }
 
         impl TryFrom<TagData> for Vec<$target> {
-            type Error = TiffError;
+            type Error = Exn<CastError>;
 
             fn try_from(val: TagData) -> Result<Self, Self::Error> {
                 match val {
                     // https://stackoverflow.com/q/48308759/14681457
                     $(TagData::$from_small(v) => Ok(v.into_iter().map(<$target>::from).collect()),)*
                     TagData::$from_exact(v) => Ok(v.into_vec()),
-                    $(TagData::$from_large(v) => Ok(v.into_iter().map(<$target>::try_from).collect::<Result<Self, _>>()?),)*
-                    _ => Err($error_type(val.clone()).into()),
+                    $(TagData::$from_large(v) => Ok(v.into_iter().map(|v| <$target>::try_from(v).or_raise(|| CastError::overflow(v as _, type_name::<Vec<$target>>()))).collect::<Result<Self, _>>()?),)*
+                    _ => Err(CastError::invalid_cast(val.tag_type(), type_name::<$target>()).into()),
                 }
             }
         }
 
         impl<'a> TryFrom<&'a TagData> for &'a[$target] {
-            type Error = TiffError;
+            type Error = CastError;
             fn try_from(val: &'a TagData) -> Result<Self, Self::Error> {
                 match &val {
                     TagData::$from_exact(v) => Ok(&v),
-                    _ => Err($error_type(val.clone()).into()),
+                    _ => Err(CastError::invalid_cast(val.tag_type(), type_name::<&[$target]>())),
                 }
             }
         }
 
 
         impl<'a> TryFrom<&'a mut TagData> for &'a mut [$target] {
-            type Error = TiffError;
+            type Error = CastError;
             fn try_from(val: &'a mut TagData) -> Result<Self, Self::Error> {
                 match val {
                     TagData::$from_exact(ref mut v) => Ok(v),
-                    _ => Err($error_type(val.clone()).into()),
+                    _ => Err(CastError::invalid_cast(val.tag_type(), type_name::<&mut [$target]>())),
                 }
             }
         }
@@ -491,10 +492,9 @@ macro_rules! impl_try_from_processed_entry {
             }
         }
 
-        // Inverse: Convert from integer to TagData
-        impl From<$target> for TagData {
-            fn from(value: $target) -> Self {
-                TagData::$from_exact(smallvec![value])
+        impl From<SmallVec<[$target; 8/std::mem::size_of::<$target>()]>> for TagData {
+            fn from(smallvec: SmallVec<[$target; 8/std::mem::size_of::<$target>()]>) -> Self {
+                TagData::$from_exact(smallvec)
             }
         }
     };
@@ -505,18 +505,18 @@ pub use macro_impls::*;
 #[rustfmt::skip]
 mod macro_impls {
     use super::*;
-    impl_try_from_processed_entry!(u8, [Ascii, Undefined], Byte,[Short, Ifd, Long, Ifd8, Long8]   , UnsignedIntegerExpected);
-    impl_try_from_processed_entry!(u16,                   [Byte],Short,[Ifd, Long, Ifd8, Long8]   , UnsignedIntegerExpected );
-    impl_try_from_processed_entry!(u32,                   [Byte, Short, Ifd],Long,[Ifd8, Long8]   , UnsignedIntegerExpected );
-    impl_try_from_processed_entry!(u64,                   [Byte, Short, Ifd, Long, Ifd8],Long8, [], UnsignedIntegerExpected );
+    impl_tagdata_casts!(u8, [Ascii, Undefined], Byte,[Short, Ifd, Long, Ifd8, Long8]   );
+    impl_tagdata_casts!(u16,                   [Byte],Short,[Ifd, Long, Ifd8, Long8]   );
+    impl_tagdata_casts!(u32,                   [Byte, Short, Ifd],Long,[Ifd8, Long8]   );
+    impl_tagdata_casts!(u64,                   [Byte, Short, Ifd, Long, Ifd8],Long8, []);
 
-    impl_try_from_processed_entry!(i8, [], SByte,[SShort, SLong, SLong8]   , SignedIntegerExpected );
-    impl_try_from_processed_entry!(i16,   [SByte],SShort,[SLong, SLong8]   , SignedIntegerExpected);
-    impl_try_from_processed_entry!(i32,   [SByte, SShort],SLong,[SLong8]   , SignedIntegerExpected);
-    impl_try_from_processed_entry!(i64,   [SByte, SShort, SLong],SLong8, [], SignedIntegerExpected);
+    impl_tagdata_casts!(i8, [], SByte,[SShort, SLong, SLong8]   );
+    impl_tagdata_casts!(i16,   [SByte],SShort,[SLong, SLong8]   );
+    impl_tagdata_casts!(i32,   [SByte, SShort],SLong,[SLong8]   );
+    impl_tagdata_casts!(i64,   [SByte, SShort, SLong],SLong8, []);
 
-    impl_try_from_processed_entry!(f32, [], Float,          [], FloatExpected);
-    impl_try_from_processed_entry!(f64,    [Float], Double, [], FloatExpected);
+    impl_tagdata_casts!(f32, [], Float,          []);
+    impl_tagdata_casts!(f64,    [Float], Double, []);
 
     // #[cfg(target_pointer_width = "32")]
     // impl_try_from_processed_entry!(usize, [Byte],Short,[Ifd, Long, Ifd8, Long8], UnsignedIntegerExpected);

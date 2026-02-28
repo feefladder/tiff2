@@ -1042,7 +1042,7 @@ mod test {
             Image::check_ifd(&ifd).expect("not a valid ifd"),
             BTreeMap::new()
         );
-        let res_img = Image::from_ifd(ifd, byte_order).expect("Could not build image frim ifd");
+        let res_img = Image::from_ifd(ifd, byte_order).expect("Could not build image from ifd");
         let tg_img = Image {
             ifd: Ifd::from(BTreeMap::new()),
             chunk_opts: Arc::new(ChunkOpts {
@@ -1077,7 +1077,7 @@ mod test {
             Image::check_ifd(&ifd).expect("not a valid ifd"),
             BTreeMap::new()
         );
-        let res_img = Image::from_ifd(ifd, byte_order).expect("Could not build image frim ifd");
+        let res_img = Image::from_ifd(ifd, byte_order).expect("Could not build image from ifd");
         let tg_img = Image {
             ifd: Ifd::from(BTreeMap::new()),
             chunk_opts: Arc::new(ChunkOpts {

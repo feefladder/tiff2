@@ -10,12 +10,35 @@ use exn::{OptionExt, ResultExt};
 use log::{debug, error};
 
 use crate::loader::metadata::error::{CacheMiss, MetaError};
-use crate::loader::metadata::{MetaResult, Tiff};
+use crate::loader::metadata::{MetaResult, Tiff, TiffLoader};
 use crate::structs::num_entries_size;
 
 pub struct CogCache {
     cache: BTreeMap<usize, Bytes>,
     tiff: Tiff,
+}
+
+impl TiffLoader for CogCache {
+    fn from_header(buf: Bytes) -> MetaResult<Self> {
+        CogCache::new(buf)
+    }
+
+    fn try_next(&mut self) -> MetaResult<Option<u64>> {
+        self.next()
+    }
+
+    fn skip(&mut self, n: usize) -> MetaResult<Option<u64>> {
+        for _ in 0..n {
+            match self.next() {
+                Ok(_) => {}
+                Err(e) => match e.frame().error().downcast_ref::<MetaError>().unwrap().kind {
+                    super::error::MetaErrorKind::NeedMoreData => {}
+                    _ => return Err(e),
+                },
+            }
+        }
+        Ok(self.tiff.next_ifd_offset())
+    }
 }
 
 impl CogCache {
@@ -36,7 +59,6 @@ impl CogCache {
         let Some(offset) = self.tiff.next_ifd_offset() else {
             return Ok(None);
         };
-        println!("next ifd offset: {offset:x?}");
         let (mut ifd_loader, next_ifd) = self.tiff.ifd_loader(
             &self.slice(offset..).or_raise(|| {
                 // TODO: this is an advisory, too-small range which will only load the number-of-entries

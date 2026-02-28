@@ -29,14 +29,15 @@ pub const fn header_size(bigtiff: bool) -> u64 {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
 pub struct Tiff {
     // hmm, there may be a problem with encoding later, because we can only
     // insert ifds once the offset is already known and then there's no real
     // flag to say if it's written or not...
-    ifds: BTreeMap<u64, Ifd>,
-    ifd_offsets: Vec<u64>,
-    bigtiff: bool,
-    byte_order: ByteOrder,
+    pub(crate) ifds: BTreeMap<u64, Ifd>,
+    pub(crate) ifd_offsets: Vec<u64>,
+    pub(crate) bigtiff: bool,
+    pub(crate) byte_order: ByteOrder,
     // add additional global stuff such as geo-info here
 }
 

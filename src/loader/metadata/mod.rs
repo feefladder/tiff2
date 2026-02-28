@@ -2,34 +2,91 @@ use std::collections::BTreeMap;
 use std::io::Cursor;
 use std::ops::Range;
 
-use crate::loader::metadata::ifd::IfdLoader;
 use crate::loader::EndianReader;
 use crate::structs::tiff::header_size;
 use crate::structs::Ifd;
 use crate::ByteOrder;
+use crate::{loader::metadata::ifd::IfdLoader, structs::Tiff};
 
 mod cache;
 pub mod error;
 mod ifd;
+use bytes::Bytes;
 use error::MetaError;
 use exn::{bail, ResultExt};
 
 pub type MetaResult<T> = exn::Result<T, MetaError>;
 
-#[derive(Debug, Clone)]
-pub struct Tiff {
-    /// Whether we are big or small tiff
-    bigtiff: bool,
-    /// byte_order of the tiff file
-    byte_order: ByteOrder,
-    /// offsets to ifds
-    ifd_offsets: Vec<u64>,
-    /// all current ifds, indexed by offsets
+// #[derive(Debug, Clone)]
+// // TODO: should this be called `TiffLoader`? Should I like add additional methods to the bare Tiff struct?
+// pub struct Tiff {
+//     /// Whether we are big or small tiff
+//     bigtiff: bool,
+//     /// byte_order of the tiff file
+//     byte_order: ByteOrder,
+//     /// offsets to ifds
+//     ifd_offsets: Vec<u64>,
+//     /// all current ifds, indexed by offsets
+//     ///
+//     /// ```
+//     /// let ifd_5 = self.ifds[self.ifd_offsets[5]]
+//     /// ```
+//     ifds: BTreeMap<u64, Ifd>,
+// }
+
+/// The main trait for a tiff loader to implement
+///
+/// Any loader that implements this trait can be used with [`async_load`] or
+/// [`sync_load`] functions to create a functional loader
+///
+/// TODO: should there be a intermediate trait?
+///
+/// Anyways, some functions of the intermediate:
+/// ```
+/// trait TiffLoader {
+///     fn next_ifd_offset(&self) -> Option<u64>;
+///     /// get the if loader and next offset
+///     fn ifd_loader(&self, buf: &[u8], offset: u64) -> MetaResult<(IfdLoader, u64)>;
+///     /// insert this ifd into the tiff
+///     fn insert_ifd(&mut self, offset: u64, ifd: Ifd, next_offset: u64)-> MetaResult<()>;
+/// }
+/// ```
+///
+/// but then it doesn't make super much sense to layer these? Or does it?
+/// Actually it is quite possible to layer, but ideally there'd be only one
+/// trait that says "I'm a loader"
+pub trait TiffLoader: Sized + Send + Sync {
+    /// Create this loader from a buffer containing at least the header
     ///
-    /// ```
-    /// let ifd_5 = self.ifds[self.ifd_offsets[5]]
-    /// ```
-    ifds: BTreeMap<u64, Ifd>,
+    fn from_header(buf: Bytes) -> MetaResult<Self>;
+
+    /// Read this Ifd
+    ///
+    /// On Error, no state should be changed
+    fn try_next(&mut self) -> MetaResult<Option<u64>>;
+
+    /// Skip n ifds
+    ///
+    /// This method may actually load intermittent ifds from a cache
+    ///
+    /// And also it will always error on [`Tiff`]
+    fn skip(&mut self, n: usize) -> MetaResult<Option<u64>>;
+}
+
+impl TiffLoader for Tiff {
+    fn from_header(buf: Bytes) -> MetaResult<Self> {
+        Tiff::from_header(&buf)
+    }
+
+    fn try_next(&mut self) -> MetaResult<Option<u64>> {
+        self.next_ifd_offset()
+            .map(|o| Err(self.ifd_loader(&[], o).unwrap_err()))
+            .transpose()
+    }
+
+    fn skip(&mut self, _n: usize) -> MetaResult<Option<u64>> {
+        self.try_next()
+    }
 }
 
 /// So the idea is inversion-of-control, much like how `std::io::Copy` allows
@@ -196,7 +253,7 @@ impl Tiff {
     /// I think re-creating the loader is like totally acceptable. It is kind of
     /// nice to have the ifd struct which just holds data and the loader that
     /// knows how to load it??
-    pub fn ifd_loader(&mut self, buf: &[u8], offset: u64) -> MetaResult<(IfdLoader, u64)> {
+    pub fn ifd_loader(&self, buf: &[u8], offset: u64) -> MetaResult<(IfdLoader, u64)> {
         let (ifd_loader, next_ifd) =
             IfdLoader::load_ifd(buf, offset, self.bigtiff, self.byte_order)?;
         if self.ifd_offsets.contains(&next_ifd) {

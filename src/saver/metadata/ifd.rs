@@ -3,7 +3,9 @@ use smallvec::smallvec;
 
 use crate::saver::metadata::error::SaverError;
 use crate::saver::metadata::SaverResult;
-use crate::structs::{entry_size, num_entries_size, offset_size, Ifd, IfdEntry, Tag, TagData};
+use crate::structs::{
+    entry_size, num_entries_size, offset_size, Ifd, IfdEntry, Offset, Tag, TagData,
+};
 use crate::ByteOrder;
 
 /// An Ifd saver
@@ -25,7 +27,7 @@ impl IfdSaver {
     }
 
     /// Returns an iterator of Entries that still need to be changed to Offset before this can be written
-    fn to_do(&self) -> impl Iterator<Item = (&Tag, &TagData)> {
+    pub(crate) fn to_do(&self) -> impl Iterator<Item = (&Tag, &TagData)> {
         self.ifd.iter().filter_map(|(k, v)| match v {
             IfdEntry::Value(tag_data) => {
                 if u64::try_from(tag_data.as_ref().len()).unwrap() > offset_size(self.bigtiff) {
@@ -36,6 +38,26 @@ impl IfdSaver {
             }
             IfdEntry::Offset(_) => None,
         })
+    }
+
+    pub(crate) fn to_do_mut(&mut self) -> impl Iterator<Item = (&Tag, &mut IfdEntry)> {
+        self.ifd.iter_mut().filter_map(|(k, v)| match v {
+            IfdEntry::Value(tag_data) => {
+                if u64::try_from(tag_data.as_ref().len()).unwrap() > offset_size(self.bigtiff) {
+                    Some((k, v))
+                } else {
+                    None
+                }
+            }
+            IfdEntry::Offset(_) => None,
+        })
+    }
+
+    /// Replace to-do values with their corresponding in-file offsets
+    pub(crate) fn replace(&mut self, entries: impl Iterator<Item = (Tag, Offset)>) {
+        for (tag, offset) in entries {
+            self.ifd.data.insert(tag, IfdEntry::Offset(offset));
+        }
     }
 
     /// Given an IFD and a buffer, write the IFD to the buffer
@@ -50,7 +72,8 @@ impl IfdSaver {
         }
     }
 
-    fn required_len(&self) -> u64 {
+    /// The required length for this ifd without external data
+    pub(crate) fn required_len(&self) -> u64 {
         let count = u64::try_from(self.ifd.count()).unwrap();
         num_entries_size(self.bigtiff)
             + count * entry_size(self.bigtiff)

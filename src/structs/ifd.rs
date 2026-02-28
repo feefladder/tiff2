@@ -76,6 +76,11 @@ impl Ifd {
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&Tag, &IfdEntry)> {
         self.data.iter()
     }
+
+    /// Iterate this IFD in increasing tag-order
+    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = (&Tag, &mut IfdEntry)> {
+        self.data.iter_mut()
+    }
     /// The number of entries in this ifd
     pub fn count(&self) -> usize {
         self.data.len()

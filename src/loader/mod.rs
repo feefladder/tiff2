@@ -2,13 +2,13 @@ use crate::structs::tags::{Predictor, SampleFormat};
 use crate::util::fix_endianness;
 use crate::{ByteOrder, ColorType, NATIVE_ENDIAN};
 
-mod metadata;
+pub(crate) mod metadata;
 mod reader;
 pub(crate) mod tile;
 pub use reader::{CogReader, CogReaderExt, EndianReader};
 
-mod image_decoder;
-pub use image_decoder::ImageDecoder;
+// mod image_decoder;
+// pub use image_decoder::ImageDecoder;
 mod decoding_result;
 pub use decoding_result::TileData;
 

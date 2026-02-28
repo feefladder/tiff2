@@ -7,7 +7,7 @@ use crate::NATIVE_ENDIAN;
 // from image-tiff
 ///
 /// Horizontal prediction uses a horizontal differencing scheme (on full values)
-/// That
+/// That means that for unpredicting, we first need to fix endianness, so we can actually subtract meaningfully
 fn rev_hpredict_nsamp(buf: &mut [u8], bit_depth: u8, samples: usize) {
     match bit_depth {
         0..=8 => {
@@ -55,11 +55,6 @@ pub(crate) fn unpredict_hdiff<'a>(
     let bit_depth = predictor_info.bits_per_sample;
 
     for buf in buffer.chunks_exact_mut(output_row_stride) {
-        if buf.len() != output_row_stride {
-            return Err(TiffError::UsageError(
-                crate::error::UsageError::InvalidBufferSize(output_row_stride, buf.len()),
-            ));
-        }
         fix_endianness(buf, predictor_info.byte_order, NATIVE_ENDIAN, bit_depth);
         rev_hpredict_nsamp(buf, bit_depth, samples);
     }
@@ -560,8 +555,8 @@ mod test {
         // let's take this 2-value image where we only look at bytes
         let expect_le  = [3,2,  1,0,  7,6,  5,4];
         let _expected  = [0,1,  2,3,  4,5,  6,7u8];
-        //                  0     1     2     3   \_ de-shuffling indices
-        //                0     1     2     3     /  (the one the function uses)
+        //                           0     1     2     3   \_ de-shuffling indices
+        //                         0     1     2     3     /  (the one the function uses)
         let _shuffled  = [0,4,  1,5,  2,6,  3,7u8];
         let diffed     = [0,4,253,4,253,4,253,4u8];
         println!("expected: {expect_le:?}");

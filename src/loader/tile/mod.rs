@@ -115,10 +115,9 @@ impl Tile {
     }
 }
 
-/// Struct that holds all relevant metadata that is needed to ecnode/decode a chunk
+/// Struct that holds all relevant metadata that is needed to encode/decode a chunk
 /// (strip or tile).
-/// this does not include chunkoffsets or -bytes, since those may be partial and
-/// then mutated. once we implement partial tags
+/// this does not include chunkoffsets or -bytes, since loading of the tile/strip is separate
 #[derive(Debug, PartialEq, Clone)]
 pub struct ChunkOpts {
     /// tiff byte order

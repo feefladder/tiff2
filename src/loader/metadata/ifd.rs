@@ -10,6 +10,7 @@ use crate::loader::EndianReader;
 use crate::structs::{entry_size, num_entries_size, offset_size, Ifd, IfdEntry, Tag, TagData};
 use crate::ByteOrder;
 
+#[derive(Debug, Clone, PartialEq)]
 pub struct IfdLoader {
     bigtiff: bool,
     byte_order: ByteOrder,
@@ -96,6 +97,12 @@ impl IfdLoader {
             IfdEntry::Offset(o) => Some((*t, o.range())),
             IfdEntry::Value(_) => None,
         })
+    }
+
+    pub fn deferred_values_mut(&mut self) -> impl Iterator<Item = (&Tag, &mut IfdEntry)> {
+        self.ifd
+            .iter_mut()
+            .filter(|(_, v)| matches!(v, IfdEntry::Offset(_)))
     }
 
     /// Load deferred values from value ranges
