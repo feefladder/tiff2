@@ -1,20 +1,15 @@
-use bytes::buf;
-use exn::bail;
-
-use crate::error::{TiffError, TiffResult, TiffUnsupportedError};
-use crate::loader::tile::ChunkOpts;
+use crate::structs::ChunkOpts;
 use crate::util::fix_endianness;
 use crate::{ByteOrder, NATIVE_ENDIAN};
 
-pub(crate) fn predict_hdiff(buffer: &mut [u8], chopts: &ChunkOpts, tile_x: u32) -> TiffResult<()> {
-    let output_row_stride = chopts.output_row_stride(tile_x)?;
+pub(crate) fn predict_hdiff(buffer: &mut [u8], chopts: &ChunkOpts, tile_x: u32) {
+    let output_row_stride = chopts.output_row_stride(tile_x).unwrap();
     let bit_depth = chopts.bits_per_sample;
 
     for buf in buffer.chunks_exact_mut(output_row_stride) {
         hpredict_nsamp(buf, bit_depth, chopts.samples_per_pixel.into());
         fix_endianness(buf, NATIVE_ENDIAN, chopts.byte_order, bit_depth);
     }
-    Ok(())
 }
 
 fn hpredict_nsamp(buf: &mut [u8], bit_depth: u8, samples_per_pixel: usize) {
@@ -48,25 +43,29 @@ fn hpredict_nsamp(buf: &mut [u8], bit_depth: u8, samples_per_pixel: usize) {
                 buf[i..][..8].copy_from_slice(&(v.wrapping_sub(p)).to_ne_bytes());
             }
         }
+        65..=128 => {
+            for i in (samples_per_pixel * 16..buf.len()).step_by(16).rev() {
+                let v = u128::from_ne_bytes(buf[i..][..16].try_into().unwrap());
+                let p = u128::from_ne_bytes(
+                    buf[i - 16 * samples_per_pixel..][..16].try_into().unwrap(),
+                );
+                buf[i..][..16].copy_from_slice(&(v.wrapping_sub(p).to_ne_bytes()));
+            }
+        }
         _ => {
             unreachable!("Caller should have validated arguments. Please file a bug.")
         }
     }
 }
 
-pub(crate) fn predict_float(
-    in_buf: &mut [u8],
-    out_buf: &mut [u8],
-    chopts: &ChunkOpts,
-    x: u32,
-) -> TiffResult<()> {
+pub(crate) fn predict_float(in_buf: &mut [u8], out_buf: &mut [u8], chopts: &ChunkOpts, x: u32) {
     // Ok, so the names "input" and "output" break down here,
     // for a floating-point predictor, there is the "image" or [RGBRGBRGB]
     // and the predicted part, where floating-point bits are merged together with padding
     // I'm not sure, but I think padding bits should be set to 0?
-    let output_row_stride = chopts.input_row_stride(x)?;
+    let output_row_stride = chopts.input_row_stride(x).unwrap();
     let bit_depth = chopts.bits_per_sample;
-    if chopts.chunk_width_pixels(x)? == chopts.chunk_width {
+    if chopts.chunk_width_pixels(x).unwrap() == chopts.chunk_width {
         // no special padding handling
         for (input, output) in in_buf
             .chunks_exact_mut(output_row_stride)
@@ -81,7 +80,7 @@ pub(crate) fn predict_float(
             );
         }
     } else {
-        let input_row_stride = chopts.output_row_stride(x)?;
+        let input_row_stride = chopts.output_row_stride(x).unwrap();
 
         let mut in_row = vec![0u8; output_row_stride];
         for (input, output) in in_buf
@@ -91,7 +90,6 @@ pub(crate) fn predict_float(
             fix_endianness(input, NATIVE_ENDIAN, crate::ByteOrder::BigEndian, bit_depth);
             in_row.fill(0);
             in_row[..input_row_stride].copy_from_slice(input);
-            println!("{in_row:?}");
             predict_fn(
                 &mut in_row,
                 output,
@@ -100,7 +98,6 @@ pub(crate) fn predict_float(
             );
         }
     }
-    Ok(())
 }
 
 fn predict_fn(input: &mut [u8], output: &mut [u8], samples_per_pixel: usize, bit_depth: usize) {
@@ -111,11 +108,9 @@ fn predict_fn(input: &mut [u8], output: &mut [u8], samples_per_pixel: usize, bit
             output[i + j * n_samp] = *val;
         }
     }
-    println!("{output:?}");
     for i in (samples_per_pixel..input.len()).rev() {
         output[i] = output[i].wrapping_sub(output[i - samples_per_pixel]);
     }
-    println!("{output:?}");
 }
 
 #[cfg(test)]
@@ -345,7 +340,7 @@ mod test {
             println!("testing u8");
             let mut buffer= input.iter().map(|v| *v as u8).collect::<Vec<_>>();
             let res = expected.iter().map(|v| *v as u8).collect::<Vec<_>>();
-            predict_hdiff(&mut buffer, &chopts, x).unwrap();
+            predict_hdiff(&mut buffer, &chopts, x);
             assert_eq!(buffer, res);
             assert_eq!(-1i32 as u16, u16::MAX);
 
@@ -353,7 +348,7 @@ mod test {
             chopts.bits_per_sample = 16;
             let mut buffer= input.iter().flat_map(|v| (*v as u16).to_le_bytes()).collect::<Vec<_>>();
             let res = expected.iter().flat_map(|v| (*v as u16).to_ne_bytes()).collect::<Vec<_>>();
-            predict_hdiff(&mut buffer, &chopts, x).unwrap();
+            predict_hdiff(&mut buffer, &chopts, x);
             assert_eq!(buffer, res);
             assert_eq!(-1i32 as u32, u32::MAX);
 
@@ -361,7 +356,7 @@ mod test {
             chopts.bits_per_sample = 32;
             let mut buffer= input.iter().flat_map(|v| (*v as u32).to_le_bytes()).collect::<Vec<_>>();
             let res = expected.iter().flat_map(|v| (*v as u32).to_ne_bytes()).collect::<Vec<_>>();
-            predict_hdiff(&mut buffer, &chopts, x).unwrap();
+            predict_hdiff(&mut buffer, &chopts, x);
             assert_eq!(buffer, res);
             assert_eq!(-1i32 as u64, u64::MAX);
 
@@ -369,7 +364,7 @@ mod test {
             chopts.bits_per_sample = 64;
             let mut buffer= input.iter().flat_map(|v| (*v as u64).to_le_bytes()).collect::<Vec<_>>();
             let res = expected.iter().flat_map(|v| (*v as u64).to_ne_bytes()).collect::<Vec<_>>();
-            predict_hdiff(&mut buffer, &chopts, x).unwrap();
+            predict_hdiff(&mut buffer, &chopts, x);
             assert_eq!(buffer, res);
 
 
@@ -380,28 +375,28 @@ mod test {
             let mut buffer= input.iter().flat_map(|v| (*v as i8).to_le_bytes()).collect::<Vec<_>>();
             println!("{:?}", &buffer[..]);
             let res = expected.iter().flat_map(|v| (*v as i8).to_le_bytes()).collect::<Vec<_>>();
-            predict_hdiff(&mut buffer, &chopts, x).unwrap();
+            predict_hdiff(&mut buffer, &chopts, x);
             assert_eq!(buffer, res);
 
             println!("testing i16");
             chopts.bits_per_sample = 16;
             let mut buffer= input.iter().flat_map(|v| (*v as i16).to_le_bytes()).collect::<Vec<_>>();
             let res = expected.iter().flat_map(|v| (*v as i16).to_ne_bytes()).collect::<Vec<_>>();
-            predict_hdiff(&mut buffer, &chopts, x).unwrap();
+            predict_hdiff(&mut buffer, &chopts, x);
             assert_eq!(buffer, res);
 
             println!("testing i32");
             chopts.bits_per_sample = 32;
             let mut buffer= input.iter().flat_map(|v| (*v as i32).to_le_bytes()).collect::<Vec<_>>();
             let res = expected.iter().flat_map(|v| (*v as i32).to_ne_bytes()).collect::<Vec<_>>();
-            predict_hdiff(&mut buffer, &chopts, x).unwrap();
+            predict_hdiff(&mut buffer, &chopts, x);
             assert_eq!(buffer, res);
 
             println!("testing i64");
             chopts.bits_per_sample = 64;
             let mut buffer= input.iter().flat_map(|v| (*v as i64).to_le_bytes()).collect::<Vec<_>>();
             let res = expected.iter().flat_map(|v| (*v as i64).to_ne_bytes()).collect::<Vec<_>>()   ;
-            predict_hdiff(&mut buffer, &chopts, x).unwrap();
+            predict_hdiff(&mut buffer, &chopts, x);
             assert_eq!(buffer, res);
 
 
@@ -413,7 +408,7 @@ mod test {
             println!("testing u8");
             let mut buffer= input.iter().map(|v| *v as u8).collect::<Vec<_>>();
             let res = expected.iter().map(|v| *v as u8).collect::<Vec<_>>();
-            predict_hdiff(&mut buffer, &chopts, x).unwrap();
+            predict_hdiff(&mut buffer, &chopts, x);
             assert_eq!(buffer, res);
 
             println!("testing u16");
@@ -421,14 +416,14 @@ mod test {
             let mut buffer= input.iter().flat_map(|v| (*v as u16).to_ne_bytes()).collect::<Vec<_>>();
             let res = expected.iter().flat_map(|v| (*v as u16).to_be_bytes()).collect::<Vec<_>>();
             println!("buffer: {:?}", &buffer[..]);
-            predict_hdiff(&mut buffer, &chopts, x).unwrap();
+            predict_hdiff(&mut buffer, &chopts, x);
             assert_eq!(buffer, res);
 
             println!("testing u32");
             chopts.bits_per_sample = 32;
             let mut buffer= input.iter().flat_map(|v| (*v as u32).to_ne_bytes()).collect::<Vec<_>>();
             let res = expected.iter().flat_map(|v| (*v as u32).to_be_bytes()).collect::<Vec<_>>();
-            predict_hdiff(&mut buffer, &chopts, x).unwrap();
+            predict_hdiff(&mut buffer, &chopts, x);
             assert_eq!(buffer, res);
             assert_eq!(-1i32 as u64, u64::MAX);
 
@@ -436,7 +431,7 @@ mod test {
             chopts.bits_per_sample = 64;
             let mut buffer= input.iter().flat_map(|v| (*v as u64).to_ne_bytes()).collect::<Vec<_>>();
             let res = expected.iter().flat_map(|v| (*v as u64).to_be_bytes()).collect::<Vec<_>>();
-            predict_hdiff(&mut buffer, &chopts, x).unwrap();
+            predict_hdiff(&mut buffer, &chopts, x);
             assert_eq!(buffer, res);
 
             println!("ints bigendian");
@@ -446,7 +441,7 @@ mod test {
             println!("testing i8");
             let mut buffer= input.iter().flat_map(|v| (*v as i8).to_ne_bytes()).collect::<Vec<_>>();
             let res = expected.iter().flat_map(|v| (*v as i8).to_be_bytes()).collect::<Vec<_>>();
-            predict_hdiff(&mut buffer, &chopts, x).unwrap();
+            predict_hdiff(&mut buffer, &chopts, x);
             assert_eq!(buffer, res);
             assert_eq!(-1i32 as u16, u16::MAX);
 
@@ -454,7 +449,7 @@ mod test {
             chopts.bits_per_sample = 16;
             let mut buffer= input.iter().flat_map(|v| (*v as i16).to_ne_bytes()).collect::<Vec<_>>();
             let res = expected.iter().flat_map(|v| (*v as i16).to_be_bytes()).collect::<Vec<_>>();
-            predict_hdiff(&mut buffer, &chopts, x).unwrap();
+            predict_hdiff(&mut buffer, &chopts, x);
             assert_eq!(buffer, res);
             assert_eq!(-1i32 as u32, u32::MAX);
 
@@ -462,7 +457,7 @@ mod test {
             chopts.bits_per_sample = 32;
             let mut buffer= input.iter().flat_map(|v| (*v as i32).to_ne_bytes()).collect::<Vec<_>>();
             let res = expected.iter().flat_map(|v| (*v as i32).to_be_bytes()).collect::<Vec<_>>();
-            predict_hdiff(&mut buffer, &chopts, x).unwrap();
+            predict_hdiff(&mut buffer, &chopts, x);
             assert_eq!(buffer, res);
             assert_eq!(-1i32 as u64, u64::MAX);
 
@@ -470,7 +465,7 @@ mod test {
             chopts.bits_per_sample = 64;
             let mut buffer= input.iter().flat_map(|v| (*v as i64).to_ne_bytes()).collect::<Vec<_>>();
             let res = expected.iter().flat_map(|v| (*v as i64).to_be_bytes()).collect::<Vec<_>>();
-            predict_hdiff(&mut buffer, &chopts, x).unwrap();
+            predict_hdiff(&mut buffer, &chopts, x);
             assert_eq!(buffer, res);
         }
     }
@@ -510,8 +505,7 @@ mod test {
             &mut output,
             &info,
             1,
-        )
-        .unwrap();
+        );
         assert_eq!(
             &output,
             &expect_le
@@ -553,8 +547,7 @@ mod test {
             &mut output,
             &info,
             1,
-        )
-        .unwrap();
+        );
         assert_eq!(
             &output,
             &expect_le
@@ -595,8 +588,7 @@ mod test {
             &mut output,
             &info,
             0,
-        )
-        .unwrap();
+        );
         assert_eq!(
             &output,
             &expect
@@ -637,8 +629,7 @@ mod test {
             &mut output,
             &info,
             1,
-        )
-        .unwrap();
+        );
         assert_eq!(
             &output,
             &expect
@@ -678,7 +669,7 @@ mod test {
         };
         let mut input = in_be.to_vec();
         let mut output = vec![0; expect.len()];
-        predict_float(&mut input, &mut output, &info, 0).unwrap();
+        predict_float(&mut input, &mut output, &info, 0);
         assert_eq!(&output, &expect);
     }
 }

@@ -2,12 +2,16 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::io::{Cursor, Read};
 
+use exn::{ensure, ResultExt};
+#[cfg(feature = "deflate")]
 use flate2::bufread::ZlibDecoder;
+#[cfg(feature = "lzw")]
 use weezl::LzwStatus;
 
-use crate::error::{TiffError, TiffFormatError, TiffResult, TiffUnsupportedError};
-use crate::loader::tile::ChunkOpts;
+#[cfg(feature = "lzw")]
+use crate::structs::error::CodingError;
 use crate::structs::tags::CompressionMethod;
+use crate::structs::ChunkOpts;
 
 // from async-tiff
 /// A registry of decoders.
@@ -18,7 +22,7 @@ use crate::structs::tags::CompressionMethod;
 /// ```
 /// use tiff2::loader::DecoderRegistry;
 ///
-/// // Default registry includes Deflate, LZW, JPEG, ZSTD.
+/// // Default registry includes Deflate, LZW.
 /// let registry = DecoderRegistry::default();
 /// assert_eq!(registry.0.len(), 4);
 ///
@@ -28,7 +32,7 @@ use crate::structs::tags::CompressionMethod;
 /// ```
 #[derive(Debug)]
 #[non_exhaustive]
-pub struct DecoderRegistry(pub HashMap<CompressionMethod, Box<dyn Decoder>>);
+pub struct DecoderRegistry(HashMap<CompressionMethod, Box<dyn Decoder>>);
 
 impl DecoderRegistry {
     /// Create a new decoder registry with no decoders registered
@@ -79,7 +83,7 @@ pub trait Decoder: Debug + Send + Sync {
         in_buf: &[u8],
         out_buf: &mut [u8],
         chunk_opts: &ChunkOpts,
-    ) -> TiffResult<()>;
+    ) -> exn::Result<(), CodingError>;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -91,46 +95,57 @@ impl Decoder for UncompressedDecoder {
         in_buf: &[u8],
         out_buf: &mut [u8],
         _chunk_opts: &ChunkOpts,
-    ) -> TiffResult<()> {
+    ) -> exn::Result<(), CodingError> {
+        ensure!(
+            in_buf.len() == out_buf.len(),
+            CodingError::incomplete(in_buf.len(), out_buf.len())
+        );
         out_buf.copy_from_slice(in_buf);
         Ok(())
     }
 }
 
+#[cfg(feature = "deflate")]
 #[derive(Debug, Clone, Copy)]
 pub struct DeflateDecoder;
 
+#[cfg(feature = "deflate")]
 impl Decoder for DeflateDecoder {
     fn decode_chunk(
         &self,
         in_buf: &[u8],
         out_buf: &mut [u8],
         _chunk_opts: &ChunkOpts,
-    ) -> TiffResult<()> {
+    ) -> exn::Result<(), CodingError> {
         let mut decoder = ZlibDecoder::new(Cursor::new(in_buf));
-        decoder.read_exact(out_buf)?;
+        decoder
+            .read_exact(out_buf)
+            .or_raise(|| CodingError::failed("decoding failed"))?;
         Ok(())
     }
 }
 
+#[cfg(feature = "lzw")]
 #[derive(Debug, Clone, Copy)]
 pub struct LZWDecoder;
 
+#[cfg(feature = "lzw")]
 impl Decoder for LZWDecoder {
     fn decode_chunk(
         &self,
         in_buf: &[u8],
         out_buf: &mut [u8],
         _chunk_opts: &ChunkOpts,
-    ) -> TiffResult<()> {
+    ) -> exn::Result<(), CodingError> {
         // https://github.com/image-rs/image-tiff/blob/90ae5b8e54356a35e266fb24e969aafbcb26e990/src/decoder/stream.rs#L147
         let mut decoder = weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8);
         let res = decoder.decode_bytes(in_buf, out_buf);
+        let lzw_status = res
+            .status
+            .or_raise(|| CodingError::failed("decoding failed"))?;
         // verify the output
-        if res.consumed_out != out_buf.len() || !matches!(res.status?, LzwStatus::Done) {
-            Err(TiffError::UnsupportedError(
-                TiffUnsupportedError::UnsupportedCompressionMethod(CompressionMethod::LZW),
-            ))
+        if res.consumed_out != out_buf.len() || !matches!(lzw_status, LzwStatus::Done) {
+            Err(CodingError::incomplete(res.consumed_out, out_buf.len()).into())
         } else {
             Ok(())
         }

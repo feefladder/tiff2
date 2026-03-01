@@ -23,7 +23,6 @@ async-trait = "0.1.83"
 object_store = { version = "0.13.1", optional = true, features = ["http"] }
 rayon = "1.10.0"
 smallvec = "1.15.1"
-thiserror = "2.0"
 weezl = {version= "0.1.8", optional = true}
 jpeg = { package = "jpeg-decoder", version = "0.3.0", default-features = false, optional= true }
 flate2 = {version = "1.0", optional = true}

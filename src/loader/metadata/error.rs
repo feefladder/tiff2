@@ -2,6 +2,7 @@ use std::error::Error;
 use std::fmt::Display;
 use std::ops::{Bound, Range};
 
+use crate::structs::error::ErrorStatus;
 use crate::structs::Tag;
 
 /// The error that most caches should implement imho
@@ -18,7 +19,7 @@ pub struct MetaError {
     /// Course-grained status
     ///
     /// Based on this, a retry/raise decision can be made
-    pub status: MetaErrorStatus,
+    pub status: ErrorStatus,
     /// Finer grained details of the error
     ///
     /// Based on this, the behaviour of the retry/raise can be adjusted
@@ -26,28 +27,6 @@ pub struct MetaError {
     /// User-facing ino
     pub message: String,
 }
-
-/// The error status.
-///
-/// This is a coarse-grained "Can I retry" flag.
-#[derive(Debug, Clone, PartialEq)]
-pub enum MetaErrorStatus {
-    /// Reading from the provided buffer failed
-    ///
-    /// please retry the operation, providing the required range
-    MissingRange {
-        required: Range<u64>,
-    },
-    /// Reading from the provided buffers failed
-    ///
-    /// please retry the operation, providing the required ranges
-    MissingRanges {
-        // should this become like a dyn Iterator<Item=Range<u64>>
-        required: Vec<Range<u64>>,
-    },
-    Permanent,
-}
-
 /// The kind of error
 ///
 /// This is a more fine-grained "what should I do?" type of error
@@ -99,7 +78,7 @@ impl Error for CacheMiss {}
 impl MetaError {
     pub(crate) fn permanent(message: String) -> Self {
         Self {
-            status: MetaErrorStatus::Permanent,
+            status: ErrorStatus::Permanent,
             kind: MetaErrorKind::InvalidTiff,
             message,
         }
@@ -107,7 +86,7 @@ impl MetaError {
 
     pub(crate) fn invalid_buffer(range: Range<u64>, message: String) -> Self {
         Self {
-            status: MetaErrorStatus::MissingRange { required: range },
+            status: ErrorStatus::MissingRange { required: range },
             kind: MetaErrorKind::InvalidBuffer,
             message,
         }
@@ -120,7 +99,7 @@ impl MetaError {
         message: String,
     ) -> Self {
         Self {
-            status: MetaErrorStatus::MissingRanges { required: ranges },
+            status: ErrorStatus::MissingRanges { required: ranges },
             kind: MetaErrorKind::IncompleteIfd {
                 ifd_offset,
                 missing_tags,
@@ -136,17 +115,3 @@ impl std::fmt::Display for MetaError {
     }
 }
 impl std::error::Error for MetaError {}
-
-impl std::fmt::Display for MetaErrorStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self {
-            MetaErrorStatus::Permanent => write!(f, "permanent error"),
-            MetaErrorStatus::MissingRange { required } => {
-                write!(f, "range {required:?} required, please retry")
-            }
-            MetaErrorStatus::MissingRanges { required } => {
-                write!(f, "ranges {required:?} required, please retry")
-            }
-        }
-    }
-}

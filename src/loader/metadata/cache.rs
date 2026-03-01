@@ -91,7 +91,7 @@ impl CogCache {
                         .unwrap(),
                     )
                 }
-                Err(e) => {
+                Err(_e) => {
                     // insert magic caching/filtering strategies here
                     // For now, we just error at the end with all deferred values
                     deferred_values.push(o.range());
@@ -189,11 +189,12 @@ mod test {
     use std::collections::BTreeMap;
     use std::ops::Range;
 
-    use bytemuck::BoxBytes;
     use exn::bail;
 
+    use crate::loader::MetaErrorKind;
+    use crate::structs::error::ErrorStatus;
+
     use super::*;
-    use crate::loader::metadata::error::{MetaErrorKind, MetaErrorStatus};
 
     #[test]
     fn test_too_fancy_cache() {
@@ -345,10 +346,10 @@ mod test {
             let prefetch = reader.read_range(0..1024 * 16).await;
             let mut writer = CogCache::new(prefetch).unwrap();
             while match writer.next() {
-                // safe to unwrap the downcast_ref because of `writer.next()` return type
+                // ok to unwrap the downcast_ref because of `writer.next()` return type
                 Err(e) => match e.frame().error().downcast_ref::<MetaError>().unwrap() {
                     MetaError {
-                        status: MetaErrorStatus::MissingRange { required },
+                        status: ErrorStatus::MissingRange { required },
                         kind,
                         message,
                     } => {
@@ -392,7 +393,7 @@ mod test {
                 .unwrap(),
             &MetaError {
                 message: "Cycle in offsets detected at ifd 8".into(),
-                status: MetaErrorStatus::Permanent,
+                status: ErrorStatus::Permanent,
                 kind: MetaErrorKind::InvalidTiff
             }
         )

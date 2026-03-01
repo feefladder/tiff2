@@ -10,7 +10,7 @@ use crate::ByteOrder;
 
 mod cache;
 pub mod error;
-use error::MetaError;
+pub use error::{CacheMiss, MetaError, MetaErrorKind};
 mod ifd;
 pub use ifd::IfdLoader;
 

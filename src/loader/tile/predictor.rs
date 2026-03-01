@@ -1,5 +1,7 @@
-use crate::error::{TiffError, TiffResult, TiffUnsupportedError};
+use exn::bail;
+
 use crate::loader::tile::ChunkOpts;
+use crate::structs::error::CodingError;
 use crate::util::fix_endianness;
 use crate::NATIVE_ENDIAN;
 
@@ -45,12 +47,12 @@ fn rev_hpredict_nsamp(buf: &mut [u8], bit_depth: u8, samples: usize) {
 /// reverse horizontal predictor
 ///
 /// fixes byte order before reversing differencing
-pub(crate) fn unpredict_hdiff<'a>(
-    buffer: &mut [u8],
-    predictor_info: &ChunkOpts,
-    tile_x: u32,
-) -> TiffResult<()> {
-    let output_row_stride = predictor_info.output_row_stride(tile_x)?;
+///
+/// # Panics
+///
+/// if tile_x is out-of-bounds
+pub(crate) fn unpredict_hdiff<'a>(buffer: &mut [u8], predictor_info: &ChunkOpts, tile_x: u32) {
+    let output_row_stride = predictor_info.output_row_stride(tile_x).unwrap();
     let samples = predictor_info.samples_per_pixel as usize;
     let bit_depth = predictor_info.bits_per_sample;
 
@@ -58,7 +60,6 @@ pub(crate) fn unpredict_hdiff<'a>(
         fix_endianness(buf, predictor_info.byte_order, NATIVE_ENDIAN, bit_depth);
         rev_hpredict_nsamp(buf, bit_depth, samples);
     }
-    Ok(())
 }
 
 /// Reverse a floating-point prediction
@@ -73,10 +74,10 @@ pub(crate) fn unpredict_float<'a>(
     predictor_info: &ChunkOpts,
     x: u32,
     y: u32,
-) -> TiffResult<()> {
-    let output_row_stride = predictor_info.output_row_stride(x)?;
+) -> exn::Result<(), CodingError> {
+    let output_row_stride = predictor_info.output_row_stride(x).unwrap();
     let bit_depth = predictor_info.bits_per_sample;
-    if predictor_info.chunk_width_pixels(x)? == predictor_info.chunk_width {
+    if predictor_info.chunk_width_pixels(x).unwrap() == predictor_info.chunk_width {
         // no special padding handling
         for (input, output) in in_buf
             .chunks_exact_mut(output_row_stride)
@@ -86,16 +87,15 @@ pub(crate) fn unpredict_float<'a>(
                 16 => rev_predict_f16(input, output, predictor_info.samples_per_pixel as _),
                 32 => rev_predict_f32(input, output, predictor_info.samples_per_pixel as _),
                 64 => rev_predict_f64(input, output, predictor_info.samples_per_pixel as _),
-                depth => {
-                    return Err(TiffError::UnsupportedError(
-                        TiffUnsupportedError::UnsupportedSampleDepth(depth),
-                    ))
-                }
+                depth => bail!(CodingError::unsupported_bit_depth(
+                    bit_depth,
+                    "unpredicting float"
+                )),
             }
         }
     } else {
         // specially handle padding bytes
-        let input_row_stride = predictor_info.input_row_stride(x)?;
+        let input_row_stride = predictor_info.input_row_stride(x).unwrap();
 
         // allocate here so we can re-use
         let mut out_row = vec![0u8; input_row_stride];
@@ -108,11 +108,10 @@ pub(crate) fn unpredict_float<'a>(
                 16 => rev_predict_f16(input, &mut out_row, predictor_info.samples_per_pixel as _),
                 32 => rev_predict_f32(input, &mut out_row, predictor_info.samples_per_pixel as _),
                 64 => rev_predict_f64(input, &mut out_row, predictor_info.samples_per_pixel as _),
-                depth => {
-                    return Err(TiffError::UnsupportedError(
-                        TiffUnsupportedError::UnsupportedSampleDepth(depth),
-                    ))
-                }
+                depth => bail!(CodingError::unsupported_bit_depth(
+                    bit_depth,
+                    "unpredicting float"
+                )),
             }
             // remove the padding bytes
             output.copy_from_slice(&out_row[..output_row_stride]);
@@ -346,28 +345,28 @@ mod test {
             println!("testing u8");
             let mut buffer= input.iter().map(|v| *v as u8).collect::<Vec<_>>();
             let res = expected.clone();
-            unpredict_hdiff(&mut buffer, &predictor_info, x).unwrap();
+            unpredict_hdiff(&mut buffer, &predictor_info, x);
             assert_eq!(buffer, res);
             assert_eq!(-1i32 as u16, u16::MAX);
             println!("testing u16");
             predictor_info.bits_per_sample = 16;
             let mut buffer= input.iter().flat_map(|v| (*v as u16).to_le_bytes()).collect::<Vec<_>>();
             let res = expected.iter().flat_map(|v| (*v as u16).to_ne_bytes()).collect::<Vec<_>>();
-             unpredict_hdiff(&mut buffer, &predictor_info, x).unwrap();
+             unpredict_hdiff(&mut buffer, &predictor_info, x);
             assert_eq!(buffer, res);
             assert_eq!(-1i32 as u32, u32::MAX);
             println!("testing u32");
             predictor_info.bits_per_sample = 32;
             let mut buffer= input.iter().flat_map(|v| (*v as u32).to_le_bytes()).collect::<Vec<_>>();
             let res = expected.iter().flat_map(|v| (*v as u32).to_ne_bytes()).collect::<Vec<_>>();
-             unpredict_hdiff(&mut buffer, &predictor_info, x).unwrap();
+             unpredict_hdiff(&mut buffer, &predictor_info, x);
             assert_eq!(buffer, res);
             assert_eq!(-1i32 as u64, u64::MAX);
             println!("testing u64");
             predictor_info.bits_per_sample = 64;
             let mut buffer= input.iter().flat_map(|v| (*v as u64).to_le_bytes()).collect::<Vec<_>>();
             let res = expected.iter().flat_map(|v| (*v as u64).to_ne_bytes()).collect::<Vec<_>>();
-             unpredict_hdiff(&mut buffer, &predictor_info, x).unwrap();
+             unpredict_hdiff(&mut buffer, &predictor_info, x);
             assert_eq!(buffer, res);
 
             println!("ints littleendian");
@@ -376,25 +375,25 @@ mod test {
             let mut buffer= input.iter().flat_map(|v| (*v as i8).to_le_bytes()).collect::<Vec<_>>();
             println!("{:?}", &buffer[..]);
             let res = expected.clone();
-             unpredict_hdiff(&mut buffer, &predictor_info, x).unwrap();
+             unpredict_hdiff(&mut buffer, &predictor_info, x);
             assert_eq!(buffer, res);
             println!("testing i16");
             predictor_info.bits_per_sample = 16;
             let mut buffer= input.iter().flat_map(|v| (*v as i16).to_le_bytes()).collect::<Vec<_>>();
             let res = expected.iter().flat_map(|v| (*v as i16).to_ne_bytes()).collect::<Vec<_>>();
-             unpredict_hdiff(&mut buffer, &predictor_info, x).unwrap();
+             unpredict_hdiff(&mut buffer, &predictor_info, x);
             assert_eq!(buffer, res);
             println!("testing i32");
             predictor_info.bits_per_sample = 32;
             let mut buffer= input.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>();
             let res = expected.iter().flat_map(|v| (*v as i32).to_ne_bytes()).collect::<Vec<_>>();
-             unpredict_hdiff(&mut buffer, &predictor_info, x).unwrap();
+             unpredict_hdiff(&mut buffer, &predictor_info, x);
             assert_eq!(buffer, res);
             println!("testing i64");
             predictor_info.bits_per_sample = 64;
             let mut buffer= input.iter().flat_map(|v| (*v as i64).to_le_bytes()).collect::<Vec<_>>();
             let res = expected.iter().flat_map(|v| (*v as i64).to_ne_bytes()).collect::<Vec<_>>()   ;
-             unpredict_hdiff(&mut buffer, &predictor_info, x).unwrap();
+             unpredict_hdiff(&mut buffer, &predictor_info, x);
             assert_eq!(buffer, res);
 
             println!("uints bigendian");
@@ -404,7 +403,7 @@ mod test {
             println!("testing u8");
             let mut buffer= input.iter().map(|v| *v as u8).collect::<Vec<_>>();
             let res = expected.clone();
-             unpredict_hdiff(&mut buffer, &predictor_info, x).unwrap();
+             unpredict_hdiff(&mut buffer, &predictor_info, x);
             assert_eq!(buffer, res);
             assert_eq!(-1i32 as u16, u16::MAX);
             println!("testing u16");
@@ -412,21 +411,21 @@ mod test {
             let mut buffer= input.iter().flat_map(|v| (*v as u16).to_be_bytes()).collect::<Vec<_>>();
             let res = expected.iter().flat_map(|v| (*v as u16).to_ne_bytes()).collect::<Vec<_>>();
             println!("buffer: {:?}", &buffer[..]);
-             unpredict_hdiff(&mut buffer, &predictor_info, x).unwrap();
+             unpredict_hdiff(&mut buffer, &predictor_info, x);
             assert_eq!(buffer, res);
             assert_eq!(-1i32 as u32, u32::MAX);
             println!("testing u32");
             predictor_info.bits_per_sample = 32;
             let mut buffer= input.iter().flat_map(|v| (*v as u32).to_be_bytes()).collect::<Vec<_>>();
             let res = expected.iter().flat_map(|v| (*v as u32).to_ne_bytes()).collect::<Vec<_>>();
-             unpredict_hdiff(&mut buffer, &predictor_info, x).unwrap();
+             unpredict_hdiff(&mut buffer, &predictor_info, x);
             assert_eq!(buffer, res);
             assert_eq!(-1i32 as u64, u64::MAX);
             println!("testing u64");
             predictor_info.bits_per_sample = 64;
             let mut buffer= input.iter().flat_map(|v| (*v as u64).to_be_bytes()).collect::<Vec<_>>();
             let res = expected.iter().flat_map(|v| (*v as u64).to_ne_bytes()).collect::<Vec<_>>();
-             unpredict_hdiff(&mut buffer, &predictor_info, x).unwrap();
+             unpredict_hdiff(&mut buffer, &predictor_info, x);
             assert_eq!(buffer, res);
 
             println!("ints bigendian");
@@ -435,28 +434,28 @@ mod test {
             println!("testing i8");
             let mut buffer= input.iter().flat_map(|v| (*v as i8).to_be_bytes()).collect::<Vec<_>>();
             let res = expected.clone();
-            unpredict_hdiff(&mut buffer, &predictor_info, x).unwrap();
+            unpredict_hdiff(&mut buffer, &predictor_info, x);
             assert_eq!(buffer, res);
             assert_eq!(-1i32 as u16, u16::MAX);
             println!("testing i16");
             predictor_info.bits_per_sample = 16;
             let mut buffer= input.iter().flat_map(|v| (*v as i16).to_be_bytes()).collect::<Vec<_>>();
             let res = expected.iter().flat_map(|v| (*v as i16).to_ne_bytes()).collect::<Vec<_>>();
-             unpredict_hdiff(&mut buffer, &predictor_info, x).unwrap();
+             unpredict_hdiff(&mut buffer, &predictor_info, x);
             assert_eq!(buffer, res);
             assert_eq!(-1i32 as u32, u32::MAX);
             println!("testing i32");
             predictor_info.bits_per_sample = 32;
             let mut buffer= input.iter().flat_map(|v| v.to_be_bytes()).collect::<Vec<_>>();
             let res = expected.iter().flat_map(|v| (*v as i32).to_ne_bytes()).collect::<Vec<_>>();
-             unpredict_hdiff(&mut buffer, &predictor_info, x).unwrap();
+             unpredict_hdiff(&mut buffer, &predictor_info, x);
             assert_eq!(buffer, res);
             assert_eq!(-1i32 as u64, u64::MAX);
             println!("testing i64");
             predictor_info.bits_per_sample = 64;
             let mut buffer= input.iter().flat_map(|v| (*v as i64).to_be_bytes()).collect::<Vec<_>>();
             let res = expected.iter().flat_map(|v| (*v as i64).to_ne_bytes()).collect::<Vec<_>>();
-             unpredict_hdiff(&mut buffer, &predictor_info, x).unwrap();
+             unpredict_hdiff(&mut buffer, &predictor_info, x);
             assert_eq!(buffer, res);
         }
     }

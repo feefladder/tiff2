@@ -1,8 +1,5 @@
 use std::collections::BTreeMap;
-use std::io::Cursor;
-use std::ops::Range;
 
-use bytes::Bytes;
 use exn::{bail, OptionExt, ResultExt};
 
 use crate::loader::metadata::error::MetaError;
@@ -59,7 +56,25 @@ impl IfdLoader {
     /// size of this buffer cannot be known beforehand, but a (very) safe assumption is
     /// ~1KiB. If it fails, it will give the exact required range.
     ///
+    /// ```
+    /// let buf = [
+    ///     2,0
     ///
+    ///     1,0,
+    ///     3,0,
+    ///     1,0,0,0,
+    ///     42,0,0,0,
+    ///
+    ///     0x44,1,
+    ///     4,0,
+    ///     2,0,0,0,
+    ///     42,0,0,0,
+    ///
+    ///     0,0,0,0,
+    /// ];
+    /// let (loader, next) = IfdLoader::from_buffer(&buf, 0, false, ByteOrder::LittleEndian);
+    ///
+    /// ```
     pub fn from_buffer(
         ifd_buf: &[u8],
         offset: u64,

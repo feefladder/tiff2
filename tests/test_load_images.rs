@@ -5,9 +5,6 @@ use std::path::Path;
 use async_trait::async_trait;
 use bytes::Bytes;
 use image::{DynamicImage, ImageBuffer, Luma, Rgb, Rgba};
-use log::{error, info};
-use tiff2::error::{TiffError, TiffResult};
-use tiff2::loader::{ChunkDecoder, CogReader, CogReaderExt, Decoder};
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
@@ -84,14 +81,14 @@ async fn test_rgba_8bit_deflate() {
                 .0
                 .to_string();
 
-        info!("testing {:42}: type: {:?}", f.0.to_str().unwrap(), t);
+        println!("testing {:42}: type: {:?}", f.0.to_str().unwrap(), t);
 
         let mut d = Decoder::new(f).await.expect("Could not make decoder");
         d.scan_ifds().await.expect("can scan ifds");
         d.read_image_ifds().await.expect("can read images");
         // read all images
         for (_offset, img) in d.images {
-            info!(
+            println!(
                 "decoding image {:?}x{:?}, predictor: {:?}",
                 img.chunk_opts.image_width, img.chunk_opts.image_height, img.chunk_opts.predictor
             );
@@ -124,7 +121,7 @@ async fn test_rgba_8bit_deflate() {
                     .expect("chunk_dims");
                 // debug!("chunk_size: {chunk_size:?}, row_stride: {:?}", img.chunk_opts.output_row_stride(i_32));
                 if usize::try_from(chunk_size.0 * chunk_size.1).unwrap() > rem_buf.len() {
-                    error!("Chunk didn't fit in buffer");
+                    eprintln!("Chunk didn't fit in buffer");
                     break;
                 }
                 let (first, rb) = rem_buf.split_at_mut(
@@ -141,7 +138,7 @@ async fn test_rgba_8bit_deflate() {
                     &img.chunk_opts,
                     i_32,
                 ) {
-                    error!("could not decode chunk: {e}");
+                    eprintln!("could not decode chunk: {e}");
                 };
             }
             // image ordering in case of planar configuration:

@@ -2,30 +2,34 @@
 //!
 //! Currently these look a lot like MetaErrors
 //!
-// TODO:
-use std::ops::Range;
+// TODO: move shared stuff to more top-level, how many error types do I want????
+use std::{error::Error, fmt::Display, ops::Range};
 
-use crate::loader::metadata::error::MetaErrorStatus;
-use crate::loader::tile::Tile;
+use crate::structs::{
+    error::ErrorStatus,
+    tags::{CompressionMethod, SampleFormat},
+};
 
-#[derive(Debug, Clone)]
+// error definitions
 #[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TileError {
-    status: MetaErrorStatus,
-    message: String,
+    pub status: ErrorStatus,
+    pub message: String,
 }
 
+// creation functions
 impl TileError {
     pub(crate) fn permanent(message: String) -> Self {
         Self {
-            status: MetaErrorStatus::Permanent,
+            status: ErrorStatus::Permanent,
             message,
         }
     }
 
     pub(crate) fn missing_range(range: Range<u64>, message: String) -> Self {
         Self {
-            status: MetaErrorStatus::MissingRange { required: range },
+            status: ErrorStatus::MissingRange { required: range },
             message,
         }
     }
@@ -35,7 +39,7 @@ impl TileError {
         message: String,
     ) -> Self {
         Self {
-            status: MetaErrorStatus::MissingRanges {
+            status: ErrorStatus::MissingRanges {
                 required: ranges.collect(),
             },
             message,
@@ -43,9 +47,10 @@ impl TileError {
     }
 }
 
-impl std::fmt::Display for TileError {
+// Display + Error impls
+impl Display for TileError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}: {}", self.status, self.message)
     }
 }
-impl std::error::Error for TileError {}
+impl Error for TileError {}

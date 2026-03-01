@@ -274,21 +274,15 @@ mod test {
         }
         read.insert_ifd(read.next_ifd_offset().unwrap(), read_ifd.finish(), 0);
         assert_eq!(read, tiff);
+        let IfdEntry::Value(tbyte_counts) = &read.ifd(0).data[&Tag::TileByteCounts] else {
+            unreachable!()
+        };
+        let IfdEntry::Value(toffsets) = &read.ifd(0).data[&Tag::TileOffsets] else {
+            unreachable!()
+        };
         for tile_idx in 0..6 * 6 {
-            let l = <&[u16]>::try_from(
-                read.ifd(0)
-                    .get_tag_value(&Tag::TileByteCounts)
-                    .unwrap()
-                    .unwrap(),
-            )
-            .unwrap()[tile_idx];
-            let r = <&[u32]>::try_from(
-                read.ifd(0)
-                    .get_tag_value(&Tag::TileOffsets)
-                    .unwrap()
-                    .unwrap(),
-            )
-            .unwrap()[tile_idx];
+            let l = <&[u16]>::try_from(tbyte_counts).unwrap()[tile_idx];
+            let r = <&[u32]>::try_from(toffsets).unwrap()[tile_idx];
             println!("{tile_idx}->{r}..{l},");
             assert_eq!(&out[r as _..r as usize + l as usize], &tile_data)
         }

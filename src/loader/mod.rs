@@ -1,9 +1,8 @@
-use crate::structs::tags::{Predictor, SampleFormat};
-use crate::util::fix_endianness;
-use crate::{ByteOrder, ColorType, NATIVE_ENDIAN};
+use crate::structs::tags::SampleFormat;
+use crate::ColorType;
 
 pub(crate) mod metadata;
-pub use metadata::*;
+pub use metadata::{CacheMiss, IfdLoader, MetaError, MetaErrorKind, MetaResult, TiffLoader};
 pub(crate) mod tile;
 pub use tile::*;
 

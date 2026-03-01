@@ -16,7 +16,7 @@ pub mod tiff;
 pub use tiff::Tiff;
 pub mod error;
 mod tile;
-pub use tile::{TileData, TileDataType};
+pub use tile::{ChunkOpts, TileData, TileDataType};
 
 pub struct Point<T> {
     pub x: T,

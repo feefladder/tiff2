@@ -25,6 +25,10 @@ pub enum CastErrorKind {
     InvalidString {
         str: SmallVec<[u8; 8]>,
     },
+    InvalidBuffer {
+        len: usize,
+        req_len: usize,
+    },
 }
 
 impl CastError {
@@ -54,6 +58,12 @@ impl CastError {
             kind: CastErrorKind::InvalidString { str },
         }
     }
+
+    pub(crate) fn invalid_buffer(len: usize, req_len: usize) -> Self {
+        Self {
+            kind: CastErrorKind::InvalidBuffer { len, req_len },
+        }
+    }
 }
 
 impl Display for CastError {
@@ -76,6 +86,9 @@ impl Display for CastErrorKind {
                 target_type,
             } => write!(f, "casting {tag_type:?} to {target_type} is invalid"),
             CastErrorKind::InvalidString { str } => write!(f, "string {str:?} not 0-ended ASCII"),
+            CastErrorKind::InvalidBuffer { len, req_len } => {
+                write!(f, "can't fit {req_len} tag data in buffer of size {len}")
+            }
         }
     }
 }

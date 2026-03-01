@@ -4,7 +4,6 @@ use std::ops::Range;
 use exn::{ensure, Exn, ResultExt};
 use smallvec::{smallvec, SmallVec};
 
-use crate::error::{TiffError, TiffResult};
 use crate::structs::error::CastError;
 use crate::structs::TagType;
 use crate::util::fix_endianness;
@@ -145,7 +144,7 @@ impl TagData {
 
     /// Create this `TagData` from a buffer
     ///
-    /// Errors if the buffer is too small
+    /// Errors only if the buffer is too small
     /// ```
     /// use tiff2::ByteOrder;
     /// use tiff2::structs::{TagType, TagData};
@@ -160,12 +159,13 @@ impl TagData {
         tag_type: TagType,
         count: usize,
         byte_order: ByteOrder,
-    ) -> TiffResult<Self> {
+    ) -> exn::Result<Self, CastError> {
         let mut e = Self::new(tag_type, count);
         let req_len = e.as_mut().len();
-        if req_len > buf.len() {
-            return Err(TiffError::LimitsExceeded);
-        }
+        ensure!(
+            req_len <= buf.len(),
+            CastError::invalid_buffer(buf.len(), req_len)
+        );
         e.as_mut().copy_from_slice(&buf[..req_len]);
         fix_endianness(
             e.as_mut(),
@@ -542,7 +542,7 @@ mod test_entry {
         //                                                              SByte, SShort,                   SLong,     SLong8);
     }
 
-    macro_rules! test_bufferedentry_into_slice {
+    macro_rules! test_tagdata_into_slice {
         ($t:ty, $tag_type:ident, $name:ident) => {
             #[test]
             fn $name() {
@@ -559,17 +559,17 @@ mod test_entry {
     mod into_slice {
         use super::*;
 
-        test_bufferedentry_into_slice!(i8 , SByte , test_i8_slice     );
-        test_bufferedentry_into_slice!(i16, SShort, test_i16_slice    );
-        test_bufferedentry_into_slice!(i32, SLong , test_i32_slice    );
-        test_bufferedentry_into_slice!(i64, SLong8, test_i64_slice    );
-        test_bufferedentry_into_slice!(u8 , Byte  , test_u8_slice     );
-        test_bufferedentry_into_slice!(u16, Short , test_u16_slice    );
-        test_bufferedentry_into_slice!(u32, Ifd   , test_u32_ifd_slice);
-        test_bufferedentry_into_slice!(u32, Long  , test_u32_slice    );
-        test_bufferedentry_into_slice!(u64, Ifd8  , test_u64_ifd_slice);
-        test_bufferedentry_into_slice!(u64, Long8 , test_u64_slice    );
-        test_bufferedentry_into_slice!(f32, Float , test_f32_slice    );
-        test_bufferedentry_into_slice!(f64, Double, test_f64_slice    );
+        test_tagdata_into_slice!(i8 , SByte , test_i8_slice     );
+        test_tagdata_into_slice!(i16, SShort, test_i16_slice    );
+        test_tagdata_into_slice!(i32, SLong , test_i32_slice    );
+        test_tagdata_into_slice!(i64, SLong8, test_i64_slice    );
+        test_tagdata_into_slice!(u8 , Byte  , test_u8_slice     );
+        test_tagdata_into_slice!(u16, Short , test_u16_slice    );
+        test_tagdata_into_slice!(u32, Ifd   , test_u32_ifd_slice);
+        test_tagdata_into_slice!(u32, Long  , test_u32_slice    );
+        test_tagdata_into_slice!(u64, Ifd8  , test_u64_ifd_slice);
+        test_tagdata_into_slice!(u64, Long8 , test_u64_slice    );
+        test_tagdata_into_slice!(f32, Float , test_f32_slice    );
+        test_tagdata_into_slice!(f64, Double, test_f64_slice    );
     }
 }

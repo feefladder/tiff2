@@ -8,8 +8,6 @@
 //! * <https://web.archive.org/web/20210108073850/https://www.adobe.io/open/standards/TIFF.html> - The TIFF specification
 //! * <https://download.osgeo.org/libtiff/doc/TIFF6.pdf> - Tiff spec as PDF
 
-/// Errors
-pub mod error;
 /// Generic utility functions that can be used for both decoding and encoding
 pub mod util;
 

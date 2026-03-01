@@ -2,9 +2,14 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::io::{Cursor, Read};
 
-use crate::error::TiffResult;
-use crate::loader::tile::ChunkOpts;
+use exn::{ensure, ResultExt};
+use weezl::LzwStatus;
+
+use crate::structs::error::CodingError;
 use crate::structs::tags::CompressionMethod;
+use crate::structs::ChunkOpts;
+
+type EncodingResult<T> = exn::Result<T, CodingError>;
 
 #[derive(Debug)]
 pub struct EncoderRegistry(HashMap<CompressionMethod, Box<dyn Encoder>>);
@@ -69,7 +74,7 @@ pub trait Encoder: Debug + Send + Sync {
         in_buf: &[u8],
         out_buf: &mut [u8],
         chunk_opts: &ChunkOpts,
-    ) -> TiffResult<u64>;
+    ) -> EncodingResult<u64>;
 }
 
 #[derive(Debug)]
@@ -80,44 +85,56 @@ impl Encoder for UncompressedEncoder {
         &self,
         in_buf: &[u8],
         out_buf: &mut [u8],
-        chunk_opts: &ChunkOpts,
-    ) -> TiffResult<u64> {
+        _chunk_opts: &ChunkOpts,
+    ) -> EncodingResult<u64> {
+        ensure!(
+            in_buf.len() == out_buf.len(),
+            CodingError::incomplete(in_buf.len(), out_buf.len())
+        );
         out_buf[..in_buf.len()].copy_from_slice(in_buf);
         Ok(u64::try_from(in_buf.len()).unwrap())
     }
 }
 
-#[derive(Debug)]
+#[cfg(feature = "lzw")]
+#[derive(Debug, Clone, Copy)]
 pub struct LzwEncoder;
 
+#[cfg(feature = "lzw")]
 impl Encoder for LzwEncoder {
     fn encode_chunk(
         &self,
         in_buf: &[u8],
         out_buf: &mut [u8],
-        chunk_opts: &ChunkOpts,
-    ) -> TiffResult<u64> {
+        _chunk_opts: &ChunkOpts,
+    ) -> EncodingResult<u64> {
         let mut encoder = weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8);
         let res = encoder.encode_bytes(in_buf, out_buf);
-        if res.consumed_in != in_buf.len() {
-            todo!("proper error handling")
+        let lzw_status = res
+            .status
+            .or_raise(|| CodingError::failed("encoding failed"))?;
+        if res.consumed_in != in_buf.len() || !matches!(lzw_status, LzwStatus::Done) {
+            Err(CodingError::incomplete(res.consumed_in, out_buf.len()).into())
+        } else {
+            Ok(u64::try_from(res.consumed_out).unwrap())
         }
-        Ok(u64::try_from(res.consumed_out).unwrap())
     }
 }
 
+#[cfg(feature = "deflate")]
 #[derive(Debug)]
 pub struct DeflateEncoder {
     pub compression_level: flate2::Compression,
 }
 
+#[cfg(feature = "deflate")]
 impl Encoder for DeflateEncoder {
     fn encode_chunk(
         &self,
         in_buf: &[u8],
         out_buf: &mut [u8],
-        chunk_opts: &ChunkOpts,
-    ) -> TiffResult<u64> {
+        _chunk_opts: &ChunkOpts,
+    ) -> EncodingResult<u64> {
         let mut encoder =
             flate2::bufread::ZlibEncoder::new(Cursor::new(in_buf), self.compression_level);
         Ok(u64::try_from(encoder.read(out_buf).unwrap()).unwrap())

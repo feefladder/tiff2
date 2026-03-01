@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use crate::error::{TiffError, TiffFormatError, TiffResult, UsageError};
 use crate::structs::{IfdEntry, Tag, TagData, TagType};
 
 pub type Directory = BTreeMap<Tag, IfdEntry>;
@@ -102,84 +101,84 @@ impl Ifd {
         self.data.get(tag)
     }
 
-    /// Get a tag, returning error if not present
-    ///
-    /// Can return `IfdEntry::Offset` if the tag is not loaded
-    pub fn require_tag(&self, tag: &Tag) -> TiffResult<&IfdEntry> {
-        self.data.get(tag).ok_or(TiffError::FormatError(
-            TiffFormatError::RequiredTagNotFound(*tag),
-        ))
-    }
+    // /// Get a tag, returning error if not present
+    // ///
+    // /// Can return `IfdEntry::Offset` if the tag is not loaded
+    // pub fn require_tag(&self, tag: &Tag) -> TiffResult<&IfdEntry> {
+    //     self.data.get(tag).ok_or(TiffError::FormatError(
+    //         TiffFormatError::RequiredTagNotFound(*tag),
+    //     ))
+    // }
 
-    /// remove a required tag from this Ifd, so we can use it as fast-access
-    /// in a wrapping struct.
-    ///
-    /// edge-case: tag is present, but value not loaded:
-    /// The tag gets re-inserted into the dict and RequiredTagNotLoaded is returned
-    pub fn remove_required_val(&mut self, tag: &Tag) -> TiffResult<TagData> {
-        match self
-            .data
-            .remove(tag)
-            .ok_or(TiffFormatError::RequiredTagNotFound(*tag))?
-        {
-            IfdEntry::Offset(o) => {
-                // insert back into the ifd
-                self.data.insert(*tag, IfdEntry::Offset(o));
-                Err(UsageError::RequiredTagNotLoaded(*tag, o).into())
-            }
-            IfdEntry::Value(be) => Ok(be),
-        }
-    }
+    // /// remove a required tag from this Ifd, so we can use it as fast-access
+    // /// in a wrapping struct.
+    // ///
+    // /// edge-case: tag is present, but value not loaded:
+    // /// The tag gets re-inserted into the dict and RequiredTagNotLoaded is returned
+    // pub fn remove_required_val(&mut self, tag: &Tag) -> TiffResult<TagData> {
+    //     match self
+    //         .data
+    //         .remove(tag)
+    //         .ok_or(TiffFormatError::RequiredTagNotFound(*tag))?
+    //     {
+    //         IfdEntry::Offset(o) => {
+    //             // insert back into the ifd
+    //             self.data.insert(*tag, IfdEntry::Offset(o));
+    //             Err(UsageError::RequiredTagNotLoaded(*tag, o).into())
+    //         }
+    //         IfdEntry::Value(be) => Ok(be),
+    //     }
+    // }
 
-    /// remove an optional tag from this Ifd, so it can be used as fast-access
-    /// in a wrapping struct.
-    ///
-    /// edge-case: tag is present, but value not loaded:
-    /// The tag gets re-inserted into the dict and RequiredTagNotLoaded is returned
-    pub fn remove_optional_val(&mut self, tag: &Tag) -> TiffResult<Option<TagData>> {
-        match self.data.remove(tag) {
-            Some(IfdEntry::Offset(o)) => {
-                self.data.insert(*tag, IfdEntry::Offset(o));
-                Err(UsageError::RequiredTagNotLoaded(*tag, o).into())
-            }
-            Some(IfdEntry::Value(v)) => Ok(Some(v)),
-            None => Ok(None),
-        }
-    }
+    // /// remove an optional tag from this Ifd, so it can be used as fast-access
+    // /// in a wrapping struct.
+    // ///
+    // /// edge-case: tag is present, but value not loaded:
+    // /// The tag gets re-inserted into the dict and RequiredTagNotLoaded is returned
+    // pub fn remove_optional_val(&mut self, tag: &Tag) -> TiffResult<Option<TagData>> {
+    //     match self.data.remove(tag) {
+    //         Some(IfdEntry::Offset(o)) => {
+    //             self.data.insert(*tag, IfdEntry::Offset(o));
+    //             Err(UsageError::RequiredTagNotLoaded(*tag, o).into())
+    //         }
+    //         Some(IfdEntry::Value(v)) => Ok(Some(v)),
+    //         None => Ok(None),
+    //     }
+    // }
 
-    /// Get a tag, returning error if not present or loaded
-    pub fn require_tag_value(&self, tag: &Tag) -> TiffResult<&TagData> {
-        match self.require_tag(tag)? {
-            IfdEntry::Offset(o) => Err(UsageError::RequiredTagNotLoaded(*tag, *o).into()),
-            IfdEntry::Value(be) => Ok(be),
-        }
-    }
+    // /// Get a tag, returning error if not present or loaded
+    // pub fn require_tag_value(&self, tag: &Tag) -> TiffResult<&TagData> {
+    //     match self.require_tag(tag)? {
+    //         IfdEntry::Offset(o) => Err(UsageError::RequiredTagNotLoaded(*tag, *o).into()),
+    //         IfdEntry::Value(be) => Ok(be),
+    //     }
+    // }
 
-    /// get a tag, returning error if not loaded, Ok(None) if not present
-    pub fn get_tag_value(&self, tag: &Tag) -> TiffResult<Option<&TagData>> {
-        if let Some(be) = self.get_tag(tag) {
-            match be {
-                IfdEntry::Offset(o) => Err(UsageError::RequiredTagNotLoaded(*tag, *o).into()),
-                IfdEntry::Value(be) => Ok(Some(be)),
-            }
-        } else {
-            Ok(None)
-        }
-    }
+    // /// get a tag, returning error if not loaded, Ok(None) if not present
+    // pub fn get_tag_value(&self, tag: &Tag) -> TiffResult<Option<&TagData>> {
+    //     if let Some(be) = self.get_tag(tag) {
+    //         match be {
+    //             IfdEntry::Offset(o) => Err(UsageError::RequiredTagNotLoaded(*tag, *o).into()),
+    //             IfdEntry::Value(be) => Ok(Some(be)),
+    //         }
+    //     } else {
+    //         Ok(None)
+    //     }
+    // }
 
-    pub fn contains_key(&self, tag: &Tag) -> bool {
-        self.data.contains_key(tag)
-    }
+    // pub fn contains_key(&self, tag: &Tag) -> bool {
+    //     self.data.contains_key(tag)
+    // }
 
-    /// Insert related tag data into this IFD. Will error if the tag is not present
-    pub fn insert_tag_data(&mut self, tag_data: BTreeMap<Tag, TagData>) -> TiffResult<()> {
-        for (tag, value) in tag_data {
-            self.data
-                .insert(tag, IfdEntry::Value(value))
-                .ok_or(UsageError::TagOfDataNotPresent(tag))?;
-        }
-        Ok(())
-    }
+    // /// Insert related tag data into this IFD. Will error if the tag is not present
+    // pub fn insert_tag_data(&mut self, tag_data: BTreeMap<Tag, TagData>) -> TiffResult<()> {
+    //     for (tag, value) in tag_data {
+    //         self.data
+    //             .insert(tag, IfdEntry::Value(value))
+    //             .ok_or(UsageError::TagOfDataNotPresent(tag))?;
+    //     }
+    //     Ok(())
+    // }
 }
 
 impl From<Directory> for Ifd {

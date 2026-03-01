@@ -5,9 +5,7 @@ use std::fs;
 use std::path::Path;
 use std::time::Instant;
 
-use log::{error, info};
 use tiff2::error::TiffResult;
-use tiff2::loader::Decoder;
 
 mod common;
 use common::{img_print, TokioFile};

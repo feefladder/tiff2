@@ -4,15 +4,13 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 use bytes::Bytes;
 use image::{DynamicImage, ImageBuffer, Luma, LumaA, Rgb, Rgb32FImage, Rgba, Rgba32FImage};
-use log::error;
 use tiff2::error::{TiffError, TiffResult};
-use tiff2::loader::TileData::*;
-use tiff2::loader::{CogReader, TileData};
-use tiff2::structs::tags::PhotometricInterpretation::*;
-use tiff2::structs::ChunkOpts;
+use tiff2::loader::ChunkOpts;
+use tiff2::structs::TileData;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use viuer::{print, Config};
+use TileData::*;
 pub struct TokioFile(pub PathBuf);
 
 impl TokioFile {
@@ -105,7 +103,7 @@ pub fn img_print(mut img: TileData, chopts: &ChunkOpts) {
         // (I64(buf), 4) => {print(&DynamicImage::from(ImageBuffer::<Rgba<_>,_>::from_raw(width, height, buf).expect("could not create image")), &Config::default());},
         (F32(buf), 4) => {print(&DynamicImage::from(Rgba32FImage::from_raw(width, height, buf).expect("could not create image")), &Config::default());},
         // (F64(buf), 4) => {print(&DynamicImage::from(ImageBuffer::<Rgba<_>,_>::from_raw(width, height, buf).expect("could not create image")), &Config::default());},
-        _ => error!("could not show image"),
+        _ => eprintln!("could not show image"),
     }
 }
 
