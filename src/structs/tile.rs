@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use bytes::Bytes;
 use exn::bail;
 
@@ -123,7 +125,7 @@ impl AsMut<[u8]> for TileData {
 ///
 /// Cheaply cloneable
 #[derive(Debug, PartialEq, Clone)]
-pub struct ChunkOpts {
+pub struct ChunkOpts<'a> {
     /// tiff byte order
     pub byte_order: ByteOrder,
     /// width of the image in pixels
@@ -149,7 +151,7 @@ pub struct ChunkOpts {
     ///
     /// In case of ModernJPEG compression, the compression infomation _can_ be
     /// in this tag, where it is prepended to chunks before decoding.
-    pub jpeg_tables: Option<Bytes>,
+    pub jpeg_tables: Option<Cow<'a, [u8]>>,
     /// Planar configuration:
     ///
     /// example: RGB
@@ -166,7 +168,7 @@ pub struct ChunkOpts {
     pub tile_height: u32,
 }
 
-impl ChunkOpts {
+impl ChunkOpts<'_> {
     /// Converts a tile's x and y coordinate to a flat index.
     ///
     ///

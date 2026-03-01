@@ -23,7 +23,7 @@ pub use registry::DecoderRegistry;
 type CodingResult<T> = exn::Result<T, CodingError>;
 
 pub struct TileServer<'a> {
-    pub(crate) chunk_opts: ChunkOpts,
+    pub(crate) chunk_opts: ChunkOpts<'a>,
     pub(crate) tile_offsets: Cow<'a, [u64]>,
     pub(crate) tile_byte_counts: Cow<'a, [u32]>,
 }

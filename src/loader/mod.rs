@@ -150,16 +150,10 @@ impl Tiff {
         let jpeg_tables = if compression_method == CompressionMethod::ModernJPEG
             && ifd.data.contains_key(&Tag::JPEGTables)
         {
-            let t = &ifd.data[&Tag::JPEGTables];
-            match t {
-                IfdEntry::Offset(o) => bail!(MetaError::deferred_ifd(
-                    vec![o.range()],
-                    self.ifd_offsets[idx],
-                    vec![Tag::JPEGTables],
-                    "could not load image".into()
-                )),
-                IfdEntry::Value(v) => Some(Bytes::copy_from_slice(v.as_ref())),
-            }
+            Some(Cow::from(
+                // TODO: not copy this data
+                ifd.require_val(&Tag::JPEGTables).unwrap().as_ref(),
+            ))
         } else {
             None
         };
