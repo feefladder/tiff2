@@ -1,10 +1,9 @@
 use std::borrow::Cow;
 
 use crate::structs::tags::{
-    CompressionMethod, PhotometricInterpretation, PlanarConfiguration, Predictor,
+    CompressionMethod, PhotometricInterpretation, PlanarConfiguration, Predictor, SampleFormat,
 };
-use crate::structs::{tags::SampleFormat, Tiff};
-use crate::structs::{ChunkOpts, Ifd, IfdEntry, Tag};
+use crate::structs::{ChunkOpts, Ifd, IfdEntry, Tag, Tiff};
 use crate::ColorType;
 
 pub(crate) mod metadata;

@@ -1,6 +1,7 @@
+use std::hint::black_box;
+
 use criterion::{criterion_group, criterion_main, Criterion};
 use rand::{RngExt, SeedableRng};
-use std::hint::black_box;
 ///
 /// [1 2 3 4 5 6 7 8] n_samp = 2
 /// [1 2]| |

@@ -8,8 +8,7 @@ use rayon::iter::ParallelIterator;
 use crate::loader::tile::predictor::{unpredict_float, unpredict_hdiff};
 use crate::structs::error::CodingError;
 use crate::structs::tags::Predictor;
-use crate::structs::ChunkOpts;
-use crate::structs::TileData;
+use crate::structs::{ChunkOpts, TileData};
 use crate::util::fix_endianness;
 use crate::NATIVE_ENDIAN;
 

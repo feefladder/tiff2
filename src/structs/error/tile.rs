@@ -1,9 +1,8 @@
-use std::{error::Error, fmt::Display};
+use std::error::Error;
+use std::fmt::Display;
 
-use crate::structs::{
-    error::ErrorStatus,
-    tags::{CompressionMethod, SampleFormat},
-};
+use crate::structs::error::ErrorStatus;
+use crate::structs::tags::{CompressionMethod, SampleFormat};
 
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]

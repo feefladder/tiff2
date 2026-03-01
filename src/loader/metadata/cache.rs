@@ -191,10 +191,9 @@ mod test {
 
     use exn::bail;
 
+    use super::*;
     use crate::loader::MetaErrorKind;
     use crate::structs::error::ErrorStatus;
-
-    use super::*;
 
     #[test]
     fn test_too_fancy_cache() {

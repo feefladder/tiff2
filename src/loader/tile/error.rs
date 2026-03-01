@@ -3,7 +3,9 @@
 //! Currently these look a lot like MetaErrors
 //!
 // TODO: move shared stuff to more top-level, how many error types do I want????
-use std::{error::Error, fmt::Display, ops::Range};
+use std::error::Error;
+use std::fmt::Display;
+use std::ops::Range;
 
 use crate::structs::error::ErrorStatus;
 

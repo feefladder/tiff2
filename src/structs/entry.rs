@@ -460,9 +460,10 @@ mod test_entry {
     use std::any::type_name;
     use std::io;
 
+    use TagType::*;
+
     use super::*;
     use crate::ByteOrder;
-    use TagType::*;
 
     #[test]
     fn test_bufferedentry_into_u8slice() {

@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 
 use exn::OptionExt;
 
-use crate::structs::{error::IfdError, IfdEntry, Tag, TagData, TagType};
+use crate::structs::error::IfdError;
+use crate::structs::{IfdEntry, Tag, TagData, TagType};
 
 type IfdResult<T> = exn::Result<T, IfdError>;
 type Directory = BTreeMap<Tag, IfdEntry>;

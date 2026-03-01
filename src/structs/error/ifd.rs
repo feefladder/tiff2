@@ -1,8 +1,9 @@
-use std::{error::Error, fmt::Display, ops::Range};
-
-use crate::structs::Tag;
+use std::error::Error;
+use std::fmt::Display;
+use std::ops::Range;
 
 use super::ErrorStatus;
+use crate::structs::Tag;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct IfdError {

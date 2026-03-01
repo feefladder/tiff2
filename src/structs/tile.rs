@@ -3,16 +3,11 @@ use std::borrow::Cow;
 use bytes::Bytes;
 use exn::bail;
 
-use crate::{
-    structs::{
-        error::ChunkOptsError,
-        tags::{
-            CompressionMethod, PhotometricInterpretation, PlanarConfiguration, Predictor,
-            SampleFormat,
-        },
-    },
-    ByteOrder,
+use crate::structs::error::ChunkOptsError;
+use crate::structs::tags::{
+    CompressionMethod, PhotometricInterpretation, PlanarConfiguration, Predictor, SampleFormat,
 };
+use crate::ByteOrder;
 
 type ChunkOptsResult<T> = exn::Result<T, ChunkOptsError>;
 
