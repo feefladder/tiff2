@@ -4,6 +4,8 @@ mod tile;
 pub use tile::{ChunkOptsError, ChunkOptsErrorKind, CodingError, CodingErrorKind};
 mod entry;
 pub use entry::{CastError, CastErrorKind};
+mod ifd;
+pub use ifd::{IfdError, IfdErrorKind};
 
 /// The error status.
 ///

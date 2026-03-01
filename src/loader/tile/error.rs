@@ -5,10 +5,7 @@
 // TODO: move shared stuff to more top-level, how many error types do I want????
 use std::{error::Error, fmt::Display, ops::Range};
 
-use crate::structs::{
-    error::ErrorStatus,
-    tags::{CompressionMethod, SampleFormat},
-};
+use crate::structs::error::ErrorStatus;
 
 // error definitions
 #[non_exhaustive]

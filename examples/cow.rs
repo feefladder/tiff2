@@ -2,11 +2,11 @@ use std::borrow::Cow;
 
 fn main() {
     // Shared data (initially borrowed)
-    let mut data: Cow<str> = Cow::Borrowed("hello world");
+    let data: Cow<str> = Cow::Borrowed("hello world");
     println!("{}", 272460i32.isqrt());
     // Another user tries to modify it
     let mut user1 = data.clone();
-    let mut user2 = data.clone();
+    let user2 = data.clone();
 
     // User1 modifies their copy of the data
     if let Cow::Borrowed(s) = &user1 {

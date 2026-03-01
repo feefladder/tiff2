@@ -92,7 +92,26 @@ impl MetaError {
         }
     }
 
-    pub(crate) fn incomplete_ifd(
+    pub(crate) fn invalid_ifd(ifd_offset: u64, missing_tags: Vec<Tag>, message: String) -> Self {
+        Self {
+            status: ErrorStatus::Permanent,
+            kind: MetaErrorKind::IncompleteIfd {
+                ifd_offset,
+                missing_tags,
+            },
+            message,
+        }
+    }
+
+    pub(crate) fn invalid_tag(tag: Tag) -> Self {
+        Self {
+            status: ErrorStatus::Permanent,
+            kind: MetaErrorKind::InvalidTiff,
+            message: format!("value for {tag:?} was invalid"),
+        }
+    }
+
+    pub(crate) fn deferred_ifd(
         ranges: Vec<Range<u64>>,
         ifd_offset: u64,
         missing_tags: Vec<Tag>,

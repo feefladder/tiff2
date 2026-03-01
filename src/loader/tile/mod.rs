@@ -15,15 +15,17 @@ use crate::NATIVE_ENDIAN;
 
 pub mod error;
 mod predictor;
+#[cfg(test)]
+pub(crate) use predictor::{unpredict_f32, unpredict_f64};
 mod registry;
 pub use registry::DecoderRegistry;
 
 type CodingResult<T> = exn::Result<T, CodingError>;
 
 pub struct TileServer<'a> {
-    chunk_opts: ChunkOpts,
-    tile_offsets: Cow<'a, [u64]>,
-    tile_byte_counts: Cow<'a, [u32]>,
+    pub(crate) chunk_opts: ChunkOpts,
+    pub(crate) tile_offsets: Cow<'a, [u64]>,
+    pub(crate) tile_byte_counts: Cow<'a, [u32]>,
 }
 
 impl<'a> TileServer<'a> {
@@ -40,6 +42,9 @@ impl<'a> TileServer<'a> {
         coords.map(|(x, y)| (x, y, self.tile_range(x, y)))
     }
 
+    /// Get decoded tiles from their data
+    ///
+    /// This will decode tiles in parallel
     pub fn get_tiles<'b>(
         &'b self,
         tile_datas: impl ParallelIterator<Item = (u32, u32, Bytes)> + 'b,
@@ -49,7 +54,7 @@ impl<'a> TileServer<'a> {
             (
                 x,
                 y,
-                Self::decode(x, y, self.chunk_opts.clone(), buf, decoder_registry),
+                Self::decode(x, y, &self.chunk_opts, buf, decoder_registry),
             )
         })
     }
@@ -57,7 +62,7 @@ impl<'a> TileServer<'a> {
     pub fn decode(
         x: u32,
         y: u32,
-        chunk_opts: ChunkOpts,
+        chunk_opts: &ChunkOpts,
         compressed: Bytes,
         decoder_registry: &DecoderRegistry,
     ) -> exn::Result<TileData, CodingError> {
@@ -78,7 +83,7 @@ impl<'a> TileServer<'a> {
             .unwrap(),
         )
         .saturating_mul(chunk_opts.samples_per_pixel.into());
-        let mut res = TileData::new(
+        let mut out_buf = TileData::new(
             output_size,
             chunk_opts.dtype().or_raise(|| {
                 CodingError::unsupported_bit_depth(
@@ -87,14 +92,21 @@ impl<'a> TileServer<'a> {
                 )
             })?,
         );
-        Self::decode_into(x, y, chunk_opts, compressed, res.as_mut(), decoder_registry)?;
-        Ok(res)
+        Self::decode_into(
+            x,
+            y,
+            &chunk_opts,
+            compressed,
+            out_buf.as_mut(),
+            decoder_registry,
+        )?;
+        Ok(out_buf)
     }
 
     pub fn decode_into(
         x: u32,
         y: u32,
-        chunk_opts: ChunkOpts,
+        chunk_opts: &ChunkOpts,
         compressed: Bytes,
         out_buf: &mut [u8],
         decoder_registry: &DecoderRegistry,
@@ -122,10 +134,10 @@ impl<'a> TileServer<'a> {
                     0u8;
                     chunk_opts.input_row_stride(x).or_raise(|| {
                         CodingError::invalid_tile_index(x, y)
-                    })? * chunk_opts.chunk_height as usize
+                    })? * chunk_opts.tile_height as usize
                 ];
                 decoder.decode_chunk(&compressed, &mut temp_buf, &chunk_opts)?;
-                unpredict_float(&mut temp_buf, out_buf, &chunk_opts, x, y)?;
+                unpredict_float(&mut temp_buf, out_buf, &chunk_opts, x)?;
             }
         }
         Ok(())

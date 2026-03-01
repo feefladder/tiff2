@@ -103,7 +103,7 @@ impl CogCache {
 
         if !deferred_values.is_empty() {
             let n = deferred_tags.len();
-            Err(MetaError::incomplete_ifd(
+            Err(MetaError::deferred_ifd(
                 deferred_values,
                 offset,
                 deferred_tags,

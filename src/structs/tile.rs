@@ -120,6 +120,8 @@ impl AsMut<[u8]> for TileData {
 /// Struct that holds all relevant metadata that is needed to encode/decode a chunk
 /// (strip or tile).
 /// this does not include chunkoffsets or -bytes, since loading of the tile/strip is separate
+///
+/// Cheaply cloneable
 #[derive(Debug, PartialEq, Clone)]
 pub struct ChunkOpts {
     /// tiff byte order
@@ -157,11 +159,11 @@ pub struct ChunkOpts {
     /// Chunk width in pixels
     ///
     /// If this is a stripped tiff, `chunk_width=image_width`
-    pub chunk_width: u32,
+    pub tile_width: u32,
     /// Chunk height in pixels
     ///
     /// If this is a stripped tiff, `chunk_height=rows_per_strip`
-    pub chunk_height: u32,
+    pub tile_height: u32,
 }
 
 impl ChunkOpts {
@@ -196,7 +198,7 @@ impl ChunkOpts {
     pub(crate) fn input_row_stride(&self, x: u32) -> ChunkOptsResult<usize> {
         match self.predictor {
             Predictor::FloatingPoint => {
-                Ok((self.chunk_width as usize).saturating_mul(self.bits_per_pixel() / 8))
+                Ok((self.tile_width as usize).saturating_mul(self.bits_per_pixel() / 8))
             }
             _ => self.output_row_stride(x),
         }
@@ -216,19 +218,19 @@ impl ChunkOpts {
         }
     }
     pub fn chunks_across(&self) -> u32 {
-        self.image_width.div_ceil(self.chunk_width)
+        self.image_width.div_ceil(self.tile_width)
     }
     pub fn chunks_down(&self) -> u32 {
-        self.image_height.div_ceil(self.chunk_height)
+        self.image_height.div_ceil(self.tile_height)
     }
     pub fn chunk_width_pixels(&self, x: u32) -> ChunkOptsResult<u32> {
         let chunks_across = self.chunks_across();
         if x >= chunks_across {
             Err(ChunkOptsError::index_error(x as _, chunks_across as _).into())
         } else if x == chunks_across - 1 {
-            Ok(self.image_width - self.chunk_width * x)
+            Ok(self.image_width - self.tile_width * x)
         } else {
-            Ok(self.chunk_width)
+            Ok(self.tile_width)
         }
     }
     pub fn chunk_height_pixels(&self, y: u32) -> ChunkOptsResult<u32> {
@@ -236,16 +238,16 @@ impl ChunkOpts {
         if y >= chunks_down {
             Err(ChunkOptsError::index_error(y as _, chunks_down as _).into())
         } else if y == chunks_down - 1 {
-            Ok(self.image_height - self.chunk_height * y)
+            Ok(self.image_height - self.tile_height * y)
         } else {
-            Ok(self.chunk_height)
+            Ok(self.tile_height)
         }
     }
     /// dimensions of a chunk, not taking padding into account.
     ///
     /// Can be directly deduced from ChunkType and corresponding data
     pub fn chunk_dimensions(&self) -> (u32, u32) {
-        (self.chunk_width, self.chunk_height)
+        (self.tile_width, self.tile_height)
     }
 
     pub fn output_rows(&self, y: u32) -> ChunkOptsResult<usize> {

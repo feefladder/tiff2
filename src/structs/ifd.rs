@@ -1,8 +1,11 @@
 use std::collections::BTreeMap;
 
-use crate::structs::{IfdEntry, Tag, TagData, TagType};
+use exn::OptionExt;
 
-pub type Directory = BTreeMap<Tag, IfdEntry>;
+use crate::structs::{error::IfdError, IfdEntry, Tag, TagData, TagType};
+
+type IfdResult<T> = exn::Result<T, IfdError>;
+type Directory = BTreeMap<Tag, IfdEntry>;
 
 /// The size of the `number of entries`
 ///
@@ -101,14 +104,12 @@ impl Ifd {
         self.data.get(tag)
     }
 
-    // /// Get a tag, returning error if not present
-    // ///
-    // /// Can return `IfdEntry::Offset` if the tag is not loaded
-    // pub fn require_tag(&self, tag: &Tag) -> TiffResult<&IfdEntry> {
-    //     self.data.get(tag).ok_or(TiffError::FormatError(
-    //         TiffFormatError::RequiredTagNotFound(*tag),
-    //     ))
-    // }
+    /// Get a tag, returning error if not present
+    ///
+    /// Can return `IfdEntry::Offset` if the tag is not loaded
+    pub fn require_tag(&self, tag: &Tag) -> IfdResult<&IfdEntry> {
+        self.data.get(tag).ok_or_raise(|| IfdError::not_found(*tag))
+    }
 
     // /// remove a required tag from this Ifd, so we can use it as fast-access
     // /// in a wrapping struct.
@@ -146,13 +147,13 @@ impl Ifd {
     //     }
     // }
 
-    // /// Get a tag, returning error if not present or loaded
-    // pub fn require_tag_value(&self, tag: &Tag) -> TiffResult<&TagData> {
-    //     match self.require_tag(tag)? {
-    //         IfdEntry::Offset(o) => Err(UsageError::RequiredTagNotLoaded(*tag, *o).into()),
-    //         IfdEntry::Value(be) => Ok(be),
-    //     }
-    // }
+    /// Get a tag, returning error if not present or loaded
+    pub(crate) fn require_val(&self, tag: &Tag) -> IfdResult<&TagData> {
+        match self.require_tag(tag)? {
+            IfdEntry::Offset(o) => Err(IfdError::not_loaded(*tag, o.range()).into()),
+            IfdEntry::Value(be) => Ok(be),
+        }
+    }
 
     // /// get a tag, returning error if not loaded, Ok(None) if not present
     // pub fn get_tag_value(&self, tag: &Tag) -> TiffResult<Option<&TagData>> {

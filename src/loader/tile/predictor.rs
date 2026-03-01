@@ -68,27 +68,30 @@ pub(crate) fn unpredict_hdiff<'a>(buffer: &mut [u8], predictor_info: &ChunkOpts,
 /// byte-ordering should be done.
 ///
 /// If the tile has horizontal padding, it will shorten the output.
+///
+/// # Panics
+///
+/// if
 pub(crate) fn unpredict_float<'a>(
     in_buf: &mut [u8],
     out_buf: &mut [u8],
     predictor_info: &ChunkOpts,
     x: u32,
-    y: u32,
 ) -> exn::Result<(), CodingError> {
     let output_row_stride = predictor_info.output_row_stride(x).unwrap();
     let bit_depth = predictor_info.bits_per_sample;
-    if predictor_info.chunk_width_pixels(x).unwrap() == predictor_info.chunk_width {
+    if predictor_info.chunk_width_pixels(x).unwrap() == predictor_info.tile_width {
         // no special padding handling
         for (input, output) in in_buf
             .chunks_exact_mut(output_row_stride)
             .zip(out_buf.chunks_exact_mut(output_row_stride))
         {
             match bit_depth {
-                16 => rev_predict_f16(input, output, predictor_info.samples_per_pixel as _),
-                32 => rev_predict_f32(input, output, predictor_info.samples_per_pixel as _),
-                64 => rev_predict_f64(input, output, predictor_info.samples_per_pixel as _),
+                16 => unpredict_f16(input, output, predictor_info.samples_per_pixel as _),
+                32 => unpredict_f32(input, output, predictor_info.samples_per_pixel as _),
+                64 => unpredict_f64(input, output, predictor_info.samples_per_pixel as _),
                 depth => bail!(CodingError::unsupported_bit_depth(
-                    bit_depth,
+                    depth,
                     "unpredicting float"
                 )),
             }
@@ -105,11 +108,11 @@ pub(crate) fn unpredict_float<'a>(
             .zip(out_buf.chunks_exact_mut(output_row_stride))
         {
             match bit_depth {
-                16 => rev_predict_f16(input, &mut out_row, predictor_info.samples_per_pixel as _),
-                32 => rev_predict_f32(input, &mut out_row, predictor_info.samples_per_pixel as _),
-                64 => rev_predict_f64(input, &mut out_row, predictor_info.samples_per_pixel as _),
+                16 => unpredict_f16(input, &mut out_row, predictor_info.samples_per_pixel as _),
+                32 => unpredict_f32(input, &mut out_row, predictor_info.samples_per_pixel as _),
+                64 => unpredict_f64(input, &mut out_row, predictor_info.samples_per_pixel as _),
                 depth => bail!(CodingError::unsupported_bit_depth(
-                    bit_depth,
+                    depth,
                     "unpredicting float"
                 )),
             }
@@ -125,7 +128,7 @@ pub(crate) fn unpredict_float<'a>(
 /// floating point prediction first shuffles the bytes and then uses horizontal
 /// differencing
 /// also performs byte-order conversion if needed.
-pub fn rev_predict_f16(input: &mut [u8], output: &mut [u8], samples: usize) {
+pub(crate) fn unpredict_f16(input: &mut [u8], output: &mut [u8], samples: usize) {
     // reverse horizontal differencing
     for i in samples..input.len() {
         input[i] = input[i].wrapping_add(input[i - samples]);
@@ -145,7 +148,7 @@ pub fn rev_predict_f16(input: &mut [u8], output: &mut [u8], samples: usize) {
 /// floating point prediction first shuffles the bytes and then uses horizontal
 /// differencing
 /// also performs byte-order conversion if needed.
-pub fn rev_predict_f32(input: &mut [u8], output: &mut [u8], samples: usize) {
+pub(crate) fn unpredict_f32(input: &mut [u8], output: &mut [u8], samples: usize) {
     // reverse horizontal differencing
     for i in samples..input.len() {
         input[i] = input[i].wrapping_add(input[i - samples]);
@@ -172,7 +175,7 @@ pub fn rev_predict_f32(input: &mut [u8], output: &mut [u8], samples: usize) {
 /// floating point prediction first shuffles the bytes and then uses horizontal
 /// differencing
 /// Also fixes byte order if needed (tiff's->native)
-pub fn rev_predict_f64(input: &mut [u8], output: &mut [u8], samples: usize) {
+pub(crate) fn unpredict_f64(input: &mut [u8], output: &mut [u8], samples: usize) {
     for i in samples..input.len() {
         input[i] = input[i].wrapping_add(input[i - samples]);
     }
@@ -211,8 +214,8 @@ mod test {
         byte_order: ByteOrder::LittleEndian,
         image_width: 7,
         image_height: 7,
-        chunk_width: 4,
-        chunk_height: 4,
+        tile_width: 4,
+        tile_height: 4,
         bits_per_sample: 8,
         samples_per_pixel: 1,
         sample_format: SampleFormat::Void,
@@ -254,14 +257,14 @@ mod test {
         ];
 
     #[test]
-    fn test_chunk_width_pixels() {
+    fn test_tile_width_pixels() {
         let info = CHOPTS;
         assert_eq!(info.chunks_across(), 2);
         assert_eq!(info.chunks_down(), 2);
-        assert_eq!(info.chunk_width_pixels(0).unwrap(), info.chunk_width);
+        assert_eq!(info.chunk_width_pixels(0).unwrap(), info.tile_width);
         assert_eq!(info.chunk_width_pixels(1).unwrap(), 3);
         info.chunk_width_pixels(2).unwrap_err();
-        assert_eq!(info.chunk_height_pixels(0).unwrap(), info.chunk_height);
+        assert_eq!(info.chunk_height_pixels(0).unwrap(), info.tile_height);
         assert_eq!(info.chunk_height_pixels(1).unwrap(), 3);
         info.chunk_height_pixels(2).unwrap_err();
     }
@@ -476,8 +479,8 @@ mod test {
             byte_order: ByteOrder::LittleEndian,
             image_width: 4+4,
             image_height: 4+1,
-            chunk_width: 4,
-            chunk_height: 4,
+            tile_width: 4,
+            tile_height: 4,
             bits_per_sample: 16,
             samples_per_pixel: 1,
             planar_config: PlanarConfiguration::Chunky,
@@ -494,7 +497,6 @@ mod test {
             &mut input,
             &mut output,
             &info,
-            1,
             1,
         )
         .unwrap();
@@ -520,8 +522,8 @@ mod test {
             byte_order: ByteOrder::LittleEndian,
             image_width: 4+2,
             image_height: 4+1,
-            chunk_width: 4,
-            chunk_height: 4,
+            tile_width: 4,
+            tile_height: 4,
             bits_per_sample: 16,
             samples_per_pixel: 1,
             planar_config: PlanarConfiguration::Chunky,
@@ -538,7 +540,6 @@ mod test {
             &mut input,
             &mut output,
             &info,
-            1,
             1,
         )
         .unwrap();
@@ -563,8 +564,8 @@ mod test {
             byte_order: ByteOrder::LittleEndian,
             image_width: 2,
             image_height: 2 + 1,
-            chunk_width: 2,
-            chunk_height: 2,
+            tile_width: 2,
+            tile_height: 2,
             bits_per_sample: 32,
             samples_per_pixel: 1,
             planar_config: PlanarConfiguration::Chunky,
@@ -581,7 +582,6 @@ mod test {
             &mut input,
             &mut output,
             &info,
-            0,
             0,
         )
         .unwrap();
@@ -610,8 +610,8 @@ mod test {
             byte_order: ByteOrder::LittleEndian,
             image_width: 2,
             image_height: 2 + 1,
-            chunk_width: 2,
-            chunk_height: 2,
+            tile_width: 2,
+            tile_height: 2,
             bits_per_sample: 64,
             samples_per_pixel: 1,
             planar_config: PlanarConfiguration::Chunky,
@@ -624,7 +624,7 @@ mod test {
         };
         let mut input = diffed.to_vec();
         let mut output = vec![0; diffed.len()];
-        unpredict_float(&mut input, &mut output, &info, 0, 0).unwrap();
+        unpredict_float(&mut input, &mut output, &info, 0).unwrap();
         assert_eq!(&output, &expect_be);
     }
 }

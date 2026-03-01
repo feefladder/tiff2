@@ -1,4 +1,5 @@
 use std::any::type_name;
+use std::borrow::Cow;
 use std::ops::Range;
 
 use exn::{ensure, Exn, ResultExt};
@@ -313,6 +314,23 @@ macro_rules! impl_tagdata_casts {
         //     }
         // }
 
+
+        impl<'a> TryFrom<&'a TagData> for Cow<'a, [$target]> {
+            type Error = Exn<CastError>;
+            fn try_from(val: &'a TagData) -> Result<Self, Self::Error> {
+                match &val {
+                    $(TagData::$from_small(v) => Ok(Cow::from(v.into_iter().map(|val| <$target>::from(*val)).collect::<Vec<_>>())),)*
+                    $(TagData::$from_exact(v) => Ok(Cow::from(&v[..])),)+
+                    $(TagData::$from_large(v) => Ok(Cow::from(v
+                        .into_iter()
+                        .map(|val| <$target>::try_from(*val)
+                            .or_raise(|| CastError::overflow(*val as _, type_name::<Vec<$target>>())
+                        )).collect::<Result<Self, _>>()?)),)*
+                    _ => Err(CastError::invalid_cast(val.tag_type(), type_name::<$target>()).into())
+                }
+            }
+        }
+
         impl TryFrom<TagData> for Vec<$target> {
             type Error = Exn<CastError>;
 
@@ -321,7 +339,7 @@ macro_rules! impl_tagdata_casts {
                     // https://stackoverflow.com/q/48308759/14681457
                     $(TagData::$from_small(v) => Ok(v.into_iter().map(<$target>::from).collect()),)*
                     $(TagData::$from_exact(v) => Ok(v.into_vec()),)+
-                    $(TagData::$from_large(v) => Ok(v.into_iter().map(|v| <$target>::try_from(v).or_raise(|| CastError::overflow(v as _, type_name::<Vec<$target>>()))).collect::<Result<Self, _>>()?),)*
+                    $(TagData::$from_large(v) => v.into_iter().map(|val| <$target>::try_from(val).or_raise(|| CastError::overflow(val as _, type_name::<Vec<$target>>()))).collect::<Result<Self, _>>(),)*
                     _ => Err(CastError::invalid_cast(val.tag_type(), type_name::<$target>()).into()),
                 }
             }

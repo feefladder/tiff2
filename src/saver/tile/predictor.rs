@@ -65,7 +65,7 @@ pub(crate) fn predict_float(in_buf: &mut [u8], out_buf: &mut [u8], chopts: &Chun
     // I'm not sure, but I think padding bits should be set to 0?
     let output_row_stride = chopts.input_row_stride(x).unwrap();
     let bit_depth = chopts.bits_per_sample;
-    if chopts.chunk_width_pixels(x).unwrap() == chopts.chunk_width {
+    if chopts.chunk_width_pixels(x).unwrap() == chopts.tile_width {
         // no special padding handling
         for (input, output) in in_buf
             .chunks_exact_mut(output_row_stride)
@@ -118,7 +118,7 @@ mod test {
     use std::vec;
 
     use super::*;
-    use crate::loader::{unpredict_f32, unpredict_f64};
+    use crate::loader::tile::{unpredict_f32, unpredict_f64};
     use crate::structs::tags::{
         CompressionMethod, PhotometricInterpretation, PlanarConfiguration, Predictor, SampleFormat,
     };
@@ -261,8 +261,8 @@ mod test {
         byte_order: ByteOrder::LittleEndian,
         image_width: 7,
         image_height: 7,
-        chunk_width: 4,
-        chunk_height: 4,
+        tile_width: 4,
+        tile_height: 4,
         bits_per_sample: 8,
         samples_per_pixel: 1,
         sample_format: SampleFormat::Void,
@@ -486,8 +486,8 @@ mod test {
             byte_order: ByteOrder::LittleEndian,
             image_width: 4+4,
             image_height: 4+1,
-            chunk_width: 4,
-            chunk_height: 4,
+            tile_width: 4,
+            tile_height: 4,
             bits_per_sample: 16,
             samples_per_pixel: 1,
             planar_config: PlanarConfiguration::Chunky,
@@ -528,8 +528,8 @@ mod test {
             byte_order: ByteOrder::LittleEndian,
             image_width: 4+2,
             image_height: 4+1,
-            chunk_width: 4,
-            chunk_height: 4,
+            tile_width: 4,
+            tile_height: 4,
             bits_per_sample: 16,
             samples_per_pixel: 1,
             planar_config: PlanarConfiguration::Chunky,
@@ -569,8 +569,8 @@ mod test {
             byte_order: ByteOrder::LittleEndian,
             image_width: 2,
             image_height: 2 + 1,
-            chunk_width: 2,
-            chunk_height: 2,
+            tile_width: 2,
+            tile_height: 2,
             bits_per_sample: 32,
             samples_per_pixel: 1,
             planar_config: PlanarConfiguration::Chunky,
@@ -610,8 +610,8 @@ mod test {
             byte_order: ByteOrder::LittleEndian,
             image_width: 4+2,
             image_height: 2 + 1,
-            chunk_width: 4,
-            chunk_height: 2,
+            tile_width: 4,
+            tile_height: 2,
             bits_per_sample: 32,
             samples_per_pixel: 1,
             planar_config: PlanarConfiguration::Chunky,
@@ -655,8 +655,8 @@ mod test {
             byte_order: ByteOrder::LittleEndian,
             image_width: 2,
             image_height: 2 + 1,
-            chunk_width: 2,
-            chunk_height: 2,
+            tile_width: 2,
+            tile_height: 2,
             bits_per_sample: 64,
             samples_per_pixel: 1,
             planar_config: PlanarConfiguration::Chunky,

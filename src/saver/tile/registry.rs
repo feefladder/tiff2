@@ -68,6 +68,7 @@ impl Default for EncoderRegistry {
     }
 }
 
+// not sure why this can't be `Clone`...
 pub trait Encoder: Debug + Send + Sync {
     fn encode_chunk(
         &self,
@@ -77,7 +78,7 @@ pub trait Encoder: Debug + Send + Sync {
     ) -> EncodingResult<u64>;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct UncompressedEncoder;
 
 impl Encoder for UncompressedEncoder {
@@ -122,7 +123,7 @@ impl Encoder for LzwEncoder {
 }
 
 #[cfg(feature = "deflate")]
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct DeflateEncoder {
     pub compression_level: flate2::Compression,
 }
