@@ -1,0 +1,319 @@
+//! # Tiff loading
+//!
+//!
+//! ## in-depth
+//!
+//! These are notes for future me, or people interested in the general design.
+//!
+//! ### API layering
+//!
+//! This crate uses "inversion of control".
+//!
+//! That is, in stead of the `TiffLoader` holding a `Fetch` and acting as a
+//! reader, the `Loader` holds a tiff and acts similar to a writer: you feed it
+//! buffers and it writes a `Tiff` datastructure. This allows for a very thin
+//! `async` layer and non-locking decoding. The `Reader` acts as a slightly
+//! fancier [`std::io::Copy`] implementation.
+//!
+//! ```
+//!               Reader
+//!           +----/  \--------------+
+//! interwebs---Fetch Loader-..-Tiff |
+//!           |                   \  |
+//!           +------------------TileLoader
+//! ```
+//!
+//! #### Cache layer
+//!
+//! It is possible to insert a cache layer as a `Loader` in between the `Reader` and `Tiff`.
+//!
+//! ### internal data structures
+//!
+//! Tag data goes through three stages, all with their corresponding backing store
+//!
+//! ```text
+//! - range request ->   `Bytes`
+//!                         | fix endianness
+//!                         | ensure alignment
+//! - inside IFD -> `TagData(SmallVec<T>)`
+//!                         | cast to same value, regardless of encoded type
+//! - inside TileLoader -> `Cow<'a, [T]>`
+//! ```
+//!
+//! That is: a `TileLoader` always has `TileByteCounts` as `Cow<'a, [u64]>`
+//! where `TagData` could have been `u16`,`u32` or `u64`.
+//!
+//! #### reasoning
+//!
+//! - `Bytes` because it is zero-copy among slices (cache/memmap)
+//! - `SmallVec` reads from `Bytes` are often misaligned, this allows bytemucking and mirrors tiff layout
+//! - `Cow<'a, [T]>` Saves a copy in the happy path and is a vector otherwise
+//!
+//! This does mean that the `Tiff` needs to be kept alive inside `Reader`s, but that's ok
+//!
+
+use std::collections::BTreeMap;
+use std::error::Error;
+#[cfg(any(feature = "sync", feature = "async"))]
+use std::ops::Range;
+
+#[cfg(feature = "async")]
+use async_trait::async_trait;
+#[cfg(any(feature = "sync", feature = "async"))]
+use bytes::Bytes;
+use derive_more::Display;
+
+#[cfg(any(feature = "sync", feature = "async"))]
+use crate::loader::tile::CodingResult;
+use crate::loader::tile::DecoderRegistry;
+use crate::structs::Tiff;
+#[cfg(any(feature = "sync", feature = "async"))]
+use crate::structs::{TileCoord, TileData};
+#[cfg(feature = "sync")]
+use crate::ByteOrder;
+
+pub(crate) mod metadata;
+pub use metadata::{CacheMiss, IfdLoader, TiffLoadError, TiffLoadResult, TiffLoader};
+#[cfg(feature = "async")]
+mod r#async;
+#[cfg(feature = "sync")]
+mod sync;
+pub(crate) mod tile;
+pub use tile::TileLoader;
+
+pub type FetchResult<T> = exn::Result<T, FetchError>;
+pub type MetaReadResult<T> = exn::Result<T, MetaReadError>;
+pub type ReadResult<T> = exn::Result<T, ReadError>;
+
+#[cfg(feature = "sync")]
+pub trait SyncFetch {
+    fn fetch_range(&self, range: Range<u64>) -> FetchResult<Bytes>;
+    fn fetch_ranges(&self, ranges: &[Range<u64>]) -> FetchResult<Vec<Bytes>>;
+}
+
+#[cfg(feature = "async")]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+pub trait AsyncFetch: Send + Sync {
+    async fn fetch_range(&self, range: Range<u64>) -> FetchResult<Bytes>;
+    async fn fetch_ranges(&self, ranges: &[Range<u64>]) -> FetchResult<Vec<Bytes>>;
+}
+
+pub struct TiffMetaReader<Fetch, Loader> {
+    fetch: Fetch,
+    loader: Loader,
+}
+
+pub struct TiffIfdReader<Fetch> {
+    fetch: Fetch,
+    ifd_loader: IfdLoader,
+}
+
+#[cfg(feature = "sync")]
+pub trait SyncMetaReader<Fetch: SyncFetch>: Sized {
+    fn open(fetch: Fetch, prefetch: u64) -> MetaReadResult<Self>;
+    fn next(&mut self) -> MetaReadResult<Option<u64>>;
+    fn skip(&mut self, n: usize) -> MetaReadResult<Option<u64>>;
+    // fn into_inner(self) -> (Fetch, Tiff);
+    // fn finish(self, decoder_registry: DecoderRegistry) -> impl SyncReader;
+}
+
+#[cfg(feature = "sync")]
+pub trait SyncIfdReader<Fetch: SyncFetch>: Sized {
+    fn wrap(ifd: Ifd, bigtiff: bool, byte_order: ByteOrder) -> Self;
+}
+
+#[cfg(feature = "async")]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+pub trait AsyncMetaReader<Fetch: AsyncFetch, Loader: TiffLoader>: Sized + Send + Sync {
+    async fn open(fetch: Fetch, prefetch: u64) -> MetaReadResult<Self>;
+    async fn next(&mut self) -> MetaReadResult<Option<u64>>;
+    async fn skip(&mut self, n: usize) -> MetaReadResult<Option<u64>>;
+    // async fn into_inner(self) -> (Fetch, Tiff);
+    // async fn finish(self, decoder_registry: DecoderRegistry) -> impl AsyncReader;
+}
+
+impl<Fetch, Loader: TiffLoader> TiffMetaReader<Fetch, Loader> {
+    pub fn into_inner(self) -> (Fetch, Loader) {
+        (self.fetch, self.loader)
+    }
+
+    pub fn finish(self, decoder_registry: DecoderRegistry) -> TiffReader<Fetch> {
+        TiffReader {
+            fetch: self.fetch,
+            tiff: self.loader.into_tiff(),
+            tile_loaders: BTreeMap::new(),
+            decoder_registry,
+        }
+    }
+}
+
+pub struct TiffReader<Fetch> {
+    fetch: Fetch,
+    tiff: Tiff,
+    tile_loaders: BTreeMap<u64, TileLoader>,
+    decoder_registry: DecoderRegistry,
+}
+
+#[cfg(feature = "sync")]
+pub trait SyncReader {
+    fn get_tiles(
+        &self,
+        ifd_idx: usize,
+        coords: &[TileCoord],
+    ) -> ReadResult<Vec<(TileCoord, CodingResult<TileData>)>>;
+    fn prep_ifd(&mut self, ifd_idx: usize) -> ReadResult<()>;
+}
+
+#[cfg(feature = "async")]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+pub trait AsyncReader {
+    async fn get_tiles(
+        &self,
+        ifd_idx: usize,
+        coords: &[TileCoord],
+    ) -> ReadResult<Vec<(TileCoord, CodingResult<TileData>)>>;
+    async fn prep_ifd(&mut self, ifd_idx: usize) -> ReadResult<()>;
+}
+
+#[derive(Debug, Display, Clone, PartialEq)]
+#[display("fetch erorr: {}", self.0)]
+pub struct FetchError(String);
+impl Error for FetchError {}
+
+#[derive(Debug, Display, Clone, PartialEq)]
+#[display("read error: {}", self.0)]
+pub struct MetaReadError(String);
+impl Error for MetaReadError {}
+
+impl MetaReadError {
+    pub fn fetch_error(message: String) -> Self {
+        Self(message)
+    }
+}
+
+#[derive(Debug, Display, Clone, PartialEq)]
+#[display("{kind}: {message}")]
+pub struct ReadError {
+    pub kind: ReadErrorKind,
+    pub message: String,
+}
+impl Error for ReadError {}
+#[derive(Debug, Display, Clone, PartialEq)]
+pub enum ReadErrorKind {
+    #[display("fatal")]
+    Fatal,
+    #[display("fetch error")]
+    FetchError,
+    #[display("no tile loader for {ifd_offset}")]
+    NoTileLoader { ifd_offset: u64 },
+}
+
+impl ReadError {
+    fn fetch_error(message: String) -> Self {
+        Self {
+            kind: ReadErrorKind::FetchError,
+            message,
+        }
+    }
+
+    fn fatal(message: String) -> Self {
+        Self {
+            kind: ReadErrorKind::Fatal,
+            message,
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+
+    use bytes::Bytes;
+
+    use super::*;
+    #[rustfmt::skip]
+    fn circular_tiff() -> Bytes {
+        Bytes::from_owner([
+        //    0     1    2  3
+            b'I', b'I',
+            42, 0,// header
+        //  4 5 6 7
+            8,0,0,0,       // first ifd offset, u32
+        //  8 9
+            0,0,           // first ifd entry count, u16
+        //   A B C D
+            14,0,0,0,       // next ifd offset, u32
+            0,0,            // second ifd entry count, u16
+            8,0,0,0         // next ifd offset (points to 0)
+        ])
+    }
+
+    // #[tokio::test]
+    // async fn test_async_copy() {
+    //     // for now everything is infallible
+    //     #[async_trait::async_trait]
+    //     trait AsyncRead {
+    //         async fn read_range(&self, range: Range<u64>) -> Bytes;
+    //         // yeah so I guess this is kind of sad, because we could coalesce_ranges downstream,
+    //         // so I guess just a &[Range<u64>]->&[Bytes] should suffice?
+    //         async fn read_ranges(&self, ranges: &[Range<u64>]) -> impl Iterator<Item = Bytes>;
+    //     }
+    //     async fn async_copy(reader: impl AsyncRead) -> TiffLoadResult<Tiff> {
+    //         let prefetch = reader.read_range(0..1024 * 16).await;
+    //         let mut writer = CogCache::from_header(prefetch).unwrap();
+    //         while match writer.next() {
+    //             // ok to unwrap the downcast_ref because of `writer.next()` return type
+    //             Err(e) => match e.frame().error().downcast_ref::<TiffLoadError>().unwrap() {
+    //                 TiffLoadError {
+    //                     status: ErrorStatus::MissingRange { required },
+    //                     kind: _,
+    //                     message: _,
+    //                 } => {
+    //                     writer.insert(
+    //                         usize::try_from(required.start).unwrap(),
+    //                         reader.read_range(required.clone()).await,
+    //                     );
+    //                     true
+    //                     // so the idea is here that calling `next` which errors doesn't advance the iterator, so calling "next" again will retry
+    //                     // except that it may be the idea to skip ifds
+    //                 }
+    //                 // any other error is bad, why can't I raise without cloning?
+    //                 // ah well, whatevs
+    //                 e => bail!(e.clone()),
+    //             },
+    //             Ok(Some(v)) => true,
+    //             Ok(None) => false,
+    //         } {
+    //             // println!("weee");
+    //         }
+    //         Ok(writer.finish())
+    //     }
+    //     #[async_trait::async_trait]
+    //     impl AsyncRead for Bytes {
+    //         async fn read_range(&self, range: Range<u64>) -> Bytes {
+    //             self.slice(range.start as usize..self.len().min(range.end as usize))
+    //         }
+    //         async fn read_ranges(&self, ranges: &[Range<u64>]) -> impl Iterator<Item = Bytes> {
+    //             ranges
+    //                 .iter()
+    //                 .map(|r| self.slice(r.start as usize..r.end as usize))
+    //         }
+    //     }
+    //     assert_eq!(
+    //         async_copy(circular_tiff())
+    //             .await
+    //             .unwrap_err()
+    //             .frame()
+    //             .error()
+    //             .downcast_ref::<TiffLoadError>()
+    //             .unwrap(),
+    //         &TiffLoadError {
+    //             message: "Cycle in offsets detected at ifd 8".into(),
+    //             status: ErrorStatus::Permanent,
+    //             kind: TiffLoadErrorKind::InvalidTiff
+    //         }
+    //     )
+    // }
+}

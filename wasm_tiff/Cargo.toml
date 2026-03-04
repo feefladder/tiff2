@@ -1,0 +1,8 @@
+[package]
+name = "wasm_tiff"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+tiff2 = {workspace = true}

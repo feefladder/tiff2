@@ -1,0 +1,63 @@
+[package]
+name = "tiff2"
+version = "0.0.4"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "temporary async implementation of tiff - to be upstreamed into image-tiff"
+homepage = "https://github.com/feefladder/tiff2"
+repository = "https://app.radicle.xyz/nodes/ash.radicle.garden/rad:zV8XqcPhA2thndDYWeKkt3WGnqbT"
+keywords = ["tiff", "tif", "COG", "streaming"]
+categories = ["wasm", "multimedia", "science", "encoding"]
+exclude = ["tests"]
+
+
+[profile.bench]
+# for flamegraph
+# debug = true
+
+[dependencies]
+bytemuck = { version = "1.19" }
+bytes = "1.8"
+exn = { workspace = true }
+async-trait = {version = "0.1.83", optional = true}
+object_store = { version = "0.13.1", optional = true, features = ["http"] }
+rayon = "1.10.0"
+smallvec = "1.15.1"
+weezl = {version= "0.1.8", optional = true}
+jpeg = { package = "jpeg-decoder", version = "0.3.0", default-features = false, optional= true }
+flate2 = {version = "1.0", optional = true}
+zstd = { version = "0.13.3", optional = true }
+derive_more = { version = "2.1.1", features = ["display"] }
+
+[features]
+default = ["deflate", "lzw", "async"]
+sync = []
+async = ["dep:async-trait"]
+object_store = ["dep:object_store"]
+zstd = ["dep:zstd"]
+jpeg = ["dep:jpeg"]
+deflate = ["dep:flate2"]
+lzw = ["dep:weezl"]
+packbits = []
+
+[[bench]]
+name = "horizontal_predict"
+harness = false
+
+[[bench]]
+name = "parse_ifd"
+harness = false
+
+[dev-dependencies]
+criterion = "0.8"
+image = { version = "0.25.9", default-features = false }
+rand = "0.10"
+reqwest = { version = "0.13", default-features = false}
+tokio = { version = "1.41", features = [
+    "rt",
+    "rt-multi-thread",
+    "fs",
+    "macros",
+    "io-util",
+] }
+viuer = "0.11.0"

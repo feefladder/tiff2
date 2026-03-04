@@ -1,4 +1,4 @@
-# Tiff2 crate
+# Tiff2/wasm_tiff crate
 
 Similar in function and planned lifespan as arrow2 crate:
 - Async support
@@ -78,13 +78,13 @@ further hierarchial structure:
 
 1. Entry (tag data)
 2. Ifd (generic)
-3. ChunkOpts: All relevant options for _independently_ encoding/decoding an
+3. TileOpts: All relevant options for _independently_ encoding/decoding an
    image chunk
 4. Image/ImageMeta: 
    ```rust
    {
      ifd: Ifd,
-     opts: Arc<ChunkOpts>, // immutable since we should decide on those before starting the encoding/decoding process.
+     opts: Arc<TileOpts>, // immutable since we should decide on those before starting the encoding/decoding process.
      chunk_offsets: BufferedEntry, //mutable, since it could be partial
      chunk_bytes: BufferedEntry,
    }
@@ -162,10 +162,10 @@ impl Image {
   fn decode_chunk<R>(&self, reader: R, i_chunk: u64) -> impl Future<Output = TileData>{
     let chunk_offset = self.chunk_offsets[i_chunk];
     let chunk_bytes = self.chunk_bytes[i_chunk];
-    let chunk_opts = self.chunk_opts.clone();
+    let tile_opts = self.tile_opts.clone();
     async move {
       // don't mention `self` in here, see [stackoverflow](https://stackoverflow.com/a/77845970/14681457)
-      ChunkDecoder::decode(reader, chunk_offset, chunk_bytes, chunk_opts)
+      ChunkDecoder::decode(reader, chunk_offset, chunk_bytes, tile_opts)
     }
   }
 }
@@ -285,7 +285,7 @@ A more specialized version is an Image.
 ```rust
 pub struct Image {
     ifd: Ifd,
-    chunk_opts: Arc<ChunkOpts>,
+    tile_opts: Arc<TileOpts>,
     chunk_offsets: BufferedEntry,
     chunk_bytes: BufferedEntry,
 }
@@ -295,7 +295,7 @@ pub struct Image {
 
 - use of ~BufferedEntry~ `TagData` in stead of `Value` everywhere
 - Ifd and other building blocks have a more central place
-- ChunkOpts is taking some place of Image
+- TileOpts is taking some place of Image
 - 
 
 ### todo:
