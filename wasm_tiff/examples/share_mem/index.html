@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+    <body>
+        <script type="module">
+            import init, {
+                DecoderRegistry,
+                JsDecoder,
+            } from "./pkg/share_mem.js";
+
+            async function run() {
+                console.log("initializing wasm");
+                await init();
+                console.log("wasm initialized");
+
+                const registry = new DecoderRegistry();
+                console.log(registry);
+                const decoder = new JsDecoder((data) => {
+                    console.log("decoder called", data);
+                });
+
+                registry.register_decoder(1, decoder);
+
+                registry.decode(1);
+            }
+
+            run();
+        </script>
+    </body>
+</html>

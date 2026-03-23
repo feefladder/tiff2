@@ -1,14 +1,10 @@
-use std::collections::BTreeMap;
-
 use bytes::Bytes;
 use exn::{bail, ResultExt};
 
-use crate::loader::tile::DecoderRegistry;
 use crate::loader::{
-    MetaReadError, MetaReadResult, SyncFetch, SyncMetaReader, SyncReader, TiffLoadError,
-    TiffLoader, TiffMetaReader, TiffReader,
+    IfdReadError, IfdReadResult, IfdReader, MetaReadError, MetaReadResult, SyncFetch,
+    SyncIfdReader, SyncMetaReader, TiffIfdReader, TiffLoadError, TiffLoader, TiffMetaReader,
 };
-use crate::structs::{IfdEntry, TagData};
 
 impl<Fetch: SyncFetch, Loader: TiffLoader> SyncMetaReader<Fetch> for TiffMetaReader<Fetch, Loader> {
     fn open(fetch: Fetch, prefetch: u64) -> MetaReadResult<Self> {
@@ -67,29 +63,15 @@ impl<Fetch: SyncFetch, Loader: TiffLoader> SyncMetaReader<Fetch> for TiffMetaRea
                     }
                     _ => bail!(e.raise(MetaReadError("could not load ifd".into()))),
                 },
-                Ok((mut ifd_loader, next_offset)) => {
+                Ok((ifd_loader, next_offset)) => {
+                    let mut ifd_reader = TiffIfdReader::wrap(&mut self.fetch, ifd_loader);
                     // ensure all deferred values are loaded
-                    for (tag, entry) in ifd_loader.deferred_values_mut() {
-                        let IfdEntry::Offset(o) = entry else {
-                            unreachable!()
-                        };
-                        *entry = IfdEntry::Value(
-                            TagData::from_buffer(
-                                &self.fetch.fetch_range(o.range().clone()).or_raise(|| {
-                                    MetaReadError::fetch_error(format!(
-                                        "could not load data for {tag:?}"
-                                    ))
-                                })?,
-                                o.tag_type,
-                                usize::try_from(o.count).unwrap(),
-                                self.loader.tiff().byte_order(),
-                            )
-                            .unwrap(),
-                        );
-                    }
+                    ifd_reader
+                        .fill_deferred()
+                        .or_raise(|| MetaReadError(format!("could not finalize ifd {offset}")))?;
                     self.loader
                         .tiff_mut()
-                        .insert_ifd(offset, ifd_loader.finish(), next_offset);
+                        .insert_ifd(offset, ifd_reader.finish(), next_offset);
                     return Ok(Some(next_offset));
                 }
             }
@@ -152,5 +134,22 @@ impl<Fetch: SyncFetch, Loader: TiffLoader> SyncMetaReader<Fetch> for TiffMetaRea
             }
         }
         Ok(self.loader.tiff().next_ifd_offset())
+    }
+}
+
+impl<'a, Fetch: SyncFetch> SyncIfdReader<'a, Fetch> for TiffIfdReader<'a, Fetch> {
+    fn fill_deferred(&mut self) -> IfdReadResult<()> {
+        let ranges = self.ifd_loader.deferred_ranges().collect::<Vec<_>>();
+        let data = self
+            .fetch
+            .fetch_ranges(&ranges)
+            .or_raise(|| IfdReadError(format!("Could not fill deferred values of ifd")))?;
+        let byte_order = self.ifd_loader.byte_order;
+        for ((tag, entry), buf) in self.ifd_loader.deferred_values_mut().zip(data) {
+            entry
+                .to_value(&buf, byte_order)
+                .or_raise(|| IfdReadError(format!("could nto read entry for tag {tag:?}")))?;
+        }
+        Ok(())
     }
 }

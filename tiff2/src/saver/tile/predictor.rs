@@ -12,7 +12,7 @@ pub(crate) fn predict_hdiff(buffer: &mut [u8], chopts: &TileOpts, tile_x: u32) {
     }
 }
 
-fn hpredict_nsamp(buf: &mut [u8], bit_depth: u8, samples_per_pixel: usize) {
+fn hpredict_nsamp(buf: &mut [u8], bit_depth: u16, samples_per_pixel: usize) {
     match bit_depth {
         0..=8 => {
             for i in (samples_per_pixel..buf.len()).rev() {

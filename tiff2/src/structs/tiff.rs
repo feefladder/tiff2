@@ -56,4 +56,8 @@ impl Tiff {
     pub fn ifd(&self, idx: usize) -> &Ifd {
         &self.ifds[&self.ifd_offsets[idx]]
     }
+
+    pub fn len(&self) -> usize {
+        self.ifd_offsets.len()
+    }
 }

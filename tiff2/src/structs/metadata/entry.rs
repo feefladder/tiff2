@@ -191,7 +191,7 @@ impl TagData {
             e.as_mut(),
             byte_order,
             NATIVE_ENDIAN,
-            tag_type.primitive_size() * 8,
+            u16::from(tag_type.primitive_size()) * 8,
         );
         Ok(e)
     }
@@ -204,7 +204,7 @@ impl TagData {
             &mut buffer[..req_len],
             NATIVE_ENDIAN,
             byte_order,
-            self.tag_type().primitive_size() * 8,
+            u16::from(self.tag_type().primitive_size()) * 8,
         );
         req_len
     }

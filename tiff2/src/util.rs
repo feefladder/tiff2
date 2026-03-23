@@ -14,7 +14,7 @@ pub fn fix_endianness(
     buf: &mut [u8],
     endianness: ByteOrder,
     target_endianness: ByteOrder,
-    bit_depth: u8,
+    bit_depth: u16,
 ) {
     if endianness != target_endianness {
         // so the only thing is that we have to swap

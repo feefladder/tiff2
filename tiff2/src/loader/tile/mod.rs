@@ -1,12 +1,10 @@
-use std::borrow::Cow;
 use std::error::Error;
-use std::fmt::format;
 use std::ops::Range;
 
 use bytes::Bytes;
 use derive_more::Display;
 use exn::{bail, ensure, OptionExt, ResultExt};
-use rayon::iter::{IndexedParallelIterator, ParallelIterator};
+use rayon::iter::IndexedParallelIterator;
 
 use crate::loader::tile::predictor::{unpredict_float, unpredict_hdiff};
 use crate::structs::error::CodingError;
@@ -160,7 +158,7 @@ impl TileLoader {
             .ok_or_raise(|| CodingError::unsupported_compression(tile_opts.compression_method))?;
         match tile_opts.predictor {
             Predictor::None => {
-                decoder.decode_chunk(&compressed, out_buf, &tile_opts)?;
+                decoder.decode_tile(&compressed, out_buf, &tile_opts)?;
                 fix_endianness(
                     out_buf,
                     tile_opts.byte_order,
@@ -169,7 +167,7 @@ impl TileLoader {
                 );
             }
             Predictor::Horizontal => {
-                decoder.decode_chunk(&compressed, out_buf, &tile_opts)?;
+                decoder.decode_tile(&compressed, out_buf, &tile_opts)?;
                 unpredict_hdiff(out_buf, &tile_opts, x);
             }
             Predictor::FloatingPoint => {
@@ -179,7 +177,7 @@ impl TileLoader {
                         CodingError::invalid_tile_index(x, y)
                     })? * tile_opts.tile_height as usize
                 ];
-                decoder.decode_chunk(&compressed, &mut temp_buf, &tile_opts)?;
+                decoder.decode_tile(&compressed, &mut temp_buf, &tile_opts)?;
                 unpredict_float(&mut temp_buf, out_buf, &tile_opts, x)?;
             }
         }
@@ -285,7 +283,7 @@ impl TileLoader {
         }
 
         if let Ok(v) = ifd.require_val(&Tag::BitsPerSample) {
-            let bpss = <&[u8]>::try_from(v).or_raise(invalid_tag(Tag::BitsPerSample))?;
+            let bpss = <&[u16]>::try_from(v).or_raise(invalid_tag(Tag::BitsPerSample))?;
             ensure!(
                 bpss.windows(2).all(|s| s[0] == s[1]),
                 invalid_ifd("mixed bits per sample unsupported".into())
@@ -414,7 +412,7 @@ impl TileLoader {
 
         let bits_per_sample = ifd
             .require_val(&Tag::BitsPerSample)
-            .map(|v| <&[u8]>::try_from(v).unwrap()[0])
+            .map(|v| <&[u16]>::try_from(v).unwrap()[0])
             .unwrap_or(1);
 
         let planes: u32 = match planar_config {

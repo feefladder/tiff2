@@ -46,6 +46,14 @@ impl IfdLoader {
         Ok(count)
     }
 
+    pub fn wrap(ifd: Ifd, bigtiff: bool, byte_order: ByteOrder) -> Self {
+        Self {
+            bigtiff,
+            byte_order,
+            ifd,
+        }
+    }
+
     /// Given a buffer holding the IFD, get the underlying IFD
     ///
     /// This also reads the count of the ifd (first value). The exact required

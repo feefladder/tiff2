@@ -1,15 +1,14 @@
-use std::borrow::Cow;
 use std::error::Error;
 
 use derive_more::Display;
-use exn::{bail, ensure, ResultExt};
+use exn::{bail, ResultExt};
 
 use super::TileCoord;
 use crate::structs::metadata::tags::{
     CompressionMethod, PhotometricInterpretation, PlanarConfiguration, Predictor, SampleFormat,
 };
 use crate::structs::TileDataType;
-use crate::ByteOrder;
+use crate::{ByteOrder, ColorType};
 
 /// Struct that holds all relevant metadata that is needed to encode/decode a chunk
 /// (strip or tile).
@@ -25,7 +24,7 @@ pub struct TileOpts {
     /// height of the image in pixels
     pub image_height: u32,
     /// bits per sample
-    pub bits_per_sample: u8,
+    pub bits_per_sample: u16,
     /// samples per pixel
     pub samples_per_pixel: u16,
     /// datatype of samples
@@ -78,7 +77,7 @@ fn index_error(given: usize, max: usize) -> TileOptsError {
     }
 }
 
-fn invalid_datatype(sample_format: SampleFormat, bit_depth: u8) -> TileOptsError {
+fn invalid_datatype(sample_format: SampleFormat, bit_depth: u16) -> TileOptsError {
     TileOptsError {
         message: format!("sample format {sample_format:?} with bit depth {bit_depth} unsupported"),
     }
@@ -210,65 +209,54 @@ impl TileOpts {
         Ok((self.chunk_width_pixels(x)?, self.chunk_height_pixels(y)?))
     }
 
-    // /// Derive colortype from info
-    // ///
-    // /// ## TODO: fix:
-    // /// - RGB++
-    // /// - TransparencyMask
-    // /// - [CIELab](https://en.wikipedia.org/wiki/CIELAB_color_space)
-    // pub fn colortype(&self) -> TileOptsResult<ColorType> {
-    //     match self.photometric_interpretation {
-    //         PhotometricInterpretation::RGB => match self.samples_per_pixel {
-    //             3 => Ok(ColorType::RGB(self.bits_per_sample)),
-    //             4 => Ok(ColorType::RGBA(self.bits_per_sample)),
-    //             // FIXME: We should _ignore_ other components. In particular:
-    //             // > Beware of extra components. Some TIFF files may have more components per pixel
-    //             // than you think. A Baseline TIFF reader must skip over them gracefully,using the
-    //             // values of the SamplesPerPixel and BitsPerSample fields.
-    //             // > -- TIFF 6.0 Specification, Section 7, Additional Baseline requirements.
-    //             _ => Err(TiffError::UnsupportedError(
-    //                 TiffUnsupportedError::InterpretationWithBits(
-    //                     self.photometric_interpretation,
-    //                     vec![self.bits_per_sample; self.samples_per_pixel as usize],
-    //                 ),
-    //             )),
-    //         },
-    //         PhotometricInterpretation::CMYK => match self.samples_per_pixel {
-    //             4 => Ok(ColorType::CMYK(self.bits_per_sample)),
-    //             _ => Err(TiffError::UnsupportedError(
-    //                 TiffUnsupportedError::InterpretationWithBits(
-    //                     self.photometric_interpretation,
-    //                     vec![self.bits_per_sample; self.samples_per_pixel as usize],
-    //                 ),
-    //             )),
-    //         },
-    //         PhotometricInterpretation::YCbCr => match self.samples_per_pixel {
-    //             3 => Ok(ColorType::YCbCr(self.bits_per_sample)),
-    //             _ => Err(TiffError::UnsupportedError(
-    //                 TiffUnsupportedError::InterpretationWithBits(
-    //                     self.photometric_interpretation,
-    //                     vec![self.bits_per_sample; self.samples_per_pixel as usize],
-    //                 ),
-    //             )),
-    //         },
-    //         PhotometricInterpretation::BlackIsZero | PhotometricInterpretation::WhiteIsZero => {
-    //             match self.samples_per_pixel {
-    //                 1 => Ok(ColorType::Gray(self.bits_per_sample)),
-    //                 _ => Ok(ColorType::Multiband {
-    //                     bit_depth: self.bits_per_sample,
-    //                     num_samples: self.samples_per_pixel,
-    //                 }),
-    //             }
-    //         }
-    //         // TODO: this is bad we should not fail at this point
-    //         PhotometricInterpretation::RGBPalette
-    //         | PhotometricInterpretation::TransparencyMask
-    //         | PhotometricInterpretation::CIELab => Err(TiffError::UnsupportedError(
-    //             TiffUnsupportedError::InterpretationWithBits(
-    //                 self.photometric_interpretation,
-    //                 vec![self.bits_per_sample; self.samples_per_pixel as usize],
-    //             ),
-    //         )),
-    //     }
-    // }
+    /// Derive colortype from info
+    ///
+    /// ## TODO: fix:
+    /// - RGB++
+    /// - TransparencyMask
+    /// - [CIELab](https://en.wikipedia.org/wiki/CIELAB_color_space)
+    pub fn colortype(&self) -> TileOptsResult<ColorType> {
+        let invalid_color = || {
+            Err(TileOptsError {
+                message: format!(
+                    "no colortype for {:?} with bit depth {} and {} samples per pixel",
+                    self.photometric_interpretation, self.bits_per_sample, self.samples_per_pixel
+                ),
+            }
+            .into())
+        };
+        match self.photometric_interpretation {
+            PhotometricInterpretation::RGB => match self.samples_per_pixel {
+                3 => Ok(ColorType::RGB(self.bits_per_sample)),
+                4 => Ok(ColorType::RGBA(self.bits_per_sample)),
+                // FIXME: We should _ignore_ other components. In particular:
+                // > Beware of extra components. Some TIFF files may have more components per pixel
+                // than you think. A Baseline TIFF reader must skip over them gracefully,using the
+                // values of the SamplesPerPixel and BitsPerSample fields.
+                // > -- TIFF 6.0 Specification, Section 7, Additional Baseline requirements.
+                _ => invalid_color(),
+            },
+            PhotometricInterpretation::CMYK => match self.samples_per_pixel {
+                4 => Ok(ColorType::CMYK(self.bits_per_sample)),
+                _ => invalid_color(),
+            },
+            PhotometricInterpretation::YCbCr => match self.samples_per_pixel {
+                3 => Ok(ColorType::YCbCr(self.bits_per_sample)),
+                _ => invalid_color(),
+            },
+            PhotometricInterpretation::BlackIsZero | PhotometricInterpretation::WhiteIsZero => {
+                match self.samples_per_pixel {
+                    1 => Ok(ColorType::Gray(self.bits_per_sample)),
+                    _ => Ok(ColorType::Multiband {
+                        bit_depth: self.bits_per_sample,
+                        num_samples: self.samples_per_pixel,
+                    }),
+                }
+            }
+            // TODO: this is bad we should not fail at this point
+            PhotometricInterpretation::RGBPalette
+            | PhotometricInterpretation::TransparencyMask
+            | PhotometricInterpretation::CIELab => invalid_color(),
+        }
+    }
 }

@@ -9,6 +9,8 @@ use flate2::bufread::ZlibDecoder;
 use weezl::LzwStatus;
 
 #[cfg(feature = "lzw")]
+use crate::loader::CodingResult;
+#[cfg(feature = "lzw")]
 use crate::structs::error::CodingError;
 use crate::structs::metadata::tags::CompressionMethod;
 use crate::structs::TileOpts;
@@ -60,16 +62,18 @@ impl Default for DecoderRegistry {
         #[cfg(feature = "deflate")]
         registry.insert(CompressionMethod::Deflate, Box::new(DeflateDecoder) as _);
         registry.insert(CompressionMethod::OldDeflate, Box::new(DeflateDecoder) as _);
-        #[cfg(feature = "lerc")]
-        registry.insert(CompressionMethod::LERC, Box::new(LercDecoder) as _);
-        #[cfg(feature = "lzma")]
-        registry.insert(CompressionMethod::LZMA, Box::new(LZMADecoder) as _);
+        // #[cfg(feature = "lerc")]
+        // registry.insert(CompressionMethod::LERC, Box::new(LercDecoder) as _);
+        // #[cfg(feature = "lzma")]
+        // registry.insert(CompressionMethod::LZMA, Box::new(LZMADecoder) as _);
         registry.insert(CompressionMethod::LZW, Box::new(LZWDecoder) as _);
         #[cfg(feature = "jpeg")]
         registry.insert(CompressionMethod::ModernJPEG, Box::new(JpegDecoder) as _);
-        #[cfg(feature = "jpeg2k")]
-        registry.insert(CompressionMethod::JPEG2k, Box::new(JPEG2kDecoder) as _);
-        #[cfg(feature = "webp")]
+        // #[cfg(feature = "jpeg")]
+        // registry.insert(CompressionMethod::JPEG2k, Box::new(JPEG2kDecoder) as _);
+        #[cfg(feature = "webp-agpl")]
+        registry.insert(CompressionMethod::WebP, Box::new(ZenWebPDecoder) as _);
+        #[cfg(feature = "webp-cpp")]
         registry.insert(CompressionMethod::WebP, Box::new(WebPDecoder) as _);
         #[cfg(feature = "zstd")]
         registry.insert(CompressionMethod::ZSTD, Box::new(ZstdDecoder) as _);
@@ -78,19 +82,19 @@ impl Default for DecoderRegistry {
 }
 
 pub trait Decoder: Debug + Send + Sync {
-    fn decode_chunk(
+    fn decode_tile(
         &self,
         in_buf: &[u8],
         out_buf: &mut [u8],
         tile_opts: &TileOpts,
-    ) -> exn::Result<(), CodingError>;
+    ) -> CodingResult<()>;
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct UncompressedDecoder;
 
 impl Decoder for UncompressedDecoder {
-    fn decode_chunk(
+    fn decode_tile(
         &self,
         in_buf: &[u8],
         out_buf: &mut [u8],
@@ -111,7 +115,7 @@ pub struct DeflateDecoder;
 
 #[cfg(feature = "deflate")]
 impl Decoder for DeflateDecoder {
-    fn decode_chunk(
+    fn decode_tile(
         &self,
         in_buf: &[u8],
         out_buf: &mut [u8],
@@ -131,12 +135,12 @@ pub struct LZWDecoder;
 
 #[cfg(feature = "lzw")]
 impl Decoder for LZWDecoder {
-    fn decode_chunk(
+    fn decode_tile(
         &self,
         in_buf: &[u8],
         out_buf: &mut [u8],
         _tile_opts: &TileOpts,
-    ) -> exn::Result<(), CodingError> {
+    ) -> CodingResult<()> {
         // https://github.com/image-rs/image-tiff/blob/90ae5b8e54356a35e266fb24e969aafbcb26e990/src/decoder/stream.rs#L147
         let mut decoder = weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8);
         let res = decoder.decode_bytes(in_buf, out_buf);
@@ -158,46 +162,63 @@ pub struct ZstdDecoder;
 
 #[cfg(feature = "zstd")]
 impl Decoder for ZstdDecoder {
-    fn decode_chunk(
+    fn decode_tile(
         &self,
         buf: &[u8],
-        out_buf: &mut [&mut [u8]],
+        out_buf: &mut [u8],
         tile_opts: &TileOpts,
-    ) -> TiffResult<()> {
-        let mut decoder = zstd::Decoder::new(Cursor::new(buf))?;
-        for out_buf in out_buf {
-            decoder.read_exact(out_buf)?;
-        }
+    ) -> CodingResult<()> {
+        let mut decoder = ruzstd::decoding::StreamingDecoder::new(Cursor::new(buf))
+            .or_raise(|| CodingError::failed("could not create Zstd decoder"))?;
+        decoder
+            .read_exact(out_buf)
+            .or_raise(|| CodingError::failed("Could not zstd decode into buffer"))?;
         Ok(())
     }
 }
 
-#[cfg(feature = "jpeg")]
+#[cfg(feature = "zstd")]
+#[derive(Debug, Clone, Copy)]
+pub struct ZstdCppDecoder;
+
+#[cfg(feature = "zstd")]
+impl Decoder for ZstdCppDecoder {
+    fn decode_tile(
+        &self,
+        buf: &[u8],
+        out_buf: &mut [u8],
+        tile_opts: &TileOpts,
+    ) -> CodingResult<()> {
+        let mut decoder = ruzstd::decoding::StreamingDecoder::new(Cursor::new(buf))
+            .or_raise(|| CodingError::failed("could not create Zstd decoder"))?;
+        decoder
+            .read_exact(out_buf)
+            .or_raise(|| CodingError::failed("Could not zstd decode into buffer"))?;
+        Ok(())
+    }
+}
+
+#[cfg(feature = "jpeg-decoder")]
 #[derive(Debug, Clone, Copy)]
 pub struct JpegDecoder;
 
-#[cfg(feature = "jpeg")]
+#[cfg(feature = "jpeg-encoder")]
 // https://github.com/image-rs/image-tiff/blob/3bfb43e83e31b0da476832067ada68a82b378b7b/src/decoder/image.rs#L389-L450
 impl Decoder for JpegDecoder {
-    fn decode_chunk(
+    fn decode_tile(
         &self,
         buf: &[u8],
-        out_buf: &mut [&mut [u8]],
+        out_buf: &mut [u8],
         tile_opts: &TileOpts,
-    ) -> TiffResult<()> {
-        use crate::structs::tags::PhotometricInterpretation;
+    ) -> CodingResult<()> {
+        use crate::structs::metadata::tags::PhotometricInterpretation;
 
-        if tile_opts.jpeg_tables.is_some() && buf.len() < 2 {
-            use crate::error::{TiffError, TiffFormatError};
-            use crate::structs::Tag;
+        ensure!(
+            tile_opts.jpeg_tables.is_none() || buf.len() >= 2,
+            CodingError::failed("invalid JPEG tables data")
+        );
 
-            return Err(TiffError::FormatError(
-                TiffFormatError::InvalidTagValueType(Tag::JPEGTables.to_u16()),
-            ));
-        }
-
-        let compressed_length =
-            u64::try_from(buf.len()).expect("buffer length should fit in usize");
+        let compressed_length = u64::try_from(buf.len()).unwrap();
         // Construct new jpeg_reader wrapping a SmartReader.
         //
         // JPEG compression in TIFF allows saving quantization and/or huffman tables in one
@@ -213,7 +234,9 @@ impl Decoder for JpegDecoder {
         let jpeg_reader = match &tile_opts.jpeg_tables {
             Some(jpeg_tables) => {
                 let mut reader = reader.take(compressed_length);
-                reader.read_exact(&mut [0; 2])?;
+                reader
+                    .read_exact(&mut [0; 2])
+                    .or_raise(|| CodingError::failed("failed to decode into buf"))?;
 
                 Box::new(
                     Cursor::new(&jpeg_tables[..jpeg_tables.len() - 2])
@@ -245,17 +268,82 @@ impl Decoder for JpegDecoder {
                 decoder.set_color_transform(jpeg::ColorTransform::YCbCr)
             }
             photometric_interpretation => {
-                use crate::error::{TiffError, TiffUnsupportedError};
+                use exn::bail;
 
-                return Err(TiffError::UnsupportedError(
-                    TiffUnsupportedError::UnsupportedInterpretation(photometric_interpretation),
-                ));
+                bail!(CodingError::failed(
+                    "unsupported photometric interpretation"
+                ))
             }
         }
 
         // copying data, so sad
-        let data = decoder.decode()?;
-        out_buf.copy_from_slice(&data[buf_start..buf_start + out_buf.len()]);
+        let data = decoder
+            .decode()
+            .or_raise(|| CodingError::failed("JPEG decoding failed"))?;
+        out_buf.copy_from_slice(&data);
         Ok(())
+    }
+}
+
+#[cfg(feature = "webp-agpl")]
+#[derive(Debug, Clone)]
+pub struct ZenWebPDecoder;
+
+#[cfg(feature = "webp-agpl")]
+impl Decoder for ZenWebPDecoder {
+    fn decode_tile(
+        &self,
+        in_buf: &[u8],
+        out_buf: &mut [u8],
+        tile_opts: &TileOpts,
+    ) -> CodingResult<()> {
+        let mut decoder = zenwebp::WebPDecoder::build(in_buf)
+            .or_raise(|| CodingError::failed("could not load metadata"))?;
+        decoder.read_image(out_buf).or_raise(|| {
+            CodingError::incomplete(
+                out_buf.len(),
+                decoder.output_buffer_size().unwrap_or(std::usize::MAX),
+            )
+        })
+    }
+}
+
+#[cfg(feature = "webp-cpp")]
+#[derive(Debug, Clone)]
+pub struct WebPDecoder;
+
+#[cfg(feature = "webp-cpp")]
+impl Decoder for WebPDecoder {
+    fn decode_tile(
+        &self,
+        in_buf: &[u8],
+        out_buf: &mut [u8],
+        tile_opts: &TileOpts,
+    ) -> CodingResult<()> {
+        use exn::OptionExt;
+
+        let decoded = webp::Decoder::new(&in_buf)
+            .decode()
+            .ok_or_raise(|| CodingError::failed("webp decoding failed"))?;
+
+        if decoded.len() == out_buf.len() {
+            out_buf.copy_from_slice(&decoded);
+            Ok(())
+        } else
+        // WebP lossy compression may discard fully-opaque alpha channels.
+        // If the TIFF expects 4 samples but WebP decoded to 3, expand RGB to RGBA.
+        // Only do this for 8-bit data since WebP only supports 8-bit.
+        if tile_opts.samples_per_pixel == 4
+            && tile_opts.bits_per_sample == 8
+            && !decoded.is_alpha()
+        {
+            for (rgb, rgba) in decoded.chunks_exact(3).zip(out_buf.chunks_exact_mut(4)) {
+                rgba[..3].copy_from_slice(rgb);
+                rgba[3] = 255; // opaque alpha
+            }
+            Ok(())
+        } else {
+            Err(CodingError::incomplete(decoded.len(), out_buf.len()).into())
+        }
     }
 }

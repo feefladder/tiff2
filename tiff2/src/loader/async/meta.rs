@@ -3,8 +3,8 @@ use bytes::Bytes;
 use exn::{bail, ResultExt};
 
 use crate::loader::{
-    AsyncFetch, AsyncMetaReader, MetaReadError, MetaReadResult, TiffLoadError, TiffLoader,
-    TiffMetaReader,
+    AsyncFetch, AsyncIfdReader, AsyncMetaReader, IfdReadError, IfdReadResult, MetaReadError,
+    MetaReadResult, TiffIfdReader, TiffLoadError, TiffLoader, TiffMetaReader,
 };
 use crate::structs::{IfdEntry, TagData};
 
@@ -161,5 +161,25 @@ impl<Fetch: AsyncFetch, Loader: TiffLoader> AsyncMetaReader<Fetch, Loader>
             }
         }
         Ok(self.loader.tiff().next_ifd_offset())
+    }
+}
+
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+impl<'a, Fetch: AsyncFetch> AsyncIfdReader<'a, Fetch> for TiffIfdReader<'a, Fetch> {
+    async fn fill_deferred(&mut self) -> IfdReadResult<()> {
+        let ranges = self.ifd_loader.deferred_ranges().collect::<Vec<_>>();
+        let data = self
+            .fetch
+            .fetch_ranges(&ranges)
+            .await
+            .or_raise(|| IfdReadError(format!("Could not fill deferred values of ifd")))?;
+        let byte_order = self.ifd_loader.byte_order;
+        for ((tag, entry), buf) in self.ifd_loader.deferred_values_mut().zip(data) {
+            entry
+                .to_value(&buf, byte_order)
+                .or_raise(|| IfdReadError(format!("could nto read entry for tag {tag:?}")))?;
+        }
+        Ok(())
     }
 }

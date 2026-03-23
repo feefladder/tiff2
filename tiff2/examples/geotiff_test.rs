@@ -2,10 +2,7 @@
 // const { Pool, fromUrl } = GeoTIFF;
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
 use std::time::Instant;
-
-use tiff2::error::TiffResult;
 
 mod common;
 use common::{img_print, TokioFile};
@@ -67,7 +64,6 @@ const GEOTIFF_DIR: &str = "/home/user/git/geotiff/";
 
 #[tokio::main]
 async fn main() -> TiffResult<()> {
-    env_logger::init();
     let mut m = BTreeMap::new();
     let mut prev = Instant::now();
     // adjust to use a dir on you

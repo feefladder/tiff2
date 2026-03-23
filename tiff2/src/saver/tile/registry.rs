@@ -5,8 +5,9 @@ use std::io::{Cursor, Read};
 use exn::{ensure, ResultExt};
 use weezl::LzwStatus;
 
+use crate::loader::CodingResult;
 use crate::structs::error::CodingError;
-use crate::structs::metadata::tags::CompressionMethod;
+use crate::structs::metadata::tags::{CompressionMethod, PhotometricInterpretation};
 use crate::structs::TileOpts;
 
 type EncodingResult<T> = exn::Result<T, CodingError>;
@@ -48,19 +49,23 @@ impl Default for EncoderRegistry {
         registry.insert(
             CompressionMethod::OldDeflate,
             Box::new(DeflateEncoder {
+                // TODO: compression level is actually a tag that we should write
                 compression_level: flate2::Compression::fast(),
             }) as _,
         );
-        #[cfg(feature = "lerc")]
-        registry.insert(CompressionMethod::LERC, Box::new(LercEncoder) as _);
-        #[cfg(feature = "lzma")]
-        registry.insert(CompressionMethod::LZMA, Box::new(LZMAEncoder) as _);
+        // #[cfg(feature = "lerc")]
+        // registry.insert(CompressionMethod::LERC, Box::new(LercEncoder) as _);
+        // #[cfg(feature = "lzma")]
+        // registry.insert(CompressionMethod::LZMA, Box::new(LZMAEncoder) as _);
         registry.insert(CompressionMethod::LZW, Box::new(LzwEncoder) as _);
-        #[cfg(feature = "jpeg")]
-        registry.insert(CompressionMethod::ModernJPEG, Box::new(JpegEncoder) as _);
-        #[cfg(feature = "jpeg2k")]
-        registry.insert(CompressionMethod::JPEG2k, Box::new(JPEG2kEncoder) as _);
-        #[cfg(feature = "webp")]
+        #[cfg(feature = "jpeg-encoder")]
+        registry.insert(
+            CompressionMethod::ModernJPEG,
+            Box::new(JpegEncoder { quality: 90 }) as _,
+        );
+        // #[cfg(feature = "jpeg2k")]
+        // registry.insert(CompressionMethod::JPEG2k, Box::new(JPEG2kEncoder) as _);
+        #[cfg(feature = "webp-cpp")]
         registry.insert(CompressionMethod::WebP, Box::new(WebPEncoder) as _);
         #[cfg(feature = "zstd")]
         registry.insert(CompressionMethod::ZSTD, Box::new(ZstdEncoder) as _);
@@ -70,23 +75,27 @@ impl Default for EncoderRegistry {
 
 // not sure why this can't be `Clone`...
 pub trait Encoder: Debug + Send + Sync {
-    fn encode_chunk(
+    fn encode_tile(
         &self,
         in_buf: &[u8],
         out_buf: &mut [u8],
         tile_opts: &TileOpts,
-    ) -> EncodingResult<u64>;
+        tile_width: u32,
+        tile_height: u32,
+    ) -> CodingResult<u64>;
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct UncompressedEncoder;
 
 impl Encoder for UncompressedEncoder {
-    fn encode_chunk(
+    fn encode_tile(
         &self,
         in_buf: &[u8],
         out_buf: &mut [u8],
         _tile_opts: &TileOpts,
+        _tile_width: u32,
+        _tile_height: u32,
     ) -> EncodingResult<u64> {
         ensure!(
             in_buf.len() == out_buf.len(),
@@ -103,11 +112,13 @@ pub struct LzwEncoder;
 
 #[cfg(feature = "lzw")]
 impl Encoder for LzwEncoder {
-    fn encode_chunk(
+    fn encode_tile(
         &self,
         in_buf: &[u8],
         out_buf: &mut [u8],
         _tile_opts: &TileOpts,
+        _tile_width: u32,
+        _tile_height: u32,
     ) -> EncodingResult<u64> {
         let mut encoder = weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8);
         let res = encoder.encode_bytes(in_buf, out_buf);
@@ -130,14 +141,119 @@ pub struct DeflateEncoder {
 
 #[cfg(feature = "deflate")]
 impl Encoder for DeflateEncoder {
-    fn encode_chunk(
+    fn encode_tile(
         &self,
         in_buf: &[u8],
         out_buf: &mut [u8],
         _tile_opts: &TileOpts,
+        _tile_width: u32,
+        _tile_height: u32,
     ) -> EncodingResult<u64> {
         let mut encoder =
             flate2::bufread::ZlibEncoder::new(Cursor::new(in_buf), self.compression_level);
         Ok(u64::try_from(encoder.read(out_buf).unwrap()).unwrap())
+    }
+}
+
+#[cfg(feature = "jpeg-encoder")]
+#[derive(Debug, Clone)]
+pub struct JpegEncoder {
+    quality: u8,
+}
+
+#[cfg(feature = "jpeg-encoder")]
+impl Encoder for JpegEncoder {
+    fn encode_tile(
+        &self,
+        in_buf: &[u8],
+        out_buf: &mut [u8],
+        tile_opts: &TileOpts,
+        tile_width: u32,
+        tile_height: u32,
+    ) -> CodingResult<u64> {
+        use crate::ColorType;
+        let encoder = jpeg_encoder::Encoder::new(Cursor::new(out_buf), self.quality);
+        let color_type = match tile_opts
+            .colortype()
+            .or_raise(|| CodingError::failed("could not find colortype"))?
+        {
+            ColorType::RGB(8) => jpeg_encoder::ColorType::Rgb,
+            ColorType::RGBA(8) => jpeg_encoder::ColorType::Rgba,
+            ColorType::CMYK(8) => jpeg_encoder::ColorType::Cmyk,
+            ColorType::Gray(8) => jpeg_encoder::ColorType::Luma,
+            ColorType::YCbCr(8) => jpeg_encoder::ColorType::Ycbcr,
+            _ => exn::bail!(CodingError::failed("color type not supported with jpeg")),
+        };
+        let colortype = encoder
+            .encode(
+                in_buf,
+                tile_width
+                    .try_into()
+                    .or_raise(|| CodingError::failed("tile width too large for encoding"))?,
+                tile_height
+                    .try_into()
+                    .or_raise(|| CodingError::failed("tile height too large for encoding"))?,
+                color_type,
+            )
+            .or_raise(|| CodingError::failed("could not jpeg encode tile"))?;
+        Ok(42)
+    }
+}
+
+#[cfg(feature = "webp-cpp")]
+#[derive(Debug, Clone)]
+pub struct WebPEncoder {
+    quality: f32,
+}
+
+#[cfg(feature = "webp-cpp")]
+impl Encoder for WebPEncoder {
+    fn encode_tile(
+        &self,
+        in_buf: &[u8],
+        out_buf: &mut [u8],
+        tile_opts: &TileOpts,
+        tile_width: u32,
+        tile_height: u32,
+    ) -> CodingResult<u64> {
+        use webp::PixelLayout;
+
+        use crate::ColorType;
+
+        let layout = match tile_opts.colortype() {
+            Ok(ColorType::RGB(8)) => PixelLayout::Rgb,
+            Ok(ColorType::RGBA(8)) => PixelLayout::Rgba,
+            Ok(c) => exn::bail!(CodingError::failed(
+                "incomprehensible colortype for jpeg encoding"
+            )),
+            Err(e) => exn::bail!(e.raise(CodingError::failed("colortype unsupported with jpeg"))),
+        };
+        let encoder = webp::Encoder::new(in_buf, layout, tile_width, tile_height);
+        let res = encoder.encode(self.quality);
+        ensure!(
+            res.len() <= out_buf.len(),
+            CodingError::incomplete(res.len(), out_buf.len())
+        );
+        out_buf.copy_from_slice(&res[..out_buf.len()]);
+        Ok(out_buf.len().try_into().unwrap())
+    }
+}
+
+#[cfg(feature = "webp-agpl")]
+#[derive(Debug, Clone)]
+pub struct ZenWebPEncoder;
+
+#[cfg(feature = "webp-agpl")]
+impl Encoder for ZenWebPEncoder {
+    fn encode_tile(
+        &self,
+        in_buf: &[u8],
+        out_buf: &mut [u8],
+        tile_opts: &TileOpts,
+        tile_width: u32,
+        tile_height: u32,
+    ) -> CodingResult<u64> {
+        // let encoder = zenwebp::
+        todo!();
     }
 }

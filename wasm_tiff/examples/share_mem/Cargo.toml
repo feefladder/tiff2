@@ -1,0 +1,11 @@
+[workspace]
+members = [
+    "registry",
+    "decoder"
+]
+resolver = "3"
+
+
+[workspace.dependencies]
+js-sys = "0.3.91"
+wasm-bindgen = "0.2.114"

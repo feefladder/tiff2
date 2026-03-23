@@ -20,25 +20,34 @@ bytemuck = { version = "1.19" }
 bytes = "1.8"
 exn = { workspace = true }
 async-trait = {version = "0.1.83", optional = true}
-object_store = { version = "0.13.1", optional = true, features = ["http"] }
 rayon = "1.10.0"
 smallvec = "1.15.1"
 weezl = {version= "0.1.8", optional = true}
-jpeg = { package = "jpeg-decoder", version = "0.3.0", default-features = false, optional= true }
 flate2 = {version = "1.0", optional = true}
 zstd = { version = "0.13.3", optional = true }
 derive_more = { version = "2.1.1", features = ["display"] }
+webp = { version = "0.3.1", default-features = false, optional = true }
+zenwebp = { version = "0.3.2", default-features = false, optional = true }
+ruzstd = { version = "0.8.2", optional = true }
+zune-jpeg = { version = "0.5.13", optional = true }
+jpeg-encoder = { version = "0.7.0", optional = true }
 
 [features]
 default = ["deflate", "lzw", "async"]
 sync = []
 async = ["dep:async-trait"]
-object_store = ["dep:object_store"]
-zstd = ["dep:zstd"]
-jpeg = ["dep:jpeg"]
+# compression methods
+zstd-cpp = ["dep:zstd"]
+zstd = ["dep:ruzstd"]
+jpeg-decoder = ["dep:zune-jpeg"]
+jpeg-encoder = ["dep:jpeg-encoder"]
 deflate = ["dep:flate2"]
 lzw = ["dep:weezl"]
 packbits = []
+webp-cpp = ["dep:webp"]
+webp-agpl = ["dep:zenwebp"]
+
+
 
 [[bench]]
 name = "horizontal_predict"
@@ -50,9 +59,8 @@ harness = false
 
 [dev-dependencies]
 criterion = "0.8"
-image = { version = "0.25.9", default-features = false }
 rand = "0.10"
-reqwest = { version = "0.13", default-features = false}
+reqwest = { version = "0.13", default-features = false, features=["default-tls"]}
 tokio = { version = "1.41", features = [
     "rt",
     "rt-multi-thread",

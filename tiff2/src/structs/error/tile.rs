@@ -14,10 +14,21 @@ pub struct CodingError {
 #[derive(Debug, Clone, PartialEq)]
 pub enum CodingErrorKind {
     UnsupportedCompression(CompressionMethod),
-    UnsupportedBitDepth { bit_depth: u8, reason: &'static str },
-    InvalidTileIndex { x: u32, y: u32 },
-    Incomplete { coded: usize, required: usize },
-    Failed { message: &'static str },
+    UnsupportedBitDepth {
+        bit_depth: u16,
+        reason: &'static str,
+    },
+    InvalidTileIndex {
+        x: u32,
+        y: u32,
+    },
+    Incomplete {
+        coded: usize,
+        required: usize,
+    },
+    Failed {
+        message: &'static str,
+    },
 }
 
 impl CodingError {
@@ -28,7 +39,7 @@ impl CodingError {
         }
     }
 
-    pub(crate) fn unsupported_bit_depth(bit_depth: u8, reason: &'static str) -> Self {
+    pub(crate) fn unsupported_bit_depth(bit_depth: u16, reason: &'static str) -> Self {
         Self {
             status: ErrorStatus::Permanent,
             kind: CodingErrorKind::UnsupportedBitDepth { bit_depth, reason },

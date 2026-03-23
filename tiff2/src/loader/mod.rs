@@ -63,32 +63,35 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use derive_more::Display;
 
-#[cfg(any(feature = "sync", feature = "async"))]
-use crate::loader::tile::CodingResult;
-use crate::loader::tile::DecoderRegistry;
-use crate::structs::Tiff;
+use crate::structs::Ifd;
+use crate::structs::{Tiff, TileOpts};
 #[cfg(any(feature = "sync", feature = "async"))]
 use crate::structs::{TileCoord, TileData};
-#[cfg(feature = "sync")]
-use crate::ByteOrder;
 
 pub(crate) mod metadata;
+pub use metadata::cache;
 pub use metadata::{CacheMiss, IfdLoader, TiffLoadError, TiffLoadResult, TiffLoader};
 #[cfg(feature = "async")]
 mod r#async;
 #[cfg(feature = "sync")]
 mod sync;
 pub(crate) mod tile;
-pub use tile::TileLoader;
+pub use tile::{CodingResult, DecoderRegistry, TileLoader};
 
 pub type FetchResult<T> = exn::Result<T, FetchError>;
 pub type MetaReadResult<T> = exn::Result<T, MetaReadError>;
+pub type IfdReadResult<T> = exn::Result<T, IfdReadError>;
 pub type ReadResult<T> = exn::Result<T, ReadError>;
 
 #[cfg(feature = "sync")]
 pub trait SyncFetch {
     fn fetch_range(&self, range: Range<u64>) -> FetchResult<Bytes>;
-    fn fetch_ranges(&self, ranges: &[Range<u64>]) -> FetchResult<Vec<Bytes>>;
+    fn fetch_ranges(&self, ranges: &[Range<u64>]) -> FetchResult<Vec<Bytes>> {
+        ranges
+            .iter()
+            .map(|range| self.fetch_range(range.clone()))
+            .collect::<FetchResult<Vec<Bytes>>>()
+    }
 }
 
 #[cfg(feature = "async")]
@@ -96,7 +99,14 @@ pub trait SyncFetch {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait AsyncFetch: Send + Sync {
     async fn fetch_range(&self, range: Range<u64>) -> FetchResult<Bytes>;
-    async fn fetch_ranges(&self, ranges: &[Range<u64>]) -> FetchResult<Vec<Bytes>>;
+    async fn fetch_ranges(&self, ranges: &[Range<u64>]) -> FetchResult<Vec<Bytes>> {
+        let mut results = Vec::with_capacity(ranges.len());
+        for range in ranges {
+            let result = self.fetch_range(range.clone()).await?;
+            results.push(result);
+        }
+        Ok(results)
+    }
 }
 
 pub struct TiffMetaReader<Fetch, Loader> {
@@ -104,8 +114,8 @@ pub struct TiffMetaReader<Fetch, Loader> {
     loader: Loader,
 }
 
-pub struct TiffIfdReader<Fetch> {
-    fetch: Fetch,
+pub struct TiffIfdReader<'a, Fetch> {
+    fetch: &'a Fetch,
     ifd_loader: IfdLoader,
 }
 
@@ -114,13 +124,35 @@ pub trait SyncMetaReader<Fetch: SyncFetch>: Sized {
     fn open(fetch: Fetch, prefetch: u64) -> MetaReadResult<Self>;
     fn next(&mut self) -> MetaReadResult<Option<u64>>;
     fn skip(&mut self, n: usize) -> MetaReadResult<Option<u64>>;
-    // fn into_inner(self) -> (Fetch, Tiff);
-    // fn finish(self, decoder_registry: DecoderRegistry) -> impl SyncReader;
+}
+
+pub trait IfdReader<'a, Fetch> {
+    /// Create this reader from an Ifd
+    fn wrap(fetch: &'a Fetch, ifd_loader: IfdLoader) -> Self;
+    fn finish(self) -> Ifd;
+}
+
+impl<'a, Fetch> IfdReader<'a, Fetch> for TiffIfdReader<'a, Fetch> {
+    fn wrap(fetch: &'a Fetch, ifd_loader: IfdLoader) -> Self {
+        Self { fetch, ifd_loader }
+    }
+    fn finish(self) -> Ifd {
+        self.ifd_loader.finish()
+    }
 }
 
 #[cfg(feature = "sync")]
-pub trait SyncIfdReader<Fetch: SyncFetch>: Sized {
-    fn wrap(ifd: Ifd, bigtiff: bool, byte_order: ByteOrder) -> Self;
+pub trait SyncIfdReader<'a, Fetch: SyncFetch>: IfdReader<'a, Fetch> + Sized {
+    fn fill_deferred(&mut self) -> IfdReadResult<()>;
+}
+
+#[cfg(feature = "async")]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+pub trait AsyncIfdReader<'a, Fetch: AsyncFetch>:
+    IfdReader<'a, Fetch> + Sized + Send + Sync
+{
+    async fn fill_deferred(&mut self) -> IfdReadResult<()>;
 }
 
 #[cfg(feature = "async")]
@@ -130,8 +162,6 @@ pub trait AsyncMetaReader<Fetch: AsyncFetch, Loader: TiffLoader>: Sized + Send +
     async fn open(fetch: Fetch, prefetch: u64) -> MetaReadResult<Self>;
     async fn next(&mut self) -> MetaReadResult<Option<u64>>;
     async fn skip(&mut self, n: usize) -> MetaReadResult<Option<u64>>;
-    // async fn into_inner(self) -> (Fetch, Tiff);
-    // async fn finish(self, decoder_registry: DecoderRegistry) -> impl AsyncReader;
 }
 
 impl<Fetch, Loader: TiffLoader> TiffMetaReader<Fetch, Loader> {
@@ -154,6 +184,20 @@ pub struct TiffReader<Fetch> {
     tiff: Tiff,
     tile_loaders: BTreeMap<u64, TileLoader>,
     decoder_registry: DecoderRegistry,
+}
+
+impl<Fetch> TiffReader<Fetch> {
+    pub fn tiff(&self) -> &Tiff {
+        &self.tiff
+    }
+
+    pub fn tile_opts(&self, idx: usize) -> Option<&TileOpts> {
+        self.tiff
+            .ifd_offsets
+            .get(idx)
+            .map(|offset| self.tile_loaders.get(&offset).map(|tl| &tl.tile_opts))
+            .flatten()
+    }
 }
 
 #[cfg(feature = "sync")]
@@ -180,12 +224,12 @@ pub trait AsyncReader {
 
 #[derive(Debug, Display, Clone, PartialEq)]
 #[display("fetch erorr: {}", self.0)]
-pub struct FetchError(String);
+pub struct FetchError(pub String);
 impl Error for FetchError {}
 
 #[derive(Debug, Display, Clone, PartialEq)]
 #[display("read error: {}", self.0)]
-pub struct MetaReadError(String);
+pub struct MetaReadError(pub String);
 impl Error for MetaReadError {}
 
 impl MetaReadError {
@@ -193,6 +237,11 @@ impl MetaReadError {
         Self(message)
     }
 }
+
+#[derive(Debug, Display, Clone, PartialEq)]
+#[display("ifd read error: {}", self.0)]
+pub struct IfdReadError(String);
+impl Error for IfdReadError {}
 
 #[derive(Debug, Display, Clone, PartialEq)]
 #[display("{kind}: {message}")]

@@ -1,13 +1,14 @@
 use async_trait::async_trait;
 use bytes::Bytes;
-use exn::{bail, ensure, OptionExt, ResultExt};
+use exn::{bail, OptionExt, ResultExt};
 use rayon::prelude::*;
 
 use crate::loader::tile::{CodingResult, TileLoadErrorKind};
 use crate::loader::{
-    AsyncFetch, AsyncReader, ReadError, ReadErrorKind, ReadResult, TiffReader, TileLoader,
+    AsyncFetch, AsyncIfdReader, AsyncReader, IfdLoader, IfdReader, ReadError, ReadErrorKind,
+    ReadResult, TiffIfdReader, TiffReader, TileLoader,
 };
-use crate::structs::{IfdEntry, TagData, TileCoord, TileData};
+use crate::structs::{TileCoord, TileData};
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
@@ -80,50 +81,44 @@ impl<Fetch: AsyncFetch> AsyncReader for TiffReader<Fetch> {
             .ifd_offsets
             .get(ifd_idx)
             .ok_or_raise(|| ReadError::fatal(format!("no ifd {ifd_idx}")))?;
-        ensure!(
-            self.tiff.ifds.contains_key(ifd_offset),
-            ReadError::fatal(format!("ifd {ifd_offset} missing"))
-        );
-        if let Err(e) = TileLoader::check_ifd(self.tiff.ifd(ifd_idx)) {
-            if matches!(e.kind, TileLoadErrorKind::DeferredIfd) {
-                for (_, entry) in self
-                    .tiff
-                    .ifds
-                    .get_mut(&self.tiff.ifd_offsets[ifd_idx])
-                    .unwrap()
-                    .data
-                    .iter_mut()
-                    .filter(|(_, e)| matches!(e, IfdEntry::Offset(_)))
-                {
-                    let IfdEntry::Offset(o) = entry else {
-                        unreachable!()
-                    };
-                    *entry = IfdEntry::Value(
-                        TagData::from_buffer(
-                            &self.fetch.fetch_range(o.range()).await.or_raise(|| {
-                                ReadError::fetch_error(format!("Could not improve ifd {ifd_idx}"))
-                            })?,
-                            o.tag_type,
-                            o.count.try_into().unwrap(),
-                            self.tiff.byte_order,
-                        )
-                        .or_raise(|| ReadError::fatal(format!("invalid tag data")))?,
-                    )
+        println!("{ifd_offset}");
+        let mut ifd = self
+            .tiff
+            .ifds
+            .remove(ifd_offset)
+            .ok_or_raise(|| ReadError::fatal(format!("ifd {ifd_offset} missing")))?;
+
+        // try twice: 1st time may de deferred
+        for n in 0..2 {
+            if let Err(e) = TileLoader::check_ifd(&ifd) {
+                if matches!(e.kind, TileLoadErrorKind::DeferredIfd) {
+                    let mut ifd_reader = TiffIfdReader::wrap(
+                        &self.fetch,
+                        IfdLoader::wrap(ifd, self.tiff.bigtiff, self.tiff.byte_order),
+                    );
+                    if let Err(e) = ifd_reader.fill_deferred().await {
+                        self.tiff.ifds.insert(*ifd_offset, ifd_reader.finish());
+                        bail!(e.raise(ReadError::fatal(
+                            "ifd prep failed: could not fill its values".into()
+                        )))
+                    }
+                    ifd = ifd_reader.finish();
+                } else {
+                    self.tiff.ifds.insert(*ifd_offset, ifd);
+                    bail!(e.raise(ReadError::fatal(format!("ifd not an image on {n}th try"))))
                 }
-                TileLoader::check_ifd(self.tiff.ifd(ifd_idx))
-                    .or_raise(|| ReadError::fatal("ifd not an image".into()))?;
             } else {
-                bail!(e.raise(ReadError::fatal("ifd not an image".into())))
+                break;
             }
         }
         self.tile_loaders.insert(
-            self.tiff.ifd_offsets[ifd_idx],
-            TileLoader::from_ifd(
-                self.tiff.ifds.remove(ifd_offset).unwrap(),
-                *ifd_offset,
-                self.tiff.byte_order,
-            )
-            .or_raise(|| ReadError::fatal("this is really bad".into()))?,
+            *ifd_offset,
+            TileLoader::from_ifd(ifd, *ifd_offset, self.tiff.byte_order).or_raise(|| {
+                ReadError::fatal(
+                    "Could not create TileLoader from ifd. This is a bug. please open an issue"
+                        .into(),
+                )
+            })?,
         );
         Ok(())
     }

@@ -281,8 +281,12 @@ pub enum CompressionMethod(u16) unknown("A custom compression method") {
     Deflate = 8,
     OldDeflate = 0x80B2,
     PackBits = 0x8005,
+    // TODO: should these be extension tags?
+    // or at least LERC additional metadata should be extension
     /// Self-assigned by libtiff
     ZSTD = 0xC350,
+    // https://github.com/OSGeo/gdal/blob/4769b527b275fdb286cba95c8b35bbd131168e54/frmts/gtiff/gtiff.h#L136C26-L136C31
+    WebP = 50001,
 }
 }
 

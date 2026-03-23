@@ -1,5 +1,4 @@
 use std::fmt::Display;
-use std::ops::Range;
 
 use crate::structs::Tag;
 

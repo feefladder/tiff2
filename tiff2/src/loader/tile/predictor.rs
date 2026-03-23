@@ -10,7 +10,7 @@ use crate::NATIVE_ENDIAN;
 ///
 /// Horizontal prediction uses a horizontal differencing scheme (on full values)
 /// That means that for unpredicting, we first need to fix endianness, so we can actually subtract meaningfully
-fn rev_hpredict_nsamp(buf: &mut [u8], bit_depth: u8, samples: usize) {
+fn rev_hpredict_nsamp(buf: &mut [u8], bit_depth: u16, samples: usize) {
     match bit_depth {
         0..=8 => {
             for i in samples..buf.len() {
