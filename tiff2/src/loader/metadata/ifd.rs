@@ -4,6 +4,7 @@ use std::ops::Range;
 use exn::{bail, OptionExt, ResultExt};
 
 use crate::loader::metadata::error::TiffLoadError;
+use crate::loader::metadata::IfdOrLoader;
 use crate::loader::TiffLoadResult;
 use crate::structs::{
     entry_size, num_entries_size, offset_size, offset_tag_type, Ifd, IfdEntry, Offset, Tag,
@@ -16,6 +17,7 @@ pub struct IfdLoader {
     pub bigtiff: bool,
     pub byte_order: ByteOrder,
     pub ifd: Ifd,
+    pub deferred: BTreeMap<Tag, Offset>,
 }
 
 impl IfdLoader {
@@ -44,14 +46,6 @@ impl IfdLoader {
         .try_into()
         .unwrap();
         Ok(count)
-    }
-
-    pub fn wrap(ifd: Ifd, bigtiff: bool, byte_order: ByteOrder) -> Self {
-        Self {
-            bigtiff,
-            byte_order,
-            ifd,
-        }
     }
 
     /// Given a buffer holding the IFD, get the underlying IFD
@@ -84,7 +78,7 @@ impl IfdLoader {
         offset: u64,
         bigtiff: bool,
         byte_order: ByteOrder,
-    ) -> TiffLoadResult<(Self, u64)> {
+    ) -> TiffLoadResult<(IfdOrLoader, u64)> {
         let entry_count = Self::ifd_entry_count(ifd_buf, offset, bigtiff, byte_order)?;
 
         // check if the entire ifd is in memory
@@ -101,6 +95,7 @@ impl IfdLoader {
         }
         let mut pos = num_entries_size(bigtiff) as usize;
         let mut ifd_data = BTreeMap::new();
+        let mut deferred = BTreeMap::new();
         // start reading entries
         for _ in 0..entry_count {
             // TODO: This should really become a
@@ -158,21 +153,36 @@ impl IfdLoader {
                     )
                 };
             pos += offset_size(bigtiff) as usize;
-            ifd_data.insert(tag, entry);
+            match entry {
+                IfdEntry::Value(v) => {
+                    ifd_data.insert(tag, v);
+                }
+                IfdEntry::Offset(o) => {
+                    deferred.insert(tag, o);
+                }
+            }
         }
         let next_ifd_offset: u64 =
             TagData::from_buffer(&ifd_buf[pos..], offset_tag_type(bigtiff), 1, byte_order)
                 .unwrap()
                 .try_into()
                 .unwrap();
-        Ok((
-            Self {
-                bigtiff,
-                byte_order,
-                ifd: Ifd::from_tags(ifd_data),
-            },
-            next_ifd_offset,
-        ))
+        if deferred.is_empty() {
+            Ok((
+                IfdOrLoader::Complete(Ifd::from_tags(ifd_data)),
+                next_ifd_offset,
+            ))
+        } else {
+            Ok((
+                IfdOrLoader::Partial(Self {
+                    bigtiff,
+                    byte_order,
+                    ifd: Ifd::from_tags(ifd_data),
+                    deferred,
+                }),
+                next_ifd_offset,
+            ))
+        }
     }
 
     /// Get deferred values

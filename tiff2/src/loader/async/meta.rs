@@ -63,13 +63,11 @@ impl<Fetch: AsyncFetch, Loader: TiffLoader> AsyncMetaReader<Fetch, Loader>
                         next_ifd_offset: _,
                         required,
                     } => {
-                        for range in required {
-                            self.loader.give_more_data(
-                                range.start,
-                                self.fetch.fetch_range(range.clone()).await.or_raise(|| {
-                                    MetaReadError::fetch_error("Could not load data".into())
-                                })?,
-                            )
+                        let datas = self.fetch.fetch_ranges(&required).await.or_raise(|| {
+                            MetaReadError::fetch_error("Could not load data".into())
+                        })?;
+                        for (data, range) in datas.into_iter().zip(required) {
+                            self.loader.give_more_data(range.start, data)
                         }
                     }
                     _ => bail!(e.raise(MetaReadError("could not load ifd".into()))),

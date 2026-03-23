@@ -19,12 +19,6 @@ pub struct CacheMiss(pub Bound<usize>, pub Bound<usize>);
 pub enum TiffLoadError {
     #[display("could not load ifd from buffer, need {required:?}")]
     InvalidBuffer { required: Range<u64> },
-    #[display("need more data to fully parse ifd")]
-    NeedMoreData {
-        ifd: Ifd,
-        next_ifd_offset: u64,
-        required: Vec<Range<u64>>,
-    },
     #[display("ifd parsing failed: {message}")]
     Fatal { message: String },
 }
@@ -52,14 +46,6 @@ impl Display for CacheMiss {
 impl Error for CacheMiss {}
 
 impl TiffLoadError {
-    pub fn need_more_data(required: Vec<Range<u64>>, ifd: Ifd, next_ifd_offset: u64) -> Self {
-        Self::NeedMoreData {
-            ifd,
-            next_ifd_offset,
-            required,
-        }
-    }
-
     pub(crate) fn permanent(message: String) -> Self {
         Self::Fatal { message }
     }
@@ -67,50 +53,4 @@ impl TiffLoadError {
     pub(crate) fn invalid_buffer(range: Range<u64>) -> Self {
         Self::InvalidBuffer { required: range }
     }
-
-    pub fn is_partial(&self) -> bool {
-        matches!(
-            self,
-            TiffLoadError::NeedMoreData {
-                ifd: _,
-                next_ifd_offset: _,
-                required: _
-            }
-        )
-    }
-
-    // pub(crate) fn invalid_ifd(ifd_offset: u64, missing_tags: Vec<Tag>, message: String) -> Self {
-    //     Self {
-    //         status: ErrorStatus::Permanent,
-    //         kind: TiffLoadErrorKind::IncompleteIfd {
-    //             ifd_offset,
-    //             missing_tags,
-    //         },
-    //         message,
-    //     }
-    // }
-
-    // pub(crate) fn invalid_tag(tag: Tag) -> Self {
-    //     Self {
-    //         status: ErrorStatus::Permanent,
-    //         kind: TiffLoadErrorKind::InvalidTiff,
-    //         message: format!("value for {tag:?} was invalid"),
-    //     }
-    // }
-
-    // pub(crate) fn deferred_ifd(
-    //     ranges: Vec<Range<u64>>,
-    //     ifd_offset: u64,
-    //     missing_tags: Vec<Tag>,
-    //     message: String,
-    // ) -> Self {
-    //     Self {
-    //         status: ErrorStatus::MissingRanges { required: ranges },
-    //         kind: TiffLoadErrorKind::IncompleteIfd {
-    //             ifd_offset,
-    //             missing_tags,
-    //         },
-    //         message,
-    //     }
-    // }
 }

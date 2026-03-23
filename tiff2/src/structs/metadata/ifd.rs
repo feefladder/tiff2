@@ -76,14 +76,14 @@ pub(crate) const fn offset_tag_type(bigtiff: bool) -> TagType {
 #[derive(Debug, PartialEq, Default, Clone)]
 pub struct Ifd {
     // TODO: should an Ifd know its offset?
-    pub(crate) data: Directory,
+    pub(crate) data: BTreeMap<Tag, TagData>,
     // TODO: add custom tag registry/parsing
 }
 
 /// Base IFD struct without any special-cased metadata
 impl Ifd {
     /// Iterate this IFD in increasing tag-order
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (&Tag, &IfdEntry)> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&Tag, &TagData)> {
         self.data.iter()
     }
 
@@ -91,12 +91,13 @@ impl Ifd {
     pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = (&Tag, &mut IfdEntry)> {
         self.data.iter_mut()
     }
+
     /// The number of entries in this ifd
     pub fn count(&self) -> usize {
         self.data.len()
     }
 
-    pub(crate) fn from_tags(data: BTreeMap<Tag, IfdEntry>) -> Self {
+    pub(crate) fn from_tags(data: BTreeMap<Tag, TagData>) -> Self {
         Self { data }
     }
 

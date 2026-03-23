@@ -26,6 +26,17 @@ impl Offset {
     pub fn range(&self) -> Range<u64> {
         self.offset..self.offset + self.len()
     }
+
+    pub(crate) fn to_value(
+        &self,
+        buf: &[u8],
+        byte_order: ByteOrder,
+    ) -> exn::Result<TagData, CastError> {
+        let count = usize::try_from(self.count)
+            .or_raise(|| CastError::overflow(self.count.into(), type_name::<usize>()))?;
+        let tag_data = TagData::from_buffer(buf, self.tag_type, count, byte_order)?;
+        Ok(tag_data)
+    }
 }
 
 /// an IFD entry

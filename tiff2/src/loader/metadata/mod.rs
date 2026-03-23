@@ -34,6 +34,11 @@ pub type TiffLoadResult<T> = exn::Result<T, TiffLoadError>;
 //     ifds: BTreeMap<u64, Ifd>,
 // }
 
+pub enum IfdOrLoader {
+    Partial(IfdLoader),
+    Complete(Ifd),
+}
+
 /// The main trait for a tiff loader to implement
 ///
 /// Any loader that implements this trait can be used with [`async_load`] or
