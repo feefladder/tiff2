@@ -65,6 +65,13 @@ impl Default for EncoderRegistry {
         );
         // #[cfg(feature = "jpeg2k")]
         // registry.insert(CompressionMethod::JPEG2k, Box::new(JPEG2kEncoder) as _);
+        #[cfg(feature = "webp-agpl")]
+        registry.insert(
+            CompressionMethod::WebP,
+            Box::new(ZenWebPEncoder(zenwebp::EncoderConfig::Lossless(
+                zenwebp::LosslessConfig::new(),
+            ))) as _,
+        );
         #[cfg(feature = "webp-cpp")]
         registry.insert(
             CompressionMethod::WebP,
@@ -242,7 +249,7 @@ impl Encoder for WebPEncoder {
 
 #[cfg(feature = "webp-agpl")]
 #[derive(Debug, Clone)]
-pub struct ZenWebPEncoder;
+pub struct ZenWebPEncoder(zenwebp::EncoderConfig);
 
 #[cfg(feature = "webp-agpl")]
 impl Encoder for ZenWebPEncoder {
@@ -254,8 +261,21 @@ impl Encoder for ZenWebPEncoder {
         tile_width: u32,
         tile_height: u32,
     ) -> CodingResult<u64> {
-        // let encoder = zenwebp::
-        todo!();
+        use exn::bail;
+        use crate::structs::metadata::tags::{PhotometricInterpretation};
+
+        let bit_depth = tile_opts.bits_per_sample
+        ensure!(bit_depth == 8, CodingError::unsupported_bit_depth(bit_depth, "webp only supports 8-bit pixels"));
+        let color_type = match (tile_opts.photometric_interpretation, tile_opts.samples_per_pixel) {
+            (PhotometricInterpretation::RGB, 3) => zenwebp::PixelLayout::Rgb8,
+            (PhotometricInterpretation::RGB, 4) => zenwebp::PixelLayout::Rgba8,
+            (PhotometricInterpretation::BlackIsZero, 1) => zenwebp::PixelLayout::L8,
+            (PhotometricInterpretation::WhiteIsZero, 1) => zenwebp::PixelLayout::L8, // TODO: Should we invert colors here?
+            (photometric_interpretation, spp) => {bail!(CodingError::failed(format!("photometric interpretation {photometric_interpretation:?} and samples {spp} unsupported for webp")));}
+        };
+        let encoded = zenwebp::EncodeRequest::new(&self.0, in_buf, color_type, tile_width, tile_height).encode().or_raise(|| CodingError::failed("could not encode image".to_string()))?;
+        out_buf[..encoded.len()].copy_from_slice(&encoded);
+        Ok(u64::try_from(encoded.len()).expect("128-bit pointers not supported"))
     }
 }
 

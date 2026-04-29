@@ -61,8 +61,8 @@ impl<Fetch: AsyncFetch, Loader: TiffLoader> AsyncMetaReader<Fetch, Loader>
                     })?;
                 }
                 IfdLoadResponse::Partial {
-                    ifd_loader,
-                    next_ifd_offset,
+                    ifd_loader: _,
+                    next_ifd_offset: _,
                     needed_data,
                 } => {
                     let datas = self.fetch.fetch_ranges(&needed_data).await.or_raise(|| {
@@ -107,7 +107,7 @@ impl<Fetch: AsyncFetch, Loader: TiffLoader> AsyncMetaReader<Fetch, Loader>
                     IfdLoadResponse::Partial {
                         ifd_loader,
                         next_ifd_offset,
-                        needed_data,
+                        needed_data: _,
                     } => {
                         self.loader.tiff_mut().insert_ifd(
                             offset,

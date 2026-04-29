@@ -481,7 +481,7 @@ impl TileLoader {
                     ))
                 );
             }
-            (so, sbc, to, tbc) => unreachable!(),
+            (_so, _sbc, _to, _tbc) => unreachable!(),
         }
 
         Ok(TileLoader {

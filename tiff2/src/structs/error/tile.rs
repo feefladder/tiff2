@@ -27,7 +27,7 @@ pub enum CodingErrorKind {
         required: usize,
     },
     Failed {
-        message: &'static str,
+        message: String,
     },
 }
 
@@ -60,7 +60,7 @@ impl CodingError {
         }
     }
 
-    pub fn failed(message: &'static str) -> Self {
+    pub fn failed(message: String) -> Self {
         Self {
             status: ErrorStatus::Permanent,
             kind: CodingErrorKind::Failed { message },

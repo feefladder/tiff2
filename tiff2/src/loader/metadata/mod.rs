@@ -207,7 +207,7 @@ impl TiffLoader for Tiff {
     }
 
     /// Does nothing, we do not have a cache or smart strategies
-    fn give_more_data(&mut self, ranges: Vec<Range<u64>>, data: Vec<Bytes>) {
+    fn give_more_data(&mut self, ranges: Vec<Range<u64>>, _data: Vec<Bytes>) {
         eprintln!("give more data for ranges {ranges:?} bubbled down to Tiff")
     }
 }
