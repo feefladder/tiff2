@@ -3,14 +3,15 @@
 //! Also to see if we can expose the iterator-like functionality
 
 use std::collections::BTreeMap;
-use std::ops::{Bound, RangeBounds};
+use std::ops::{Bound, Range, RangeBounds};
 
 use bytes::Bytes;
-use exn::{OptionExt, Result};
+use exn::{Result, ResultExt};
 
-use crate::loader::metadata::error::{CacheMiss, TiffLoadError};
-use crate::loader::metadata::{Tiff, TiffLoadResult, TiffLoader};
-use crate::loader::IfdLoader;
+use crate::loader::metadata::error::TiffLoadError;
+use crate::loader::metadata::{
+    IfdLoadResponse, Tiff, TiffLoadResponse, TiffLoadResult, TiffLoader,
+};
 use crate::structs::{IfdEntry, TagData};
 
 pub struct CogCache {
@@ -29,66 +30,103 @@ impl TiffLoader for CogCache {
         self.tiff
     }
     /// Create a new CogCache with a prefetch buffer
-    fn from_header(buf: Bytes) -> TiffLoadResult<Self> {
-        let tiff = Tiff::from_header(buf.clone())?;
-        Ok(Self {
-            cache: BTreeMap::from([(0, buf)]),
-            tiff,
-        })
+    fn from_header(buf: Bytes) -> TiffLoadResult<TiffLoadResponse<Self>> {
+        let tiff_repsonse = Tiff::from_header(buf.clone())
+            .or_raise(|| TiffLoadError::permanent("could not load tiff".into()))?;
+        match tiff_repsonse {
+            TiffLoadResponse::NeedData(d) => Ok(TiffLoadResponse::NeedData(d)),
+            TiffLoadResponse::Complete(tiff) => Ok(TiffLoadResponse::Complete(Self {
+                cache: BTreeMap::from([(0, buf)]),
+                tiff,
+            })),
+        }
     }
 
-    fn ifd_loader(&self, buf: Bytes, offset: u64) -> Result<(IfdLoader, u64), TiffLoadError> {
-        let (mut ifd_loader, next_ifd) = self.tiff.ifd_loader(
-            self.slice(offset..).unwrap_or(buf),
-            // transparently raise the required range for the ifd
-            offset,
-        )?;
-        // in the happy path, everything is loaded, so no allocations there
-        let mut deferred_ranges = Vec::new();
-        let mut deferred_tags = Vec::new();
-
-        // try to get all values from the cache
-        for (t, entry) in ifd_loader.deferred_values_mut() {
-            let IfdEntry::Offset(o) = entry else {
-                unreachable!()
-            };
-            match self.slice(o.range().clone()) {
-                Ok(data) => {
-                    *entry = IfdEntry::Value(
-                        TagData::from_buffer(
-                            &data,
-                            o.tag_type,
-                            o.count as usize,
-                            self.tiff.byte_order,
-                        )
-                        .unwrap(),
-                    )
+    fn ifd_loader(&mut self, buf: Bytes, offset: u64) -> Result<IfdLoadResponse, TiffLoadError> {
+        let resp = self
+            .tiff
+            .ifd_loader(
+                self.slice(offset..).unwrap_or(buf),
+                // transparently raise the required range for the ifd
+                offset,
+            )
+            .or_raise(|| TiffLoadError::permanent("Could not parse tiff".into()))?;
+        match resp {
+            // in case there is not enough data to read the ifd, we tell upper layers to retry with an updated range
+            IfdLoadResponse::NeedData(range) => return Ok(IfdLoadResponse::NeedData(range)),
+            // if it's done, there's nothing for us to do
+            IfdLoadResponse::Complete(ifd, next_ifd_offset) => {
+                return Ok(IfdLoadResponse::Complete(ifd, next_ifd_offset))
+            }
+            // If some tags are not loaded, try to get them from the cache
+            IfdLoadResponse::Partial {
+                mut ifd_loader,
+                next_ifd_offset,
+                needed_data,
+            } => {
+                let mut found_data = Vec::new();
+                let mut found_ranges = Vec::new();
+                let mut missing_ranges = Vec::new();
+                // try to get all needed data from the cache and pass it down
+                for range in needed_data {
+                    if let Some(data) = self.slice(range.clone()) {
+                        found_data.push(data);
+                        found_ranges.push(range);
+                    } else {
+                        missing_ranges.push(range);
+                    }
                 }
-                Err(_e) => {
-                    // insert magic caching/filtering strategies here
-                    // For now, we just error at the end with all deferred values
-                    deferred_ranges.push(o.range());
-                    deferred_tags.push(*t);
+                self.tiff.give_more_data(found_ranges, found_data);
+                // in the happy path, everything is loaded, so no allocations there
+                let mut deferred_tags = Vec::new();
+
+                // try to get all values from the cache
+                for (t, entry) in ifd_loader.deferred_values_mut() {
+                    let IfdEntry::Offset(o) = entry else {
+                        unreachable!()
+                    };
+                    if let Some(data) = self.slice(o.range().clone()) {
+                        *entry = IfdEntry::Value(
+                            TagData::from_buffer(
+                                &data,
+                                o.tag_type,
+                                o.count as usize,
+                                self.tiff.byte_order,
+                            )
+                            .unwrap(),
+                        )
+                    } else {
+                        // insert magic caching/filtering strategies here
+                        // For now, we just error at the end with all deferred values
+                        missing_ranges.push(o.range());
+                        deferred_tags.push(*t);
+                    }
+                }
+                // FIXME: this is bad on skipping behaviour, because we can't recover from the error
+                if !missing_ranges.is_empty() {
+                    Ok(IfdLoadResponse::Partial {
+                        needed_data: missing_ranges,
+                        ifd_loader,
+                        next_ifd_offset,
+                    })
+                } else {
+                    Ok(IfdLoadResponse::Complete(
+                        ifd_loader.finish(),
+                        next_ifd_offset,
+                    ))
                 }
             }
-        }
-        // FIXME: this is bad on skipping behaviour, because we can't recover from the error
-        if !deferred_ranges.is_empty() {
-            Err(
-                TiffLoadError::need_more_data(deferred_ranges, ifd_loader.finish(), next_ifd)
-                    .into(),
-            )
-        } else {
-            Ok((ifd_loader, next_ifd))
         }
     }
 
     /// Insert more cache at the given offset
     ///
     /// Note that inserting a lot of small caches will decrease performance
-    fn give_more_data(&mut self, range_start: u64, data: Bytes) {
+    fn give_more_data(&mut self, ranges: Vec<Range<u64>>, data: Vec<Bytes>) {
         // TODO: this can overflow and lead to unpredictable behaviour
-        self.cache.insert(range_start as usize, data);
+        for (range, buf) in ranges.iter().zip(data) {
+            self.cache.insert(range.start as usize, buf);
+        }
     }
 }
 
@@ -121,7 +159,7 @@ impl CogCache {
     /// Get a slice from the cache
     ///
     /// This searches back-to-front, so `..=42` will give the smallest slice that contains `42`
-    fn slice(&self, range: impl RangeBounds<u64>) -> exn::Result<Bytes, CacheMiss> {
+    fn slice(&self, range: impl RangeBounds<u64>) -> Option<Bytes> {
         let start = range.start_bound().map(|s| usize::try_from(*s).unwrap());
         let end = range.end_bound().map(|e| usize::try_from(*e).unwrap());
         self.cache
@@ -150,7 +188,6 @@ impl CogCache {
                     end.map(|e| e - section_start),
                 ))
             })
-            .ok_or_raise(|| CacheMiss(start, end))
     }
 
     /// Finish metadata parsing and remove the cache

@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
-use std::ops::Deref;
+use std::fmt::Debug;
+use std::ops::{Deref, Range};
 
 use bytes::Bytes;
 use exn::{bail, ensure};
@@ -58,7 +59,7 @@ pub type TiffLoadResult<T> = exn::Result<T, TiffLoadError>;
 pub trait TiffLoader: Sized + Send + Sync {
     /// Create this loader from a buffer containing at least the header
     ///
-    fn from_header(buf: Bytes) -> TiffLoadResult<Self>;
+    fn from_header(buf: Bytes) -> TiffLoadResult<TiffLoadResponse<Self>>;
 
     /// get a mutable reference to the underlying tiff
     fn tiff_mut(&mut self) -> &mut Tiff;
@@ -68,15 +69,47 @@ pub trait TiffLoader: Sized + Send + Sync {
 
     /// Get the IfdLoader for the given offset
     ///
-    fn ifd_loader(&self, buf: Bytes, offset: u64) -> TiffLoadResult<(IfdLoader, u64)>;
+    fn ifd_loader(&mut self, buf: Bytes, offset: u64) -> TiffLoadResult<IfdLoadResponse>;
 
     /// Give more data to the loader
     ///
     /// This does nothing on `Tiff`, but is needed for caching
-    fn give_more_data(&mut self, range_start: u64, data: Bytes);
+    fn give_more_data(&mut self, ranges: Vec<Range<u64>>, data: Vec<Bytes>);
 
     /// Destroy the loader and get the inderlying tiff
     fn into_tiff(self) -> Tiff;
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TiffLoadResponse<T> {
+    NeedData(Range<u64>),
+    Complete(T),
+}
+
+impl<T> TiffLoadResponse<T> {
+    pub fn unwrap(self) -> T {
+        match self {
+            Self::Complete(v) => v,
+            Self::NeedData(d) => panic!("Called unwrap on TiffLoadResponse that needed {d:?}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum IfdLoadResponse {
+    /// Data is needed to be able to read the full in-line ifd data
+    NeedData(Range<u64>),
+    /// in-line ifd data was read, but some tags may be missing.
+    ///
+    /// needed_data is a signal to higher layers that that data is requested by this layer.
+    /// Therefore, it signals "I can further fill the ifd/tiff if you give me this data"
+    Partial {
+        ifd_loader: IfdLoader,
+        next_ifd_offset: u64,
+        needed_data: Vec<Range<u64>>,
+    },
+    /// All ifd tags were read successfully
+    Complete(Ifd, u64),
 }
 
 impl TiffLoader for Tiff {
@@ -89,11 +122,10 @@ impl TiffLoader for Tiff {
     fn into_tiff(self) -> Tiff {
         self
     }
-    fn from_header(buf: Bytes) -> TiffLoadResult<Tiff> {
-        ensure!(
-            u64::try_from(buf.len()).unwrap() >= header_size(false),
-            TiffLoadError::invalid_buffer(0..header_size(false))
-        );
+    fn from_header(buf: Bytes) -> TiffLoadResult<TiffLoadResponse<Tiff>> {
+        if u64::try_from(buf.len()).unwrap() < header_size(false) {
+            return Ok(TiffLoadResponse::NeedData(0..header_size(false)));
+        }
         let byte_order = match <&[u8; 2]>::try_from(&buf[0..2]).unwrap() {
             b"II" => ByteOrder::LittleEndian,
             b"MM" => ByteOrder::BigEndian,
@@ -111,10 +143,9 @@ impl TiffLoader for Tiff {
         {
             42 => false,
             43 => {
-                ensure!(
-                    u64::try_from(buf.len()).unwrap() >= header_size(true),
-                    TiffLoadError::invalid_buffer(0..header_size(true))
-                );
+                if u64::try_from(buf.len()).unwrap() < header_size(true) {
+                    return Ok(TiffLoadResponse::NeedData(0..header_size(true)));
+                }
                 let osize_zero =
                     TagData::from_buffer(&buf[4..], TagType::SHORT, 2, byte_order).unwrap();
                 ensure!(
@@ -136,12 +167,12 @@ impl TiffLoader for Tiff {
             u64::try_from(TagData::from_buffer(&buf[4..], TagType::LONG, 1, byte_order).unwrap())
                 .unwrap()
         }];
-        Ok(Tiff {
+        Ok(TiffLoadResponse::Complete(Tiff {
             bigtiff,
             byte_order,
             ifd_offsets,
             ifds: BTreeMap::new(),
-        })
+        }))
     }
 
     /// Get the ifd loader and insert the next offset into self
@@ -157,22 +188,28 @@ impl TiffLoader for Tiff {
     /// I think re-creating the loader is like totally acceptable. It is kind of
     /// nice to have the ifd struct which just holds data and the loader that
     /// knows how to load it??
-    fn ifd_loader(&self, buf: Bytes, offset: u64) -> TiffLoadResult<(IfdLoader, u64)> {
-        let (ifd_loader, next_ifd) =
+    fn ifd_loader(&mut self, buf: Bytes, offset: u64) -> TiffLoadResult<IfdLoadResponse> {
+        let (ifd_loader, next_ifd_offset) =
             IfdLoader::from_buffer(&buf, offset, self.bigtiff, self.byte_order)
                 .map_err(|e| e.deref().clone())?;
-        if self.ifd_offsets.contains(&next_ifd) {
-            Err(
-                TiffLoadError::permanent(format!("Cycle in offsets detected at ifd {next_ifd}"))
-                    .into(),
-            )
+        if self.ifd_offsets.contains(&next_ifd_offset) {
+            Err(TiffLoadError::permanent(format!(
+                "Cycle in offsets detected at ifd {next_ifd_offset}"
+            ))
+            .into())
         } else {
-            Ok((ifd_loader, next_ifd))
+            Ok(IfdLoadResponse::Partial {
+                ifd_loader,
+                next_ifd_offset,
+                needed_data: Vec::new(),
+            })
         }
     }
 
-    /// Does nothing
-    fn give_more_data(&mut self, _range_start: u64, _data: Bytes) {}
+    /// Does nothing, we do not have a cache or smart strategies
+    fn give_more_data(&mut self, ranges: Vec<Range<u64>>, data: Vec<Bytes>) {
+        eprintln!("give more data for ranges {ranges:?} bubbled down to Tiff")
+    }
 }
 
 impl Tiff {
@@ -277,6 +314,7 @@ mod test {
                 0,
                 0,
             ]))
+            .unwrap()
             .unwrap(),
             Tiff {
                 ifds: BTreeMap::new(),
@@ -300,6 +338,7 @@ mod test {
                 0,
                 header_size(false) as u8
             ]))
+            .unwrap()
             .unwrap(),
             Tiff {
                 ifds: BTreeMap::new(),
@@ -320,7 +359,7 @@ mod test {
                 8,0,
                 0,0,
                 header_size(true) as u8,0,0,0,0,0,0,0,
-            ])).unwrap(),
+            ])).unwrap().unwrap(),
             Tiff {
                 ifds: BTreeMap::new(),
                 ifd_offsets: vec![header_size(true)],
@@ -340,7 +379,7 @@ mod test {
                 0,8,
                 0,0,
                 0,0,0,0,0,0,0,header_size(true) as u8
-            ])).unwrap(),
+            ])).unwrap().unwrap(),
             Tiff {
                 ifds: BTreeMap::new(),
                 ifd_offsets: vec![header_size(true)],
@@ -353,8 +392,8 @@ mod test {
     #[test]
     fn test_too_short_buf_small() {
         assert_eq!(
-            Tiff::from_header(Bytes::new()).unwrap_err().deref(),
-            &TiffLoadError::invalid_buffer(0..header_size(false))
+            Tiff::from_header(Bytes::new()).unwrap(),
+            TiffLoadResponse::NeedData(0..header_size(false))
         )
     }
 
@@ -383,10 +422,8 @@ mod test {
     fn test_too_short_buf_big() {
         assert_eq!(
             //                                         |   bom  | |magic||osize_zero|
-            Tiff::from_header(Bytes::copy_from_slice(&[b'I', b'I', 43, 0, 0, 0, 0, 0,]))
-                .unwrap_err()
-                .deref(),
-            &TiffLoadError::invalid_buffer(0..header_size(true))
+            Tiff::from_header(Bytes::copy_from_slice(&[b'I', b'I', 43, 0, 8, 0, 0, 0,])).unwrap(),
+            TiffLoadResponse::NeedData(0..header_size(true))
         );
     }
 

@@ -81,7 +81,6 @@ impl<Fetch: AsyncFetch> AsyncReader for TiffReader<Fetch> {
             .ifd_offsets
             .get(ifd_idx)
             .ok_or_raise(|| ReadError::fatal(format!("no ifd {ifd_idx}")))?;
-        println!("{ifd_offset}");
         let mut ifd = self
             .tiff
             .ifds

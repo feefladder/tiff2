@@ -7,7 +7,7 @@ use weezl::LzwStatus;
 
 use crate::loader::CodingResult;
 use crate::structs::error::CodingError;
-use crate::structs::metadata::tags::{CompressionMethod, PhotometricInterpretation};
+use crate::structs::metadata::tags::CompressionMethod;
 use crate::structs::TileOpts;
 
 type EncodingResult<T> = exn::Result<T, CodingError>;
@@ -66,7 +66,10 @@ impl Default for EncoderRegistry {
         // #[cfg(feature = "jpeg2k")]
         // registry.insert(CompressionMethod::JPEG2k, Box::new(JPEG2kEncoder) as _);
         #[cfg(feature = "webp-cpp")]
-        registry.insert(CompressionMethod::WebP, Box::new(WebPEncoder) as _);
+        registry.insert(
+            CompressionMethod::WebP,
+            Box::new(WebPEncoder { quality: 0.9 }) as _,
+        );
         #[cfg(feature = "zstd")]
         registry.insert(CompressionMethod::ZSTD, Box::new(ZstdEncoder) as _);
         Self(registry)

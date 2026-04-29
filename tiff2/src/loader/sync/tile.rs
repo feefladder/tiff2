@@ -108,12 +108,7 @@ impl<Fetch: SyncFetch> SyncReader for TiffReader<Fetch> {
         }
         self.tile_loaders.insert(
             *ifd_offset,
-            TileLoader::from_ifd(
-                self.tiff.ifds.remove(ifd_offset).unwrap(),
-                *ifd_offset,
-                self.tiff.byte_order,
-            )
-            .or_raise(|| {
+            TileLoader::from_ifd(ifd, *ifd_offset, self.tiff.byte_order).or_raise(|| {
                 ReadError::fatal(
                     "Could not create TileLoader from ifd. This is a bug. please open an issue"
                         .into(),

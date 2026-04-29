@@ -57,6 +57,7 @@ mod test {
     use bytes::Bytes;
 
     use super::*;
+    use crate::loader::metadata::IfdLoadResponse;
     use crate::loader::TiffLoader;
     use crate::structs::metadata::tags::{CompressionMethod, PhotometricInterpretation};
     use crate::structs::tiff::header_size;
@@ -76,7 +77,10 @@ mod test {
             &buf[..header_size(false) as usize],
             [b'I', b'I', 42, 0, header_size(false) as u8, 0, 0, 0,]
         );
-        assert_eq!(Tiff::from_header(Bytes::from_owner(buf)).unwrap(), tiff);
+        assert_eq!(
+            Tiff::from_header(Bytes::from_owner(buf)).unwrap().unwrap(),
+            tiff
+        );
     }
 
     #[test]
@@ -93,7 +97,10 @@ mod test {
             &buf[..header_size(false) as usize],
             &[b'M', b'M', 0, 42, 0, 0, 0, header_size(false) as u8]
         );
-        assert_eq!(Tiff::from_header(Bytes::from_owner(buf)).unwrap(), tiff);
+        assert_eq!(
+            Tiff::from_header(Bytes::from_owner(buf)).unwrap().unwrap(),
+            tiff
+        );
     }
 
     #[test]
@@ -117,7 +124,7 @@ mod test {
                 header_size(true) as u8,0,0,0,0,0,0,0,
             ]
         );
-        assert_eq!(Tiff::from_header(Bytes::from_owner(buf)).unwrap(), tiff);
+        assert_eq!(Tiff::from_header(Bytes::from_owner(buf)).unwrap().unwrap(), tiff);
     }
 
     #[test]
@@ -138,7 +145,7 @@ mod test {
             0,0,
             0,0,0,0,0,0,0,header_size(true) as u8
         ]);
-        assert_eq!(Tiff::from_header(Bytes::from_owner(buf)).unwrap(), tiff);
+        assert_eq!(Tiff::from_header(Bytes::from_owner(buf)).unwrap().unwrap(), tiff);
     }
 
     #[test]
@@ -251,14 +258,22 @@ mod test {
         out[offset as usize..].copy_from_slice(&tile_data);
         // assert_eq!(&out, &[]);
         let f = Bytes::from_owner(out);
-        let mut read = Tiff::from_header(f.clone()).unwrap();
-        let (mut read_ifd, zero) = read
+        let mut read = Tiff::from_header(f.clone()).unwrap().unwrap();
+        let IfdLoadResponse::Partial {
+            ifd_loader: mut read_ifd,
+            next_ifd_offset: zero,
+            needed_data,
+        } = read
             .ifd_loader(
                 f.slice(read.next_ifd_offset().unwrap() as usize..).clone(),
                 read.next_ifd_offset().unwrap(),
             )
-            .unwrap();
+            .unwrap()
+        else {
+            panic!("bare tiff should return partial for ifdloadresponse with deferred tags")
+        };
         assert_eq!(zero, 0);
+        assert!(needed_data.is_empty());
         for (_t, o) in read_ifd.deferred_values_mut() {
             let v;
             {
