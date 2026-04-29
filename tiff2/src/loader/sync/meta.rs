@@ -133,7 +133,7 @@ impl<'a, Fetch: SyncFetch> SyncIfdReader<'a, Fetch> for TiffIfdReader<'a, Fetch>
         let byte_order = self.ifd_loader.byte_order;
         for ((tag, entry), buf) in self.ifd_loader.deferred_values_mut().zip(data) {
             entry
-                .to_value(&buf, byte_order)
+                .load(&buf, byte_order)
                 .or_raise(|| IfdReadError(format!("could nto read entry for tag {tag:?}")))?;
         }
         Ok(())

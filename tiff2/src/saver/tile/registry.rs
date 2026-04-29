@@ -190,11 +190,9 @@ impl Encoder for JpegEncoder {
         let colortype = encoder
             .encode(
                 in_buf,
-                tile_width
-                    .try_into()
+                u16::try_from(tile_width)
                     .or_raise(|| CodingError::failed("tile width too large for encoding"))?,
-                tile_height
-                    .try_into()
+                u16::try_from(tile_height)
                     .or_raise(|| CodingError::failed("tile height too large for encoding"))?,
                 color_type,
             )
@@ -258,5 +256,26 @@ impl Encoder for ZenWebPEncoder {
     ) -> CodingResult<u64> {
         // let encoder = zenwebp::
         todo!();
+    }
+}
+
+#[cfg(feature = "zstd")]
+#[derive(Debug, Clone)]
+pub struct ZstdEncoder;
+
+#[cfg(feature = "zstd")]
+impl Encoder for ZstdEncoder {
+    fn encode_tile(
+        &self,
+        in_buf: &[u8],
+        out_buf: &mut [u8],
+        tile_opts: &TileOpts,
+        tile_width: u32,
+        tile_height: u32,
+    ) -> CodingResult<u64> {
+        let mut c = std::io::Cursor::new(out_buf);
+        // TODO: make this a parameter, but it needs to implement debug first
+        ruzstd::encoding::compress(in_buf, &mut c, ruzstd::encoding::CompressionLevel::Fastest);
+        Ok(c.position())
     }
 }

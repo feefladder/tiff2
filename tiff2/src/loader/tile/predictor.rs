@@ -51,7 +51,7 @@ fn rev_hpredict_nsamp(buf: &mut [u8], bit_depth: u16, samples: usize) {
 /// # Panics
 ///
 /// if tile_x is out-of-bounds
-pub(crate) fn unpredict_hdiff<'a>(buffer: &mut [u8], predictor_info: &TileOpts, tile_x: u32) {
+pub(crate) fn unpredict_hdiff(buffer: &mut [u8], predictor_info: &TileOpts, tile_x: u32) {
     let output_row_stride = predictor_info.output_row_stride(tile_x).unwrap();
     let samples = predictor_info.samples_per_pixel as usize;
     let bit_depth = predictor_info.bits_per_sample;
@@ -72,7 +72,7 @@ pub(crate) fn unpredict_hdiff<'a>(buffer: &mut [u8], predictor_info: &TileOpts, 
 /// # Panics
 ///
 /// if
-pub(crate) fn unpredict_float<'a>(
+pub(crate) fn unpredict_float(
     in_buf: &mut [u8],
     out_buf: &mut [u8],
     predictor_info: &TileOpts,

@@ -60,4 +60,8 @@ impl Tiff {
     pub fn len(&self) -> usize {
         self.ifd_offsets.len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.ifd_offsets.is_empty()
+    }
 }

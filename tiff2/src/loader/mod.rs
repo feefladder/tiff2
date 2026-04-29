@@ -195,8 +195,7 @@ impl<Fetch> TiffReader<Fetch> {
         self.tiff
             .ifd_offsets
             .get(idx)
-            .map(|offset| self.tile_loaders.get(&offset).map(|tl| &tl.tile_opts))
-            .flatten()
+            .and_then(|offset| self.tile_loaders.get(offset).map(|tl| &tl.tile_opts))
     }
 }
 

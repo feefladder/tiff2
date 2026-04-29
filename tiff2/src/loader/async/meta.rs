@@ -17,7 +17,7 @@ impl<Fetch: AsyncFetch, Loader: TiffLoader> AsyncMetaReader<Fetch, Loader>
         let mut buf = fetch
             .fetch_range(0..prefetch)
             .await
-            .or_raise(|| MetaReadError::fetch_error(format!("Could not get tiff prefetch")))?;
+            .or_raise(|| MetaReadError::fetch_error("Could not get tiff prefetch".to_string()))?;
         for _ in 0..3 {
             match Loader::from_header(buf)
                 .or_raise(|| MetaReadError("Could not open tiff".into()))?
@@ -97,7 +97,7 @@ impl<Fetch: AsyncFetch, Loader: TiffLoader> AsyncMetaReader<Fetch, Loader>
                 match self
                     .loader
                     .ifd_loader(buf.clone(), offset)
-                    .or_raise(|| MetaReadError(format!("Parse erorr when skipping ifd")))?
+                    .or_raise(|| MetaReadError("Parse erorr when skipping ifd".to_string()))?
                 {
                     IfdLoadResponse::NeedData(range) => {
                         buf = self.fetch.fetch_range(range.clone()).await.or_raise(|| {
@@ -138,11 +138,11 @@ impl<'a, Fetch: AsyncFetch> AsyncIfdReader<'a, Fetch> for TiffIfdReader<'a, Fetc
             .fetch
             .fetch_ranges(&ranges)
             .await
-            .or_raise(|| IfdReadError(format!("Could not fill deferred values of ifd")))?;
+            .or_raise(|| IfdReadError("Could not fill deferred values of ifd".to_string()))?;
         let byte_order = self.ifd_loader.byte_order;
         for ((tag, entry), buf) in self.ifd_loader.deferred_values_mut().zip(data) {
             entry
-                .to_value(&buf, byte_order)
+                .load(&buf, byte_order)
                 .or_raise(|| IfdReadError(format!("could nto read entry for tag {tag:?}")))?;
         }
         Ok(())

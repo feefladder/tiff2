@@ -136,7 +136,7 @@ impl TileLoader {
         Self::decode_into(
             x,
             y,
-            &tile_opts,
+            tile_opts,
             compressed,
             out_buf.as_mut(),
             decoder_registry,
@@ -158,7 +158,7 @@ impl TileLoader {
             .ok_or_raise(|| CodingError::unsupported_compression(tile_opts.compression_method))?;
         match tile_opts.predictor {
             Predictor::None => {
-                decoder.decode_tile(&compressed, out_buf, &tile_opts)?;
+                decoder.decode_tile(&compressed, out_buf, tile_opts)?;
                 fix_endianness(
                     out_buf,
                     tile_opts.byte_order,
@@ -167,8 +167,8 @@ impl TileLoader {
                 );
             }
             Predictor::Horizontal => {
-                decoder.decode_tile(&compressed, out_buf, &tile_opts)?;
-                unpredict_hdiff(out_buf, &tile_opts, x);
+                decoder.decode_tile(&compressed, out_buf, tile_opts)?;
+                unpredict_hdiff(out_buf, tile_opts, x);
             }
             Predictor::FloatingPoint => {
                 let mut temp_buf = vec![
@@ -177,8 +177,8 @@ impl TileLoader {
                         CodingError::invalid_tile_index(x, y)
                     })? * tile_opts.tile_height as usize
                 ];
-                decoder.decode_tile(&compressed, &mut temp_buf, &tile_opts)?;
-                unpredict_float(&mut temp_buf, out_buf, &tile_opts, x)?;
+                decoder.decode_tile(&compressed, &mut temp_buf, tile_opts)?;
+                unpredict_float(&mut temp_buf, out_buf, tile_opts, x)?;
             }
         }
         Ok(())
@@ -213,8 +213,7 @@ const TILE_TAGS: [Tag; 4] = [
 fn ensure_present(tags: &[Tag], ifd: &Ifd) -> TileLoadResult<()> {
     let missing_tags: Vec<Tag> = tags
         .iter()
-        .filter(|tag| ifd.require_val(tag).is_err())
-        .map(|t| *t)
+        .filter(|tag| ifd.require_val(tag).is_err()).copied()
         .collect();
     if !missing_tags.is_empty() {
         Err(invalid_ifd(format!("missing {} required tags", missing_tags.len())).into())
@@ -318,7 +317,7 @@ impl TileLoader {
                 ensure!(
                     ifd.require_val(&Tag::StripByteCounts).unwrap().len()
                         == ifd.require_val(&Tag::StripOffsets).unwrap().len(),
-                    invalid_ifd(format!("strip offsets doesn't match byte counts"))
+                    invalid_ifd("strip offsets doesn't match byte counts".to_string())
                 )
             }
             (false, false, true, true) => {
@@ -334,7 +333,7 @@ impl TileLoader {
                 ensure!(
                     ifd.require_val(&Tag::TileOffsets).unwrap().len()
                         == ifd.require_val(&Tag::TileByteCounts).unwrap().len(),
-                    invalid_ifd(format!("strip offsets doesn't match byte counts"))
+                    invalid_ifd("strip offsets doesn't match byte counts".to_string())
                 )
             }
             (so, sbc, to, tbc) => bail!(invalid_ifd(format!(
@@ -451,11 +450,11 @@ impl TileLoader {
                     .unwrap_or(image_height);
 
                 ensure!(
-                    tile_offsets.len() as u32 == image_height.div_ceil(tile_height) * planes as u32,
+                    tile_offsets.len() as u32 == image_height.div_ceil(tile_height) * planes,
                     invalid_ifd(format!(
                         "inconsistency in row data {}!={}",
                         tile_offsets.len(),
-                        image_height.div_ceil(tile_height) * planes as u32
+                        image_height.div_ceil(tile_height) * planes
                     ))
                 );
             }
@@ -501,8 +500,8 @@ impl TileLoader {
                 tile_width,
                 tile_height,
             },
-            tile_offsets: tile_offsets,
-            tile_byte_counts: tile_byte_counts,
+            tile_offsets,
+            tile_byte_counts,
         })
     }
 }

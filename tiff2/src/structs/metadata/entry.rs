@@ -55,11 +55,10 @@ impl IfdEntry {
         }
     }
 
-    pub(crate) fn to_value(
-        &mut self,
-        buf: &[u8],
-        byte_order: ByteOrder,
-    ) -> exn::Result<(), CastError> {
+    /// Load the data into this entry
+    ///
+    /// Note that this will lose the "entry offset" information
+    pub(crate) fn load(&mut self, buf: &[u8], byte_order: ByteOrder) -> exn::Result<(), CastError> {
         if let IfdEntry::Offset(o) = self {
             let count = usize::try_from(o.count)
                 .or_raise(|| CastError::overflow(o.count.into(), type_name::<usize>()))?;
@@ -69,6 +68,30 @@ impl IfdEntry {
         } else {
             Err(CastError {
                 kind: CastErrorKind::Other("was already a value".into()),
+            }
+            .into())
+        }
+    }
+
+    /// Save this entries' data and convert it to an offset
+    pub(crate) fn save(
+        &mut self,
+        buf: &mut [u8],
+        offset: u64,
+        byte_order: ByteOrder,
+    ) -> exn::Result<(), CastError> {
+        if let IfdEntry::Value(v) = self {
+            let count = u64::try_from(v.len()).expect("don't support 128-bit arch");
+            v.to_buffer(buf, byte_order);
+            *self = IfdEntry::Offset(Offset {
+                tag_type: v.tag_type(),
+                count,
+                offset,
+            });
+            Ok(())
+        } else {
+            Err(CastError {
+                kind: CastErrorKind::Other("was already an offset".into()),
             }
             .into())
         }
@@ -240,6 +263,10 @@ impl TagData {
             Self::Rational (v) => v.len(),
             Self::SRational(v) => v.len(),
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 

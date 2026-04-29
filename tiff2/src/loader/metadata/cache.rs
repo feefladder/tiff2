@@ -42,6 +42,9 @@ impl TiffLoader for CogCache {
         }
     }
 
+    /// Load the if at the specified offset
+    ///
+    /// Will try to fill missing data from its internal cache and request it from upstream otherwise
     fn ifd_loader(&mut self, buf: Bytes, offset: u64) -> Result<IfdLoadResponse, TiffLoadError> {
         let resp = self
             .tiff
@@ -53,10 +56,10 @@ impl TiffLoader for CogCache {
             .or_raise(|| TiffLoadError::permanent("Could not parse tiff".into()))?;
         match resp {
             // in case there is not enough data to read the ifd, we tell upper layers to retry with an updated range
-            IfdLoadResponse::NeedData(range) => return Ok(IfdLoadResponse::NeedData(range)),
+            IfdLoadResponse::NeedData(range) => Ok(IfdLoadResponse::NeedData(range)),
             // if it's done, there's nothing for us to do
             IfdLoadResponse::Complete(ifd, next_ifd_offset) => {
-                return Ok(IfdLoadResponse::Complete(ifd, next_ifd_offset))
+                Ok(IfdLoadResponse::Complete(ifd, next_ifd_offset))
             }
             // If some tags are not loaded, try to get them from the cache
             IfdLoadResponse::Partial {
@@ -131,11 +134,6 @@ impl TiffLoader for CogCache {
 }
 
 impl CogCache {
-    /// Load the next ifd
-    ///
-    /// If all the ifd's values are not present in the cache, an error is
-    /// returned. This error may be ignored if this ifd is not of interest
-
     // so the sad thing here is that we can't create a BytesMut from a &mut
     // self, since cloning will increase the refcount, so this is always a
     // deep clone:
@@ -207,13 +205,10 @@ mod test {
     #[test]
     fn test_too_fancy_cache() {
         // This is a cache that is actually too fancy, it does checks/modifications that don't improve performance/memory use and only fragment the cache
-        /// Get a slice from the cache
+        /// Get a slice from the cache. It may be useful reference for saving purposes, so it stays around here
         ///
         /// This actually searches back-to-front, so `..=42` will give the smallest slice that contains `42`
-        fn slice(
-            cache: &BTreeMap<usize, Bytes>,
-            range: impl RangeBounds<u64>,
-        ) -> exn::Result<Bytes, CacheMiss> {
+        fn slice(cache: &BTreeMap<usize, Bytes>, range: impl RangeBounds<u64>) -> Option<Bytes> {
             let start = range.start_bound().map(|s| usize::try_from(*s).unwrap());
             let end = range.end_bound().map(|e| usize::try_from(*e).unwrap());
             cache
@@ -242,7 +237,6 @@ mod test {
                         end.map(|e| e - section_start),
                     ))
                 })
-                .ok_or_raise(|| CacheMiss(start, end))
         }
         let mut cache = BTreeMap::new();
         cache.insert(0, Bytes::copy_from_slice(&[42; 42]));
@@ -289,22 +283,7 @@ mod test {
         }
         insert(&mut cache, 13, Bytes::copy_from_slice(&[43; 43]));
         // now we broke the cache for this request...
-        assert_eq!(
-            slice(&cache, desired_range.clone())
-                .unwrap_err()
-                .frame()
-                .error()
-                .downcast_ref::<CacheMiss>()
-                .unwrap(),
-            &CacheMiss(
-                desired_range
-                    .start_bound()
-                    .map(|s| usize::try_from(*s).unwrap()),
-                desired_range
-                    .end_bound()
-                    .map(|e| usize::try_from(*e).unwrap())
-            )
-        );
+        assert!(slice(&cache, desired_range.clone()).is_none());
         assert_eq!(
             cache,
             BTreeMap::from([

@@ -67,7 +67,9 @@ impl Default for DecoderRegistry {
         // #[cfg(feature = "lzma")]
         // registry.insert(CompressionMethod::LZMA, Box::new(LZMADecoder) as _);
         registry.insert(CompressionMethod::LZW, Box::new(LZWDecoder) as _);
-        #[cfg(feature = "jpeg")]
+        #[cfg(feature = "jpeg-decoder")]
+        registry.insert(CompressionMethod::JPEG, Box::new(JpegDecoder) as _);
+        #[cfg(feature = "jpeg-decoder")]
         registry.insert(CompressionMethod::ModernJPEG, Box::new(JpegDecoder) as _);
         // #[cfg(feature = "jpeg")]
         // registry.insert(CompressionMethod::JPEG2k, Box::new(JPEG2kDecoder) as _);
