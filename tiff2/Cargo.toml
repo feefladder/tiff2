@@ -31,9 +31,10 @@ zenwebp = { version = "0.3.2", default-features = false, optional = true }
 ruzstd = { version = "0.8.2", optional = true }
 zune-jpeg = { version = "0.5.13", optional = true }
 jpeg-encoder = { version = "0.7.0", optional = true }
+futures = { version = "0.3.32", optional = true }
 
 [features]
-default = ["deflate", "lzw", "async"]
+default = ["deflate", "lzw", "async", "futures"]
 sync = []
 async = ["dep:async-trait"]
 # compression methods
@@ -46,6 +47,7 @@ lzw = ["dep:weezl"]
 packbits = []
 webp-cpp = ["dep:webp"]
 webp-agpl = ["dep:zenwebp"]
+futures = ["dep:futures"]
 
 
 

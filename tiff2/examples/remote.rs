@@ -1,5 +1,6 @@
 use std::{
     error::Error,
+    num::TryFromIntError,
     ops::Range,
     time::{Duration, Instant},
 };
@@ -8,6 +9,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use derive_more::Display;
 use exn::{bail, ensure, ErrorExt, OptionExt, ResultExt};
+use futures::{StreamExt, TryStreamExt};
 use reqwest::header::RANGE;
 use tiff2::loader::{
     cache::CogCache, AsyncFetch, AsyncMetaReader, AsyncReader, DecoderRegistry, FetchError,
@@ -86,8 +88,17 @@ async fn fetch_with_retry(
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl AsyncFetch for ReqwestFetch {
     async fn fetch_range(&self, range: Range<u64>) -> FetchResult<Bytes> {
+        let start = Instant::now();
         println!("fetching {range:?}");
-        fetch_with_retry(&self.client, &self.url, &range, 10).await
+        let res = fetch_with_retry(&self.client, &self.url, &range, 10).await;
+        println!("fetch took {:?}", start.elapsed());
+        res
+    }
+
+    async fn fetch_ranges(&self, ranges: &[Range<u64>]) -> FetchResult<Vec<Bytes>> {
+        return coalesce_ranges(ranges, |r| self.fetch_range(r), 1024)
+            .await
+            .or_raise(|| FetchError(format!("help")));
     }
 }
 
@@ -117,14 +128,13 @@ async fn main() -> Result<(), exn::Exn<AppError>> {
         AsyncMetaReader::open(cog_client, 16 * 1024)
             .await
             .or_raise(|| AppError)?;
-    meta_reader.next().await;
+    // meta_reader.next().await.or_raise(|| AppError)?;
     let t1 = start.elapsed();
-    while meta_reader.next().await.unwrap().is_some() {}
-    // meta_reader.skip(42).await.or_raise(|| AppError)?;
-    // while meta_reader.next().await.or_raise(|| AppError)?.is_some() {}
+    meta_reader.skip(4).await.or_raise(|| AppError)?;
+    while meta_reader.next().await.or_raise(|| AppError)?.is_some() {}
     let t2 = start.elapsed();
     let mut reader = meta_reader.finish(DecoderRegistry::default());
-    let ifd_idx = reader.tiff().len() - 2;
+    let ifd_idx = 5; //reader.tiff().len() - 2;
     reader.prep_ifd(ifd_idx).await.or_raise(|| AppError)?;
     let t3 = start.elapsed();
     // info!("decoder: {:#?}", decoder.images);
@@ -143,7 +153,34 @@ async fn main() -> Result<(), exn::Exn<AppError>> {
             tile_coords.push((x, y).into());
         }
     }
-    let _tiles = reader.get_tiles(ifd_idx, &tile_coords).await;
+    println!(
+        "decoding {} {:?}-compressed tiles",
+        tile_coords.len(),
+        topts.compression_method
+    );
+    let tiles = reader
+        .get_tiles(ifd_idx, &tile_coords)
+        .await
+        .or_raise(|| AppError)?;
+    let t4 = start.elapsed();
+
+    println!(
+        "initialization: {t1:?}, scan_ifds: {:?}, read_image_ifds: {:?}, get_tiles: {:?}",
+        t2 - t1,
+        t3 - t2,
+        t4 - t3
+    );
+    for (tile_coord, data) in tiles {
+        data.or_raise(|| AppError)?;
+    }
+    println!(
+        "initialization: {t1:?}, scan_ifds: {:?}, read_image_ifds: {:?}, get_tiles: {:?}",
+        t2 - t1,
+        t3 - t2,
+        t4 - t3
+    );
+    // merge all tiles into one huge tiff?
+
     // let img = &decoder.images[&decoder.ifd_offsets()[ifd_idx]];
     // let img_buf = reader
     //     .decode_image(ifd_idx)
@@ -188,3 +225,89 @@ async fn main() -> Result<(), exn::Exn<AppError>> {
     // );
     Ok(())
 }
+
+/// Takes a function `fetch` that can fetch a range of bytes and uses this to
+/// fetch the provided byte `ranges`
+///
+/// To improve performance it will:
+///
+/// * Combine ranges less than `coalesce` bytes apart into a single call to `fetch`
+/// * Make multiple `fetch` requests in parallel (up to maximum of 10)
+pub async fn coalesce_ranges<F, E, Fut>(
+    ranges: &[Range<u64>],
+    fetch: F,
+    coalesce: u64,
+) -> Result<Vec<Bytes>, E>
+where
+    F: Send + FnMut(Range<u64>) -> Fut,
+    E: Send,
+    Fut: std::future::Future<Output = Result<Bytes, E>> + Send,
+{
+    let fetch_ranges = merge_ranges(ranges, coalesce);
+
+    let fetched: Vec<_> = futures::stream::iter(fetch_ranges.iter().cloned())
+        .map(fetch)
+        .buffered(OBJECT_STORE_COALESCE_PARALLEL)
+        .try_collect()
+        .await?;
+
+    ranges
+        .iter()
+        .map(|range| {
+            let idx = fetch_ranges.partition_point(|v| v.start <= range.start) - 1;
+            let fetch_range = &fetch_ranges[idx];
+            let fetch_bytes = &fetched[idx];
+
+            let start = range.start - fetch_range.start;
+            let end = range.end - fetch_range.start;
+            Ok(fetch_bytes.slice(
+                usize::try_from(start).unwrap()
+                    ..usize::try_from(end).unwrap().min(fetch_bytes.len()),
+            ))
+        })
+        .collect::<Result<_, _>>()
+}
+
+/// Returns a sorted list of ranges that cover `ranges`
+fn merge_ranges(ranges: &[Range<u64>], coalesce: u64) -> Vec<Range<u64>> {
+    if ranges.is_empty() {
+        return vec![];
+    }
+
+    let mut ranges = ranges.to_vec();
+    ranges.sort_unstable_by_key(|range| range.start);
+
+    let mut ret = Vec::with_capacity(ranges.len());
+    let mut start_idx = 0;
+    let mut end_idx = 1;
+
+    while start_idx != ranges.len() {
+        let mut range_end = ranges[start_idx].end;
+
+        while end_idx != ranges.len()
+            && ranges[end_idx]
+                .start
+                .checked_sub(range_end)
+                .map(|delta| delta <= coalesce)
+                .unwrap_or(true)
+        {
+            range_end = range_end.max(ranges[end_idx].end);
+            end_idx += 1;
+        }
+
+        let start = ranges[start_idx].start;
+        let end = range_end;
+        ret.push(start..end);
+
+        start_idx = end_idx;
+        end_idx += 1;
+    }
+
+    ret
+}
+/// Range requests with a gap less than or equal to this,
+/// will be coalesced into a single request by [`coalesce_ranges`]
+pub const OBJECT_STORE_COALESCE_DEFAULT: u64 = 1024 * 1024;
+
+/// Up to this number of range requests will be performed in parallel by [`coalesce_ranges`]
+pub(crate) const OBJECT_STORE_COALESCE_PARALLEL: usize = 10;

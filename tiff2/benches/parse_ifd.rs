@@ -13,8 +13,8 @@ fn parse_ifd_tag_data(
     byte_order: ByteOrder,
     bigtiff: bool,
 ) -> (BTreeMap<Tag, IfdEntry>, u64) {
-    let (loader, next_offset) = IfdLoader::from_buffer(&buf, 0, bigtiff, byte_order).unwrap();
-    (loader.ifd.data, next_offset)
+    let loader = IfdLoader::from_buffer(&buf, 0, bigtiff, byte_order).unwrap();
+    (loader.ifd.data, loader.next_ifd_offset.unwrap())
 }
 
 fn benchmark_parse_ifd(c: &mut Criterion) {

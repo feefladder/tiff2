@@ -103,15 +103,16 @@ impl TileOpts {
     }
 
     pub fn check_coord(&self, coord: TileCoord) -> TileOptsResult<()> {
-        if coord.x <= self.chunks_across()
-            && coord.y <= self.chunks_down()
-            && coord.band <= self.planes()
+        if coord.x < self.chunks_across()
+            && coord.y < self.chunks_down()
+            && coord.band < self.planes()
         {
-            bail!(TileOptsError {
-                message: format!("coordinate {coord:?} invalid")
-            })
-        } else {
             Ok(())
+        } else {
+            Err(TileOptsError {
+                message: format!("coordinate {coord:?} invalid"),
+            }
+            .into())
         }
     }
 

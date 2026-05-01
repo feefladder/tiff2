@@ -52,19 +52,18 @@ impl<Fetch: AsyncFetch> AsyncReader for TiffReader<Fetch> {
             .ok_or_raise(no_loader(*ifd_offset))?;
         let mut out_coords = Vec::with_capacity(coords.len());
         let mut ranges = Vec::with_capacity(coords.len());
-        for (coord, range) in tile_loader
-            .tiles_ranges(coords.iter())
-            .filter(|(_, r)| r.is_ok())
-            .map(|(tc, r)| (tc, r.unwrap()))
-        {
+        println!("finding thingies for {} coordinates", coords.len());
+        for (coord, res) in tile_loader.tiles_ranges(coords.iter()) {
             out_coords.push(coord);
-            ranges.push(range);
+            ranges.push(res.or_raise(fatal(format!("could not find range for tile coordinate")))?);
         }
+        println!("hello");
         let compressed: Vec<Bytes> = self
             .fetch
             .fetch_ranges(&ranges)
             .await
             .or_raise(fatal(format!("could not fetch {ranges:?}")))?;
+        println!("have data for {} tiles", compressed.len());
         let mut res = Vec::with_capacity(compressed.len());
         tile_loader
             .get_tiles(

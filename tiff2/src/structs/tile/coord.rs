@@ -16,7 +16,7 @@ impl From<(u32, u32)> for TileCoord {
         Self {
             x: xy.0,
             y: xy.1,
-            band: 1,
+            band: 0,
         }
     }
 }

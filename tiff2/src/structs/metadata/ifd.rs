@@ -76,7 +76,7 @@ pub(crate) const fn offset_tag_type(bigtiff: bool) -> TagType {
 #[derive(Debug, PartialEq, Default, Clone)]
 pub struct Ifd {
     // TODO: should an Ifd know its offset?
-    pub(crate) data: Directory,
+    pub data: Directory,
     // TODO: add custom tag registry/parsing
 }
 
