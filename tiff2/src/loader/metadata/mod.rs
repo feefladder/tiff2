@@ -3,11 +3,11 @@ use std::fmt::Debug;
 use std::ops::{Deref, Range};
 
 use bytes::Bytes;
-use exn::{bail, ensure};
+use exn::{bail, ensure, ResultExt};
 use smallvec::smallvec;
 
 use crate::structs::tiff::header_size;
-use crate::structs::{Ifd, TagData, TagType, Tiff};
+use crate::structs::{Ifd, IfdEntry, TagData, TagType, Tiff};
 use crate::ByteOrder;
 
 pub mod cache;
@@ -74,9 +74,14 @@ pub trait TiffLoader: Sized + Send + Sync {
     /// Give more data to the loader
     ///
     /// This does nothing on `Tiff`, but is needed for caching
-    fn give_more_data(&mut self, ranges: Vec<Range<u64>>, data: Vec<Bytes>);
+    fn resume_loader(
+        &mut self,
+        ranges: Vec<Range<u64>>,
+        data: Vec<Bytes>,
+        loader: IfdLoader,
+    ) -> TiffLoadResult<IfdLoadResponse>;
 
-    /// Destroy the loader and get the inderlying tiff
+    /// Destroy the loader and get the underlying tiff
     fn into_tiff(self) -> Tiff;
 }
 
@@ -105,11 +110,10 @@ pub enum IfdLoadResponse {
     /// Therefore, it signals "I can further fill the ifd/tiff if you give me this data"
     Partial {
         ifd_loader: IfdLoader,
-        next_ifd_offset: u64,
         needed_data: Vec<Range<u64>>,
     },
     /// All ifd tags were read successfully
-    Complete(Ifd, u64),
+    Complete { ifd: Ifd, next_ifd_offset: u64 },
 }
 
 impl TiffLoader for Tiff {
@@ -189,26 +193,50 @@ impl TiffLoader for Tiff {
     /// nice to have the ifd struct which just holds data and the loader that
     /// knows how to load it??
     fn ifd_loader(&mut self, buf: Bytes, offset: u64) -> TiffLoadResult<IfdLoadResponse> {
-        let (ifd_loader, next_ifd_offset) =
-            IfdLoader::from_buffer(&buf, offset, self.bigtiff, self.byte_order)
-                .map_err(|e| e.deref().clone())?;
-        if self.ifd_offsets.contains(&next_ifd_offset) {
+        let ifd_loader = IfdLoader::from_buffer(&buf, offset, self.bigtiff, self.byte_order)
+            .map_err(|e| e.deref().clone())?;
+        if self
+            .ifd_offsets
+            .contains(&ifd_loader.next_ifd_offset.unwrap())
+        {
             Err(TiffLoadError::permanent(format!(
-                "Cycle in offsets detected at ifd {next_ifd_offset}"
+                "Cycle in offsets detected at ifd {:?}",
+                ifd_loader.next_ifd_offset
             ))
             .into())
         } else {
             Ok(IfdLoadResponse::Partial {
                 ifd_loader,
-                next_ifd_offset,
                 needed_data: Vec::new(),
             })
         }
     }
 
-    /// Does nothing, we do not have a cache or smart strategies
-    fn give_more_data(&mut self, ranges: Vec<Range<u64>>, _data: Vec<Bytes>) {
-        eprintln!("give more data for ranges {ranges:?} bubbled down to Tiff")
+    fn resume_loader(
+        &mut self,
+        ranges: Vec<Range<u64>>,
+        data: Vec<Bytes>,
+        mut loader: IfdLoader,
+    ) -> TiffLoadResult<IfdLoadResponse> {
+        // directly try to fill from ifd
+        // hmmm not super sure if this is nice though, maybe I'll keep Tiff dumb
+        let bo = loader.byte_order;
+        for (_tag, entry) in loader.deferred_values_mut() {
+            let range = {
+                let IfdEntry::Offset(o) = entry else {
+                    unreachable!()
+                };
+                o.range()
+            };
+
+            if let Some(idx) = ranges.iter().position(|r| r == &range) {
+                entry.load(&data[idx], bo).or_raise(|| {
+                    TiffLoadError::permanent("Could not add data to ifd".to_string())
+                })?
+            }
+        }
+
+        Ok(loader.to_response())
     }
 }
 
@@ -222,13 +250,13 @@ impl Tiff {
     }
 
     /// Insert the ifd corresponding to the given offset
-    pub fn insert_ifd(&mut self, offset: u64, ifd: Ifd, next_offset: u64) {
+    pub fn insert_ifd(&mut self, offset: u64, next_ifd_offset: u64, ifd: Ifd) {
         if !self.ifd_offsets.contains(&offset) {
             // this is actaully bad a
             self.ifd_offsets.push(offset);
         }
         self.ifds.insert(offset, ifd);
-        self.ifd_offsets.push(next_offset);
+        self.ifd_offsets.push(next_ifd_offset);
     }
 }
 

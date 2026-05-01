@@ -17,7 +17,7 @@ impl<Fetch: AsyncFetch, Loader: TiffLoader> AsyncMetaReader<Fetch, Loader>
         let mut buf = fetch
             .fetch_range(0..prefetch)
             .await
-            .or_raise(|| MetaReadError::fetch_error("Could not get tiff prefetch".to_string()))?;
+            .or_raise(|| MetaReadError::fetch_error(format!("Could not get tiff prefetch")))?;
         for _ in 0..3 {
             match Loader::from_header(buf)
                 .or_raise(|| MetaReadError("Could not open tiff".into()))?
@@ -61,8 +61,7 @@ impl<Fetch: AsyncFetch, Loader: TiffLoader> AsyncMetaReader<Fetch, Loader>
                     })?;
                 }
                 IfdLoadResponse::Partial {
-                    ifd_loader: _,
-                    next_ifd_offset: _,
+                    ifd_loader,
                     needed_data,
                 } => {
                     let datas = self.fetch.fetch_ranges(&needed_data).await.or_raise(|| {
@@ -70,12 +69,15 @@ impl<Fetch: AsyncFetch, Loader: TiffLoader> AsyncMetaReader<Fetch, Loader>
                             "Could not load requested ranges {needed_data:?}"
                         ))
                     })?;
-                    self.loader.give_more_data(needed_data, datas);
+                    self.loader.resume_loader(needed_data, datas, ifd_loader);
                 }
-                IfdLoadResponse::Complete(ifd, next_ifd_offset) => {
+                IfdLoadResponse::Complete {
+                    ifd,
+                    next_ifd_offset,
+                } => {
                     self.loader
                         .tiff_mut()
-                        .insert_ifd(offset, ifd, next_ifd_offset);
+                        .insert_ifd(offset, next_ifd_offset, ifd);
                     return Ok(Some(next_ifd_offset));
                 }
             }
@@ -97,7 +99,7 @@ impl<Fetch: AsyncFetch, Loader: TiffLoader> AsyncMetaReader<Fetch, Loader>
                 match self
                     .loader
                     .ifd_loader(buf.clone(), offset)
-                    .or_raise(|| MetaReadError("Parse erorr when skipping ifd".to_string()))?
+                    .or_raise(|| MetaReadError(format!("Parse erorr when skipping ifd")))?
                 {
                     IfdLoadResponse::NeedData(range) => {
                         buf = self.fetch.fetch_range(range.clone()).await.or_raise(|| {
@@ -106,20 +108,22 @@ impl<Fetch: AsyncFetch, Loader: TiffLoader> AsyncMetaReader<Fetch, Loader>
                     }
                     IfdLoadResponse::Partial {
                         ifd_loader,
-                        next_ifd_offset,
                         needed_data: _,
                     } => {
                         self.loader.tiff_mut().insert_ifd(
                             offset,
+                            ifd_loader.next_ifd_offset.unwrap(),
                             ifd_loader.finish(),
-                            next_ifd_offset,
                         );
                         break;
                     }
-                    IfdLoadResponse::Complete(ifd, next_ifd_offset) => {
+                    IfdLoadResponse::Complete {
+                        ifd,
+                        next_ifd_offset,
+                    } => {
                         self.loader
                             .tiff_mut()
-                            .insert_ifd(offset, ifd, next_ifd_offset);
+                            .insert_ifd(offset, next_ifd_offset, ifd);
                         break;
                     }
                 }
@@ -138,7 +142,7 @@ impl<'a, Fetch: AsyncFetch> AsyncIfdReader<'a, Fetch> for TiffIfdReader<'a, Fetc
             .fetch
             .fetch_ranges(&ranges)
             .await
-            .or_raise(|| IfdReadError("Could not fill deferred values of ifd".to_string()))?;
+            .or_raise(|| IfdReadError(format!("Could not fill deferred values of ifd")))?;
         let byte_order = self.ifd_loader.byte_order;
         for ((tag, entry), buf) in self.ifd_loader.deferred_values_mut().zip(data) {
             entry

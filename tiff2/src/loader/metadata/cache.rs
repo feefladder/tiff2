@@ -12,7 +12,7 @@ use crate::loader::metadata::error::TiffLoadError;
 use crate::loader::metadata::{
     IfdLoadResponse, Tiff, TiffLoadResponse, TiffLoadResult, TiffLoader,
 };
-use crate::structs::{IfdEntry, TagData};
+use crate::structs::{IfdEntry, Tag, TagData};
 
 pub struct CogCache {
     cache: BTreeMap<usize, Bytes>,
@@ -48,23 +48,22 @@ impl TiffLoader for CogCache {
     fn ifd_loader(&mut self, buf: Bytes, offset: u64) -> Result<IfdLoadResponse, TiffLoadError> {
         let resp = self
             .tiff
-            .ifd_loader(
-                self.slice(offset..).unwrap_or(buf),
-                // transparently raise the required range for the ifd
-                offset,
-            )
+            .ifd_loader(self.slice(offset..).unwrap_or(buf), offset)
             .or_raise(|| TiffLoadError::permanent("Could not parse tiff".into()))?;
         match resp {
             // in case there is not enough data to read the ifd, we tell upper layers to retry with an updated range
             IfdLoadResponse::NeedData(range) => Ok(IfdLoadResponse::NeedData(range)),
             // if it's done, there's nothing for us to do
-            IfdLoadResponse::Complete(ifd, next_ifd_offset) => {
-                Ok(IfdLoadResponse::Complete(ifd, next_ifd_offset))
-            }
+            IfdLoadResponse::Complete {
+                ifd,
+                next_ifd_offset,
+            } => Ok(IfdLoadResponse::Complete {
+                ifd,
+                next_ifd_offset,
+            }),
             // If some tags are not loaded, try to get them from the cache
             IfdLoadResponse::Partial {
                 mut ifd_loader,
-                next_ifd_offset,
                 needed_data,
             } => {
                 let mut found_data = Vec::new();
@@ -79,7 +78,6 @@ impl TiffLoader for CogCache {
                         missing_ranges.push(range);
                     }
                 }
-                self.tiff.give_more_data(found_ranges, found_data);
                 // in the happy path, everything is loaded, so no allocations there
                 let mut deferred_tags = Vec::new();
 
@@ -107,29 +105,58 @@ impl TiffLoader for CogCache {
                 }
                 // FIXME: this is bad on skipping behaviour, because we can't recover from the error
                 if !missing_ranges.is_empty() {
+                    if deferred_tags == [Tag::TileOffsets, Tag::TileByteCounts] {
+                        // this is most likelily a cog, do smart stuff:
+                        let r = missing_ranges[0].clone();
+                        let range_len = r.end - r.start;
+                        let guess_len = range_len * 2 + 4 * range_len.isqrt();
+                        missing_ranges = vec![r.start..r.start + guess_len]
+                    }
                     Ok(IfdLoadResponse::Partial {
                         needed_data: missing_ranges,
                         ifd_loader,
-                        next_ifd_offset,
                     })
                 } else {
-                    Ok(IfdLoadResponse::Complete(
-                        ifd_loader.finish(),
-                        next_ifd_offset,
-                    ))
+                    Ok(IfdLoadResponse::Complete {
+                        next_ifd_offset: ifd_loader.next_ifd_offset.unwrap(),
+                        ifd: ifd_loader.finish(),
+                    })
                 }
             }
         }
     }
 
-    /// Insert more cache at the given offset
-    ///
-    /// Note that inserting a lot of small caches will decrease performance
-    fn give_more_data(&mut self, ranges: Vec<Range<u64>>, data: Vec<Bytes>) {
-        // TODO: this can overflow and lead to unpredictable behaviour
-        for (range, buf) in ranges.iter().zip(data) {
-            self.cache.insert(range.start as usize, buf);
+    fn resume_loader(
+        &mut self,
+        ranges: Vec<Range<u64>>,
+        data: Vec<Bytes>,
+        mut ifd_loader: super::IfdLoader,
+    ) -> TiffLoadResult<IfdLoadResponse> {
+        for (range, data) in ranges.iter().zip(data) {
+            self.cache.insert(
+                usize::try_from(range.start).or_raise(|| {
+                    TiffLoadError::permanent(format!("{} too large to fit in usize", range.start))
+                })?,
+                data,
+            );
         }
+
+        // try to get all values from the cache
+        let bo = ifd_loader.byte_order;
+        for (t, entry) in ifd_loader.deferred_values_mut() {
+            let range = {
+                let IfdEntry::Offset(o) = entry else {
+                    unreachable!()
+                };
+                o.range()
+            };
+            if let Some(d) = self.slice(range) {
+                entry.load(&d, bo).or_raise(|| {
+                    TiffLoadError::permanent("Could not load entry for ifd".to_string())
+                });
+            }
+        }
+        self.tiff.resume_loader(Vec::new(), Vec::new(), ifd_loader)
     }
 }
 

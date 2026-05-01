@@ -56,7 +56,6 @@ impl<Fetch: SyncFetch, Loader: TiffLoader> SyncMetaReader<Fetch> for TiffMetaRea
                 }
                 IfdLoadResponse::Partial {
                     ifd_loader,
-                    next_ifd_offset,
                     needed_data,
                 } => {
                     let datas = self.fetch.fetch_ranges(&needed_data).or_raise(|| {
@@ -64,12 +63,15 @@ impl<Fetch: SyncFetch, Loader: TiffLoader> SyncMetaReader<Fetch> for TiffMetaRea
                             "Could not load requested ranges {needed_data:?}"
                         ))
                     })?;
-                    self.loader.give_more_data(needed_data, datas);
+                    self.loader.resume_loader(needed_data, datas, ifd_loader);
                 }
-                IfdLoadResponse::Complete(ifd, next_ifd_offset) => {
+                IfdLoadResponse::Complete {
+                    ifd,
+                    next_ifd_offset,
+                } => {
                     self.loader
                         .tiff_mut()
-                        .insert_ifd(offset, ifd, next_ifd_offset);
+                        .insert_ifd(offset, next_ifd_offset, ifd);
                     return Ok(Some(next_ifd_offset));
                 }
             }
@@ -100,20 +102,22 @@ impl<Fetch: SyncFetch, Loader: TiffLoader> SyncMetaReader<Fetch> for TiffMetaRea
                     }
                     IfdLoadResponse::Partial {
                         ifd_loader,
-                        next_ifd_offset,
-                        needed_data,
+                        needed_data: _,
                     } => {
                         self.loader.tiff_mut().insert_ifd(
                             offset,
+                            ifd_loader.next_ifd_offset.unwrap(),
                             ifd_loader.finish(),
-                            next_ifd_offset,
                         );
                         break;
                     }
-                    IfdLoadResponse::Complete(ifd, next_ifd_offset) => {
+                    IfdLoadResponse::Complete {
+                        ifd,
+                        next_ifd_offset,
+                    } => {
                         self.loader
                             .tiff_mut()
-                            .insert_ifd(offset, ifd, next_ifd_offset);
+                            .insert_ifd(offset, next_ifd_offset, ifd);
                         break;
                     }
                 }

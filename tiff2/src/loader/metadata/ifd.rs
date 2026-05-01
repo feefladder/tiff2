@@ -4,6 +4,7 @@ use std::ops::Range;
 use exn::{bail, OptionExt, ResultExt};
 
 use crate::loader::metadata::error::TiffLoadError;
+use crate::loader::metadata::IfdLoadResponse;
 use crate::loader::TiffLoadResult;
 use crate::structs::{
     entry_size, num_entries_size, offset_size, offset_tag_type, Ifd, IfdEntry, Offset, Tag,
@@ -16,6 +17,7 @@ pub struct IfdLoader {
     pub bigtiff: bool,
     pub byte_order: ByteOrder,
     pub ifd: Ifd,
+    pub next_ifd_offset: Option<u64>,
 }
 
 impl IfdLoader {
@@ -46,11 +48,17 @@ impl IfdLoader {
         Ok(count)
     }
 
-    pub fn wrap(ifd: Ifd, bigtiff: bool, byte_order: ByteOrder) -> Self {
+    pub fn wrap(
+        ifd: Ifd,
+        bigtiff: bool,
+        byte_order: ByteOrder,
+        next_ifd_offset: Option<u64>,
+    ) -> Self {
         Self {
             bigtiff,
             byte_order,
             ifd,
+            next_ifd_offset,
         }
     }
 
@@ -84,7 +92,7 @@ impl IfdLoader {
         offset: u64,
         bigtiff: bool,
         byte_order: ByteOrder,
-    ) -> TiffLoadResult<(Self, u64)> {
+    ) -> TiffLoadResult<Self> {
         let entry_count = Self::ifd_entry_count(ifd_buf, offset, bigtiff, byte_order)?;
 
         // check if the entire ifd is in memory
@@ -165,14 +173,12 @@ impl IfdLoader {
                 .unwrap()
                 .try_into()
                 .unwrap();
-        Ok((
-            Self {
-                bigtiff,
-                byte_order,
-                ifd: Ifd::from_tags(ifd_data),
-            },
-            next_ifd_offset,
-        ))
+        Ok(Self {
+            bigtiff,
+            byte_order,
+            ifd: Ifd::from_tags(ifd_data),
+            next_ifd_offset: Some(next_ifd_offset),
+        })
     }
 
     /// Get deferred values
@@ -233,6 +239,20 @@ impl IfdLoader {
     pub fn finish(self) -> Ifd {
         self.ifd
     }
+
+    pub(crate) fn to_response(self) -> IfdLoadResponse {
+        if self.deferred_ranges().peekable().peek().is_none() {
+            IfdLoadResponse::Complete {
+                ifd: self.ifd,
+                next_ifd_offset: self.next_ifd_offset.unwrap(),
+            }
+        } else {
+            IfdLoadResponse::Partial {
+                needed_data: self.deferred_ranges().collect(),
+                ifd_loader: self,
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -266,9 +286,8 @@ mod test {
                     (Tag::ImageWidth, IfdEntry::Value(res2))
                 ])
             };
-            let (res, next) = IfdLoader:: from_buffer(&buf, 0, false, ByteOrder::LittleEndian).unwrap();
-            assert_eq!(next, 0);
-            assert_eq!(&res, &IfdLoader{bigtiff: false, byte_order: ByteOrder::LittleEndian, ifd});
+            let res = IfdLoader:: from_buffer(&buf, 0, false, ByteOrder::LittleEndian).unwrap();
+            assert_eq!(&res, &IfdLoader{bigtiff: false, byte_order: ByteOrder::LittleEndian, ifd, next_ifd_offset: Some(0)});
         }
     }
 
@@ -315,9 +334,8 @@ mod test {
             let ifd = Ifd {
                 data: BTreeMap::from([(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Value(data))])
             };
-            let (res, next) = IfdLoader:: from_buffer(&buf, 0, false, byte_order).unwrap();
-            assert_eq!(next, 0);
-            assert_eq!(res, IfdLoader{bigtiff: false, byte_order, ifd});
+            let res = IfdLoader:: from_buffer(&buf, 0, false, byte_order).unwrap();
+            assert_eq!(res, IfdLoader{bigtiff: false, byte_order, ifd, next_ifd_offset: Some(0)});
         }
     }
 
@@ -371,9 +389,8 @@ mod test {
             let ifd = Ifd {
                 data: BTreeMap::from([(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Value(data))])
             };
-            let (res, next) = IfdLoader:: from_buffer(&buf, 0, true, byte_order).unwrap();
-            assert_eq!(next, 0);
-            assert_eq!(res, IfdLoader{bigtiff: true, byte_order, ifd});
+            let res = IfdLoader:: from_buffer(&buf, 0, true, byte_order).unwrap();
+            assert_eq!(res, IfdLoader{bigtiff: true, byte_order, ifd, next_ifd_offset: Some(0)});
         }
     }
 
@@ -409,9 +426,8 @@ mod test {
             let ifd = Ifd {
                 data: BTreeMap::from([(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Value(data))])
             };
-            let (res, next) = IfdLoader:: from_buffer(&buf, 0, false, byte_order).unwrap();
-            assert_eq!(next, 0);
-            assert_eq!(res, IfdLoader{bigtiff: false, byte_order, ifd});
+            let res = IfdLoader:: from_buffer(&buf, 0, false, byte_order).unwrap();
+            assert_eq!(res, IfdLoader{bigtiff: false, byte_order, ifd, next_ifd_offset: Some(0)});
         }
     }
 
@@ -453,9 +469,8 @@ mod test {
             let ifd = Ifd {
                 data: BTreeMap::from([(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Value(data))])
             };
-            let (res, next) = IfdLoader:: from_buffer(&buf, 0, true, byte_order).unwrap();
-            assert_eq!(next, 0);
-            assert_eq!(res, IfdLoader{bigtiff: true, byte_order, ifd});
+            let res = IfdLoader:: from_buffer(&buf, 0, true, byte_order).unwrap();
+            assert_eq!(res, IfdLoader{bigtiff: true, byte_order, ifd, next_ifd_offset: Some(0)});
         }
     }
 
@@ -504,9 +519,8 @@ mod test {
             let ifd = Ifd {
                 data: BTreeMap::from([(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Offset(Offset { tag_type, count, offset: 42 }))])
             };
-            let (res, next) = IfdLoader:: from_buffer(&buf, 0, false, byte_order).unwrap();
-            assert_eq!(next, 0);
-            assert_eq!(res, IfdLoader{bigtiff: false, byte_order, ifd});
+            let res = IfdLoader:: from_buffer(&buf, 0, false, byte_order).unwrap();
+            assert_eq!(res, IfdLoader{bigtiff: false, byte_order, ifd, next_ifd_offset: Some(0)});
         }
     }
 
@@ -560,9 +574,8 @@ mod test {
             let ifd = Ifd {
                 data: BTreeMap::from([(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Offset(Offset { tag_type, count, offset: 42 }))])
             };
-            let (res, next) = IfdLoader:: from_buffer(&buf, 0, true, byte_order).unwrap();
-            assert_eq!(next, 0);
-            assert_eq!(res, IfdLoader{bigtiff: true, byte_order, ifd});
+            let res = IfdLoader:: from_buffer(&buf, 0, true, byte_order).unwrap();
+            assert_eq!(res, IfdLoader{bigtiff: true, byte_order, ifd, next_ifd_offset: Some(0)});
         }
     }
 }

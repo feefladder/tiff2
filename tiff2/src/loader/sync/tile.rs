@@ -89,7 +89,7 @@ impl<Fetch: SyncFetch> SyncReader for TiffReader<Fetch> {
                 if matches!(e.kind, TileLoadErrorKind::DeferredIfd) {
                     let mut ifd_reader = TiffIfdReader::wrap(
                         &self.fetch,
-                        IfdLoader::wrap(ifd, self.tiff.bigtiff, self.tiff.byte_order),
+                        IfdLoader::wrap(ifd, self.tiff.bigtiff, self.tiff.byte_order, None),
                     );
                     if let Err(e) = ifd_reader.fill_deferred() {
                         self.tiff.ifds.insert(*ifd_offset, ifd_reader.finish());

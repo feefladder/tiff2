@@ -261,7 +261,6 @@ mod test {
         let mut read = Tiff::from_header(f.clone()).unwrap().unwrap();
         let IfdLoadResponse::Partial {
             ifd_loader: mut read_ifd,
-            next_ifd_offset: zero,
             needed_data,
         } = read
             .ifd_loader(
@@ -272,7 +271,6 @@ mod test {
         else {
             panic!("bare tiff should return partial for ifdloadresponse with deferred tags")
         };
-        assert_eq!(zero, 0);
         assert!(needed_data.is_empty());
         for (_t, o) in read_ifd.deferred_values_mut() {
             let v;
@@ -291,7 +289,11 @@ mod test {
             }
             *o = IfdEntry::Value(v);
         }
-        read.insert_ifd(read.next_ifd_offset().unwrap(), read_ifd.finish(), 0);
+        read.insert_ifd(
+            read.next_ifd_offset().unwrap(),
+            read_ifd.next_ifd_offset.unwrap(),
+            read_ifd.finish(),
+        );
         assert_eq!(read, tiff);
         let IfdEntry::Value(tbyte_counts) = &read.ifd(0).data[&Tag::TileByteCounts] else {
             unreachable!()

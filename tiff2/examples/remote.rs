@@ -101,13 +101,13 @@ async fn main() -> Result<(), exn::Exn<AppError>> {
     // a selection of different COGs. The ones on Zenodo don't all have their
     // IFDs tightly stacked
 
-    // let href = "https://isdasoil.s3.amazonaws.com/soil_data/bulk_density/bulk_density.tif";
+    let href = "https://isdasoil.s3.amazonaws.com/soil_data/bulk_density/bulk_density.tif";
     // let href = "https://isdasoil.s3.amazonaws.com/covariates/dem_30m/dem_30m.tif";
     // let href = "https://zenodo.org/records/4087905/files/sol_db_od_m_30m_0..20cm_2001..2017_v0.13_wgs84.tif";
     // let href = "https://zenodo.org/records/4091154/files/sol_log.wpg2_m_30m_0..20cm_2001..2017_v0.13_wgs84.tif";
     // let href = "https://service.pdok.nl/rws/ahn/atom/downloads/dtm_05m/M_01GN2.tif";
     // let href = "https://service.pdok.nl/rws/ahn/atom/downloads/dtm_05m/M_02DZ1.tif";
-    let href = "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/16/T/CR/2025/3/S2A_16TCR_20250322_0_L2A/B02.tif";
+    // let href = "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/16/T/CR/2025/3/S2A_16TCR_20250322_0_L2A/B02.tif";
     // let href = "https://ssh.datastations.nl/api/access/datafile/273106";
     // let cog_client = HttpBuilder::new().with_url(href).build().map_err(|e|TiffError::TransportError(Box::new(e)))?;
     let cog_client = ReqwestFetch::new(href);
@@ -117,8 +117,10 @@ async fn main() -> Result<(), exn::Exn<AppError>> {
         AsyncMetaReader::open(cog_client, 16 * 1024)
             .await
             .or_raise(|| AppError)?;
+    meta_reader.next().await;
     let t1 = start.elapsed();
-    meta_reader.skip(42).await.or_raise(|| AppError)?;
+    while meta_reader.next().await.unwrap().is_some() {}
+    // meta_reader.skip(42).await.or_raise(|| AppError)?;
     // while meta_reader.next().await.or_raise(|| AppError)?.is_some() {}
     let t2 = start.elapsed();
     let mut reader = meta_reader.finish(DecoderRegistry::default());

@@ -126,7 +126,7 @@ impl Decoder for DeflateDecoder {
         let mut decoder = ZlibDecoder::new(Cursor::new(in_buf));
         decoder
             .read_exact(out_buf)
-            .or_raise(|| CodingError::failed("decoding failed"))?;
+            .or_raise(|| CodingError::failed("decoding failed".to_string()))?;
         Ok(())
     }
 }
@@ -148,7 +148,7 @@ impl Decoder for LZWDecoder {
         let res = decoder.decode_bytes(in_buf, out_buf);
         let lzw_status = res
             .status
-            .or_raise(|| CodingError::failed("decoding failed"))?;
+            .or_raise(|| CodingError::failed("decoding failed".to_string()))?;
         // verify the output
         if res.consumed_out != out_buf.len() || !matches!(lzw_status, LzwStatus::Done) {
             Err(CodingError::incomplete(res.consumed_out, out_buf.len()).into())

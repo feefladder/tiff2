@@ -134,7 +134,7 @@ impl Encoder for LzwEncoder {
         let res = encoder.encode_bytes(in_buf, out_buf);
         let lzw_status = res
             .status
-            .or_raise(|| CodingError::failed("encoding failed"))?;
+            .or_raise(|| CodingError::failed("encoding failed".to_string()))?;
         if res.consumed_in != in_buf.len() || !matches!(lzw_status, LzwStatus::Done) {
             Err(CodingError::incomplete(res.consumed_in, out_buf.len()).into())
         } else {
@@ -185,25 +185,29 @@ impl Encoder for JpegEncoder {
         let encoder = jpeg_encoder::Encoder::new(Cursor::new(out_buf), self.quality);
         let color_type = match tile_opts
             .colortype()
-            .or_raise(|| CodingError::failed("could not find colortype"))?
+            .or_raise(|| CodingError::failed("could not find colortype".to_string()))?
         {
             ColorType::RGB(8) => jpeg_encoder::ColorType::Rgb,
             ColorType::RGBA(8) => jpeg_encoder::ColorType::Rgba,
             ColorType::CMYK(8) => jpeg_encoder::ColorType::Cmyk,
             ColorType::Gray(8) => jpeg_encoder::ColorType::Luma,
             ColorType::YCbCr(8) => jpeg_encoder::ColorType::Ycbcr,
-            _ => exn::bail!(CodingError::failed("color type not supported with jpeg")),
+            ct => exn::bail!(CodingError::failed(format!(
+                "color type {ct:?} not supported with jpeg"
+            ))),
         };
         let colortype = encoder
             .encode(
                 in_buf,
-                u16::try_from(tile_width)
-                    .or_raise(|| CodingError::failed("tile width too large for encoding"))?,
-                u16::try_from(tile_height)
-                    .or_raise(|| CodingError::failed("tile height too large for encoding"))?,
+                u16::try_from(tile_width).or_raise(|| {
+                    CodingError::failed(format!("tile width {tile_width} too large for encoding"))
+                })?,
+                u16::try_from(tile_height).or_raise(|| {
+                    CodingError::failed(format!("tile height {tile_height} too large for encoding"))
+                })?,
                 color_type,
             )
-            .or_raise(|| CodingError::failed("could not jpeg encode tile"))?;
+            .or_raise(|| CodingError::failed(format!("could not jpeg encode tile")))?;
         Ok(42)
     }
 }
@@ -231,10 +235,12 @@ impl Encoder for WebPEncoder {
         let layout = match tile_opts.colortype() {
             Ok(ColorType::RGB(8)) => PixelLayout::Rgb,
             Ok(ColorType::RGBA(8)) => PixelLayout::Rgba,
-            Ok(c) => exn::bail!(CodingError::failed(
-                "incomprehensible colortype for jpeg encoding"
-            )),
-            Err(e) => exn::bail!(e.raise(CodingError::failed("colortype unsupported with jpeg"))),
+            Ok(c) => exn::bail!(CodingError::failed(format!(
+                "incomprehensible colortype {c:?} for webp encoding"
+            ))),
+            Err(e) => exn::bail!(e.raise(CodingError::failed(format!(
+                "colortype unsupported with webp"
+            )))),
         };
         let encoder = webp::Encoder::new(in_buf, layout, tile_width, tile_height);
         let res = encoder.encode(self.quality);
@@ -261,19 +267,30 @@ impl Encoder for ZenWebPEncoder {
         tile_width: u32,
         tile_height: u32,
     ) -> CodingResult<u64> {
+        use crate::structs::metadata::tags::PhotometricInterpretation;
         use exn::bail;
-        use crate::structs::metadata::tags::{PhotometricInterpretation};
 
-        let bit_depth = tile_opts.bits_per_sample
-        ensure!(bit_depth == 8, CodingError::unsupported_bit_depth(bit_depth, "webp only supports 8-bit pixels"));
-        let color_type = match (tile_opts.photometric_interpretation, tile_opts.samples_per_pixel) {
+        let bit_depth = tile_opts.bits_per_sample;
+        ensure!(
+            bit_depth == 8,
+            CodingError::unsupported_bit_depth(bit_depth, "webp only supports 8-bit pixels")
+        );
+        let color_type = match (
+            tile_opts.photometric_interpretation,
+            tile_opts.samples_per_pixel,
+        ) {
             (PhotometricInterpretation::RGB, 3) => zenwebp::PixelLayout::Rgb8,
             (PhotometricInterpretation::RGB, 4) => zenwebp::PixelLayout::Rgba8,
             (PhotometricInterpretation::BlackIsZero, 1) => zenwebp::PixelLayout::L8,
             (PhotometricInterpretation::WhiteIsZero, 1) => zenwebp::PixelLayout::L8, // TODO: Should we invert colors here?
-            (photometric_interpretation, spp) => {bail!(CodingError::failed(format!("photometric interpretation {photometric_interpretation:?} and samples {spp} unsupported for webp")));}
+            (photometric_interpretation, spp) => {
+                bail!(CodingError::failed(format!("photometric interpretation {photometric_interpretation:?} and samples {spp} unsupported for webp")));
+            }
         };
-        let encoded = zenwebp::EncodeRequest::new(&self.0, in_buf, color_type, tile_width, tile_height).encode().or_raise(|| CodingError::failed("could not encode image".to_string()))?;
+        let encoded =
+            zenwebp::EncodeRequest::new(&self.0, in_buf, color_type, tile_width, tile_height)
+                .encode()
+                .or_raise(|| CodingError::failed("could not encode image".to_string()))?;
         out_buf[..encoded.len()].copy_from_slice(&encoded);
         Ok(u64::try_from(encoded.len()).expect("128-bit pointers not supported"))
     }
