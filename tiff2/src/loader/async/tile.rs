@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use bytes::Bytes;
 use exn::{bail, OptionExt, ResultExt};
@@ -92,7 +94,13 @@ impl<Fetch: AsyncFetch> AsyncReader for TiffReader<Fetch> {
                 if matches!(e.kind, TileLoadErrorKind::DeferredIfd) {
                     let mut ifd_reader = TiffIfdReader::wrap(
                         &self.fetch,
-                        IfdLoader::wrap(ifd, self.tiff.bigtiff, self.tiff.byte_order, None),
+                        IfdLoader::wrap(
+                            ifd,
+                            self.tiff.bigtiff,
+                            self.tiff.byte_order,
+                            None,
+                            Arc::new(Vec::new().into()),
+                        ),
                     );
                     if let Err(e) = ifd_reader.fill_deferred().await {
                         self.tiff.ifds.insert(*ifd_offset, ifd_reader.finish());

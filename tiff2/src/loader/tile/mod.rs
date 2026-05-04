@@ -213,7 +213,8 @@ const TILE_TAGS: [Tag; 4] = [
 fn ensure_present(tags: &[Tag], ifd: &Ifd) -> TileLoadResult<()> {
     let missing_tags: Vec<Tag> = tags
         .iter()
-        .filter(|tag| ifd.require_val(tag).is_err()).copied()
+        .filter(|tag| ifd.require_val(tag).is_err())
+        .copied()
         .collect();
     if !missing_tags.is_empty() {
         Err(invalid_ifd(format!("missing {} required tags", missing_tags.len())).into())

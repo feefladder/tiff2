@@ -4,40 +4,43 @@
 
 use std::collections::BTreeMap;
 use std::ops::{Bound, Range, RangeBounds};
+use std::sync::Arc;
 
 use bytes::Bytes;
 use exn::{Result, ResultExt};
 
 use crate::loader::metadata::error::TiffLoadError;
+use crate::loader::metadata::extension::TiffExtLoaderRegistry;
 use crate::loader::metadata::{
     IfdLoadResponse, Tiff, TiffLoadResponse, TiffLoadResult, TiffLoader,
 };
 use crate::structs::{IfdEntry, Tag, TagData};
 
-pub struct CogCache {
+pub struct CogCache<Loader: TiffLoader> {
     cache: BTreeMap<usize, Bytes>,
-    tiff: Tiff,
+    loader: Loader,
 }
 
-impl TiffLoader for CogCache {
+impl<Loader: TiffLoader> TiffLoader for CogCache<Loader> {
     fn tiff(&self) -> &Tiff {
-        &self.tiff
+        self.loader.tiff()
     }
     fn tiff_mut(&mut self) -> &mut Tiff {
-        &mut self.tiff
+        self.loader.tiff_mut()
     }
     fn into_tiff(self) -> Tiff {
-        self.tiff
+        self.loader.into_tiff()
     }
+
     /// Create a new CogCache with a prefetch buffer
     fn from_header(buf: Bytes) -> TiffLoadResult<TiffLoadResponse<Self>> {
-        let tiff_repsonse = Tiff::from_header(buf.clone())
+        let tiff_repsonse = Loader::from_header(buf.clone())
             .or_raise(|| TiffLoadError::permanent("could not load tiff".into()))?;
         match tiff_repsonse {
             TiffLoadResponse::NeedData(d) => Ok(TiffLoadResponse::NeedData(d)),
-            TiffLoadResponse::Complete(tiff) => Ok(TiffLoadResponse::Complete(Self {
+            TiffLoadResponse::Complete(loader) => Ok(TiffLoadResponse::Complete(Self {
                 cache: BTreeMap::from([(0, buf)]),
-                tiff,
+                loader,
             })),
         }
     }
@@ -45,10 +48,19 @@ impl TiffLoader for CogCache {
     /// Load the if at the specified offset
     ///
     /// Will try to fill missing data from its internal cache and request it from upstream otherwise
-    fn ifd_loader(&mut self, buf: Bytes, offset: u64) -> Result<IfdLoadResponse, TiffLoadError> {
+    fn ifd_loader(
+        &mut self,
+        buf: Bytes,
+        offset: u64,
+        extension_registry: Arc<TiffExtLoaderRegistry>,
+    ) -> Result<IfdLoadResponse, TiffLoadError> {
         let resp = self
-            .tiff
-            .ifd_loader(self.slice(offset..).unwrap_or(buf), offset)
+            .loader
+            .ifd_loader(
+                self.slice(offset..).unwrap_or(buf),
+                offset,
+                extension_registry,
+            )
             .or_raise(|| TiffLoadError::permanent("Could not parse tiff".into()))?;
         match resp {
             // in case there is not enough data to read the ifd, we tell upper layers to retry with an updated range
@@ -92,7 +104,7 @@ impl TiffLoader for CogCache {
                                 &data,
                                 o.tag_type,
                                 o.count as usize,
-                                self.tiff.byte_order,
+                                self.loader.tiff().byte_order,
                             )
                             .unwrap(),
                         )
@@ -110,7 +122,8 @@ impl TiffLoader for CogCache {
                         let r = missing_ranges[0].clone();
                         let range_len = r.end - r.start;
                         let guess_len = range_len * 2 + 4 * range_len.isqrt();
-                        missing_ranges = vec![r.start..r.start + guess_len]
+                        missing_ranges.clear();
+                        missing_ranges.push(r.start..r.start + guess_len);
                     }
                     Ok(IfdLoadResponse::Partial {
                         needed_data: missing_ranges,
@@ -143,7 +156,7 @@ impl TiffLoader for CogCache {
 
         // try to get all values from the cache
         let bo = ifd_loader.byte_order;
-        for (t, entry) in ifd_loader.deferred_values_mut() {
+        for (_t, entry) in ifd_loader.deferred_values_mut() {
             let range = {
                 let IfdEntry::Offset(o) = entry else {
                     unreachable!()
@@ -153,14 +166,15 @@ impl TiffLoader for CogCache {
             if let Some(d) = self.slice(range) {
                 entry.load(&d, bo).or_raise(|| {
                     TiffLoadError::permanent("Could not load entry for ifd".to_string())
-                });
+                })?;
             }
         }
-        self.tiff.resume_loader(Vec::new(), Vec::new(), ifd_loader)
+        self.loader
+            .resume_loader(Vec::new(), Vec::new(), ifd_loader)
     }
 }
 
-impl CogCache {
+impl<Loader: TiffLoader> CogCache<Loader> {
     // so the sad thing here is that we can't create a BytesMut from a &mut
     // self, since cloning will increase the refcount, so this is always a
     // deep clone:
@@ -213,13 +227,6 @@ impl CogCache {
                     end.map(|e| e - section_start),
                 ))
             })
-    }
-
-    /// Finish metadata parsing and remove the cache
-    ///
-    /// Consumes `Self`, so drops it
-    pub fn finish(self) -> Tiff {
-        self.tiff
     }
 }
 

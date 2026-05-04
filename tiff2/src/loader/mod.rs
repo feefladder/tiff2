@@ -54,23 +54,21 @@
 
 use std::collections::BTreeMap;
 use std::error::Error;
-#[cfg(any(feature = "sync", feature = "async"))]
 use std::ops::Range;
+use std::sync::Arc;
 
 #[cfg(feature = "async")]
 use async_trait::async_trait;
-#[cfg(any(feature = "sync", feature = "async"))]
 use bytes::Bytes;
 use derive_more::Display;
 
-use crate::structs::Ifd;
-use crate::structs::{Tiff, TileOpts};
-#[cfg(any(feature = "sync", feature = "async"))]
-use crate::structs::{TileCoord, TileData};
+use crate::structs::{Ifd, Tiff, TileCoord, TileData, TileOpts};
 
 pub(crate) mod metadata;
-pub use metadata::cache;
-pub use metadata::{CacheMiss, IfdLoader, TiffLoadError, TiffLoadResult, TiffLoader};
+pub use metadata::{
+    cache, CacheMiss, IfdLoader, TiffExtLoader, TiffExtLoaderFactory, TiffExtLoaderRegistry,
+    TiffLoadError, TiffLoadResult, TiffLoader,
+};
 #[cfg(feature = "async")]
 mod r#async;
 #[cfg(feature = "sync")]
@@ -112,6 +110,7 @@ pub trait AsyncFetch: Send + Sync {
 pub struct TiffMetaReader<Fetch, Loader> {
     fetch: Fetch,
     loader: Loader,
+    extension_registry: Arc<TiffExtLoaderRegistry>,
 }
 
 pub struct TiffIfdReader<'a, Fetch> {
@@ -121,7 +120,11 @@ pub struct TiffIfdReader<'a, Fetch> {
 
 #[cfg(feature = "sync")]
 pub trait SyncMetaReader<Fetch: SyncFetch>: Sized {
-    fn open(fetch: Fetch, prefetch: u64) -> MetaReadResult<Self>;
+    fn open(
+        fetch: Fetch,
+        prefetch: u64,
+        extension_registry: Arc<TiffExtLoaderRegistry>,
+    ) -> MetaReadResult<Self>;
     fn next(&mut self) -> MetaReadResult<Option<u64>>;
     fn skip(&mut self, n: usize) -> MetaReadResult<Option<u64>>;
 }
@@ -159,7 +162,11 @@ pub trait AsyncIfdReader<'a, Fetch: AsyncFetch>:
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait AsyncMetaReader<Fetch: AsyncFetch, Loader: TiffLoader>: Sized + Send + Sync {
-    async fn open(fetch: Fetch, prefetch: u64) -> MetaReadResult<Self>;
+    async fn open(
+        fetch: Fetch,
+        prefetch: u64,
+        extension_registry: Arc<TiffExtLoaderRegistry>,
+    ) -> MetaReadResult<Self>;
     async fn next(&mut self) -> MetaReadResult<Option<u64>>;
     async fn skip(&mut self, n: usize) -> MetaReadResult<Option<u64>>;
 }

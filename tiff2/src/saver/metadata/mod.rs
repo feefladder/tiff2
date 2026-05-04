@@ -52,7 +52,8 @@ impl Tiff {
 
 #[cfg(test)]
 mod test {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashMap};
+    use std::sync::Arc;
 
     use bytes::Bytes;
 
@@ -68,6 +69,7 @@ mod test {
         let tiff = Tiff {
             ifds: BTreeMap::new(),
             ifd_offsets: vec![header_size(false)],
+            extensions: HashMap::new(),
             bigtiff: false,
             byte_order: ByteOrder::LittleEndian,
         };
@@ -88,6 +90,7 @@ mod test {
         let tiff = Tiff {
             ifds: BTreeMap::new(),
             ifd_offsets: vec![header_size(false)],
+            extensions: HashMap::new(),
             bigtiff: false,
             byte_order: ByteOrder::BigEndian,
         };
@@ -109,6 +112,7 @@ mod test {
         let tiff = Tiff {
             ifds: BTreeMap::new(),
             ifd_offsets: vec![header_size(true)],
+            extensions: HashMap::new(),
             bigtiff: true,
             byte_order: ByteOrder::LittleEndian,
         };
@@ -133,6 +137,7 @@ mod test {
         let tiff = Tiff {
             ifds: BTreeMap::new(),
             ifd_offsets: vec![header_size(true)],
+            extensions: HashMap::new(),
             bigtiff: true,
             byte_order: ByteOrder::BigEndian,
         };
@@ -145,7 +150,7 @@ mod test {
             0,0,
             0,0,0,0,0,0,0,header_size(true) as u8
         ]);
-        assert_eq!(Tiff::from_header(Bytes::from_owner(buf)).unwrap().unwrap(), tiff);
+        assert_eq!(Tiff::from_header(Bytes::from_owner(buf), ).unwrap().unwrap(), tiff);
     }
 
     #[test]
@@ -213,6 +218,7 @@ mod test {
                 },
             )]),
             ifd_offsets: vec![header_size(false), 0],
+            extensions: HashMap::new(),
             bigtiff: false,
             byte_order: ByteOrder::LittleEndian,
         };
@@ -266,6 +272,7 @@ mod test {
             .ifd_loader(
                 f.slice(read.next_ifd_offset().unwrap() as usize..).clone(),
                 read.next_ifd_offset().unwrap(),
+                Arc::new(Vec::new().into()),
             )
             .unwrap()
         else {

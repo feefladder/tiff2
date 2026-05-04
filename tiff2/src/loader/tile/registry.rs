@@ -171,10 +171,10 @@ impl Decoder for ZstdDecoder {
         tile_opts: &TileOpts,
     ) -> CodingResult<()> {
         let mut decoder = ruzstd::decoding::StreamingDecoder::new(Cursor::new(buf))
-            .or_raise(|| CodingError::failed("could not create Zstd decoder"))?;
+            .or_raise(|| CodingError::failed("could not create Zstd decoder".to_string()))?;
         decoder
             .read_exact(out_buf)
-            .or_raise(|| CodingError::failed("Could not zstd decode into buffer"))?;
+            .or_raise(|| CodingError::failed("Could not zstd decode into buffer".to_string()))?;
         Ok(())
     }
 }
@@ -192,10 +192,10 @@ impl Decoder for ZstdCppDecoder {
         tile_opts: &TileOpts,
     ) -> CodingResult<()> {
         let mut decoder = ruzstd::decoding::StreamingDecoder::new(Cursor::new(buf))
-            .or_raise(|| CodingError::failed("could not create Zstd decoder"))?;
+            .or_raise(|| CodingError::failed("could not create Zstd decoder".to_string()))?;
         decoder
             .read_exact(out_buf)
-            .or_raise(|| CodingError::failed("Could not zstd decode into buffer"))?;
+            .or_raise(|| CodingError::failed("Could not zstd decode into buffer".to_string()))?;
         Ok(())
     }
 }
@@ -217,7 +217,7 @@ impl Decoder for JpegDecoder {
 
         ensure!(
             tile_opts.jpeg_tables.is_none() || buf.len() >= 2,
-            CodingError::failed("invalid JPEG tables data")
+            CodingError::failed("invalid JPEG tables data".to_string())
         );
 
         let compressed_length = u64::try_from(buf.len()).unwrap();
@@ -238,7 +238,7 @@ impl Decoder for JpegDecoder {
                 let mut reader = reader.take(compressed_length);
                 reader
                     .read_exact(&mut [0; 2])
-                    .or_raise(|| CodingError::failed("failed to decode into buf"))?;
+                    .or_raise(|| CodingError::failed("failed to decode into buffer".to_string()))?;
 
                 Box::new(
                     Cursor::new(&jpeg_tables[..jpeg_tables.len() - 2])
@@ -272,16 +272,16 @@ impl Decoder for JpegDecoder {
             photometric_interpretation => {
                 use exn::bail;
 
-                bail!(CodingError::failed(
-                    "unsupported photometric interpretation"
-                ))
+                bail!(CodingError::failed(format!(
+                    "unsupported photometric interpretation {photometric_interpretation:?}"
+                )))
             }
         }
 
         // copying data, so sad
         let data = decoder
             .decode()
-            .or_raise(|| CodingError::failed("JPEG decoding failed"))?;
+            .or_raise(|| CodingError::failed("JPEG decoding failed".to_string()))?;
         out_buf.copy_from_slice(&data);
         Ok(())
     }
@@ -299,8 +299,9 @@ impl Decoder for ZenWebPDecoder {
         out_buf: &mut [u8],
         tile_opts: &TileOpts,
     ) -> CodingResult<()> {
-        let mut decoder = zenwebp::WebPDecoder::build(in_buf)
-            .or_raise(|| CodingError::failed("could not load metadata"))?;
+        let mut decoder = zenwebp::WebPDecoder::build(in_buf).or_raise(|| {
+            CodingError::failed("could not load metadata for webp decoding".to_string())
+        })?;
         decoder.read_image(out_buf).or_raise(|| {
             CodingError::incomplete(
                 out_buf.len(),
@@ -326,7 +327,7 @@ impl Decoder for WebPDecoder {
 
         let decoded = webp::Decoder::new(&in_buf)
             .decode()
-            .ok_or_raise(|| CodingError::failed("webp decoding failed"))?;
+            .ok_or_raise(|| CodingError::failed("webp decoding failed".to_string()))?;
 
         if decoded.len() == out_buf.len() {
             out_buf.copy_from_slice(&decoded);

@@ -1,9 +1,7 @@
-use std::{
-    error::Error,
-    num::TryFromIntError,
-    ops::Range,
-    time::{Duration, Instant},
-};
+use std::error::Error;
+use std::num::TryFromIntError;
+use std::ops::Range;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -11,9 +9,10 @@ use derive_more::Display;
 use exn::{bail, ensure, ErrorExt, OptionExt, ResultExt};
 use futures::{StreamExt, TryStreamExt};
 use reqwest::header::RANGE;
+use tiff2::loader::cache::CogCache;
 use tiff2::loader::{
-    cache::CogCache, AsyncFetch, AsyncMetaReader, AsyncReader, DecoderRegistry, FetchError,
-    FetchResult, TiffMetaReader,
+    AsyncFetch, AsyncMetaReader, AsyncReader, DecoderRegistry, FetchError, FetchResult,
+    TiffMetaReader,
 };
 use tokio::time::sleep;
 

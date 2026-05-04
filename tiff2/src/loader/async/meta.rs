@@ -1,11 +1,13 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use bytes::Bytes;
 use exn::{bail, ResultExt};
 
+use crate::loader::metadata::{IfdLoadResponse, TiffLoadResponse};
 use crate::loader::{
-    metadata::{IfdLoadResponse, TiffLoadResponse},
     AsyncFetch, AsyncIfdReader, AsyncMetaReader, IfdReadError, IfdReadResult, MetaReadError,
-    MetaReadResult, TiffIfdReader, TiffLoader, TiffMetaReader,
+    MetaReadResult, TiffExtLoaderRegistry, TiffIfdReader, TiffLoader, TiffMetaReader,
 };
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
@@ -13,7 +15,11 @@ use crate::loader::{
 impl<Fetch: AsyncFetch, Loader: TiffLoader> AsyncMetaReader<Fetch, Loader>
     for TiffMetaReader<Fetch, Loader>
 {
-    async fn open(fetch: Fetch, prefetch: u64) -> MetaReadResult<Self> {
+    async fn open(
+        fetch: Fetch,
+        prefetch: u64,
+        extension_registry: Arc<TiffExtLoaderRegistry>,
+    ) -> MetaReadResult<Self> {
         let mut buf = fetch
             .fetch_range(0..prefetch)
             .await
@@ -29,7 +35,13 @@ impl<Fetch: AsyncFetch, Loader: TiffLoader> AsyncMetaReader<Fetch, Loader>
                         )
                     })?
                 }
-                TiffLoadResponse::Complete(loader) => return Ok(Self { loader, fetch }),
+                TiffLoadResponse::Complete(loader) => {
+                    return Ok(Self {
+                        loader,
+                        fetch,
+                        extension_registry,
+                    })
+                }
             }
         }
         bail!(MetaReadError(
@@ -52,24 +64,13 @@ impl<Fetch: AsyncFetch, Loader: TiffLoader> AsyncMetaReader<Fetch, Loader>
             // buf is cheaply cloneable
             match self
                 .loader
-                .ifd_loader(buf.clone(), offset)
+                .ifd_loader(buf.clone(), offset, self.extension_registry.clone())
                 .or_raise(|| MetaReadError("Could not parse next ifd".into()))?
             {
                 IfdLoadResponse::NeedData(range) => {
                     buf = self.fetch.fetch_range(range).await.or_raise(|| {
                         MetaReadError::fetch_error("Could not load IFD buffer".into())
                     })?;
-                }
-                IfdLoadResponse::Partial {
-                    ifd_loader,
-                    needed_data,
-                } => {
-                    let datas = self.fetch.fetch_ranges(&needed_data).await.or_raise(|| {
-                        MetaReadError::fetch_error(format!(
-                            "Could not load requested ranges {needed_data:?}"
-                        ))
-                    })?;
-                    self.loader.resume_loader(needed_data, datas, ifd_loader);
                 }
                 IfdLoadResponse::Complete {
                     ifd,
@@ -79,6 +80,46 @@ impl<Fetch: AsyncFetch, Loader: TiffLoader> AsyncMetaReader<Fetch, Loader>
                         .tiff_mut()
                         .insert_ifd(offset, next_ifd_offset, ifd);
                     return Ok(Some(next_ifd_offset));
+                }
+                IfdLoadResponse::Partial {
+                    mut ifd_loader,
+                    mut needed_data,
+                } => {
+                    for _ in 0..3 {
+                        let datas = self.fetch.fetch_ranges(&needed_data).await.or_raise(|| {
+                            MetaReadError::fetch_error(format!(
+                                "Could not load requested ranges {needed_data:?}"
+                            ))
+                        })?;
+                        match self
+                            .loader
+                            .resume_loader(needed_data, datas, ifd_loader)
+                            .or_raise(|| {
+                                MetaReadError("Error when resuming partial loading".to_string())
+                            })? {
+                            IfdLoadResponse::NeedData(r) => {
+                                bail!(MetaReadError(format!(
+                                    "Ifd dropped while resuming loading, range {r:?} requested"
+                                )));
+                            }
+                            IfdLoadResponse::Partial {
+                                ifd_loader: il,
+                                needed_data: nd,
+                            } => {
+                                ifd_loader = il;
+                                needed_data = nd;
+                            }
+                            IfdLoadResponse::Complete {
+                                ifd,
+                                next_ifd_offset,
+                            } => {
+                                self.loader
+                                    .tiff_mut()
+                                    .insert_ifd(offset, next_ifd_offset, ifd);
+                                return Ok(Some(next_ifd_offset));
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -98,7 +139,7 @@ impl<Fetch: AsyncFetch, Loader: TiffLoader> AsyncMetaReader<Fetch, Loader>
             for _ in 0..3 {
                 match self
                     .loader
-                    .ifd_loader(buf.clone(), offset)
+                    .ifd_loader(buf.clone(), offset, self.extension_registry.clone())
                     .or_raise(|| MetaReadError(format!("Parse erorr when skipping ifd")))?
                 {
                     IfdLoadResponse::NeedData(range) => {

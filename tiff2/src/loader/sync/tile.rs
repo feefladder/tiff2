@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use bytes::Bytes;
 use exn::{bail, OptionExt, ResultExt};
 use rayon::prelude::*;
@@ -89,7 +91,17 @@ impl<Fetch: SyncFetch> SyncReader for TiffReader<Fetch> {
                 if matches!(e.kind, TileLoadErrorKind::DeferredIfd) {
                     let mut ifd_reader = TiffIfdReader::wrap(
                         &self.fetch,
-                        IfdLoader::wrap(ifd, self.tiff.bigtiff, self.tiff.byte_order, None),
+                        IfdLoader::wrap(
+                            ifd,
+                            self.tiff.bigtiff,
+                            self.tiff.byte_order,
+                            None,
+                            // We're recovering from an error here, if you have
+                            // unloaded extensions at this point, that's kind of
+                            // your problem.
+                            // TODO: should we have the registry in TiffReader?
+                            Arc::new(Vec::new().into()),
+                        ),
                     );
                     if let Err(e) = ifd_reader.fill_deferred() {
                         self.tiff.ifds.insert(*ifd_offset, ifd_reader.finish());

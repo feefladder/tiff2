@@ -267,8 +267,9 @@ impl Encoder for ZenWebPEncoder {
         tile_width: u32,
         tile_height: u32,
     ) -> CodingResult<u64> {
-        use crate::structs::metadata::tags::PhotometricInterpretation;
         use exn::bail;
+
+        use crate::structs::metadata::tags::PhotometricInterpretation;
 
         let bit_depth = tile_opts.bits_per_sample;
         ensure!(

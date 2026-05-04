@@ -1,6 +1,7 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
 use std::ops::{Deref, Range};
+use std::sync::Arc;
 
 use bytes::Bytes;
 use exn::{bail, ensure, ResultExt};
@@ -15,7 +16,8 @@ mod error;
 pub use error::{CacheMiss, TiffLoadError};
 mod ifd;
 pub use ifd::IfdLoader;
-mod extra_tags;
+mod extension;
+pub use extension::{TiffExtLoader, TiffExtLoaderFactory, TiffExtLoaderRegistry};
 
 pub type TiffLoadResult<T> = exn::Result<T, TiffLoadError>;
 
@@ -70,7 +72,12 @@ pub trait TiffLoader: Sized + Send + Sync {
 
     /// Get the IfdLoader for the given offset
     ///
-    fn ifd_loader(&mut self, buf: Bytes, offset: u64) -> TiffLoadResult<IfdLoadResponse>;
+    fn ifd_loader(
+        &mut self,
+        buf: Bytes,
+        offset: u64,
+        extension_registry: Arc<TiffExtLoaderRegistry>,
+    ) -> TiffLoadResult<IfdLoadResponse>;
 
     /// Resume loading with the provided data
     fn resume_loader(
@@ -99,7 +106,7 @@ impl<T> TiffLoadResponse<T> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub enum IfdLoadResponse {
     /// Data is needed to be able to read the full in-line ifd data
     NeedData(Range<u64>),
@@ -175,15 +182,16 @@ impl TiffLoader for Tiff {
             byte_order,
             ifd_offsets,
             ifds: BTreeMap::new(),
+            extensions: HashMap::new(),
         }))
     }
 
     /// Get the ifd loader and insert the next offset into self
     ///
-    /// Why do we have this ifd_loader concept at all? I mean the whole point
-    /// (sort of) is to be able to also fix ifds after the fact, so maybe those
-    /// functions are then exposed to two places anyways and ideally that'd be ?here?
-    ///
+    // Why do we have this ifd_loader concept at all? I mean the whole point
+    // (sort of) is to be able to also fix ifds after the fact, so maybe those
+    // functions are then exposed to two places anyways and ideally that'd be ?here?
+    //
     /// The main reason there's the [`IfdLoader`] is to have parity with
     /// async-tiff, and split the metadata loading from the tiff that does
     /// stuff... Maybe make it possible to re-create an ifdloader from an ifd?
@@ -191,9 +199,20 @@ impl TiffLoader for Tiff {
     /// I think re-creating the loader is like totally acceptable. It is kind of
     /// nice to have the ifd struct which just holds data and the loader that
     /// knows how to load it??
-    fn ifd_loader(&mut self, buf: Bytes, offset: u64) -> TiffLoadResult<IfdLoadResponse> {
-        let ifd_loader = IfdLoader::from_buffer(&buf, offset, self.bigtiff, self.byte_order)
-            .map_err(|e| e.deref().clone())?;
+    fn ifd_loader(
+        &mut self,
+        buf: Bytes,
+        offset: u64,
+        extension_registry: Arc<TiffExtLoaderRegistry>,
+    ) -> TiffLoadResult<IfdLoadResponse> {
+        let ifd_loader = IfdLoader::from_buffer(
+            &buf,
+            offset,
+            self.bigtiff,
+            self.byte_order,
+            extension_registry,
+        )
+        .map_err(|e| e.deref().clone())?;
         if self
             .ifd_offsets
             .contains(&ifd_loader.next_ifd_offset.unwrap())
@@ -326,6 +345,8 @@ impl Tiff {
 
 #[cfg(test)]
 mod test {
+    use std::collections::HashMap;
+
     use super::*;
 
     #[test]
@@ -340,12 +361,13 @@ mod test {
                 0,
                 0,
                 0,
-            ]))
+            ]),)
             .unwrap()
             .unwrap(),
             Tiff {
                 ifds: BTreeMap::new(),
                 ifd_offsets: vec![header_size(false)],
+                extensions: HashMap::new(),
                 bigtiff: false,
                 byte_order: ByteOrder::LittleEndian,
             }
@@ -364,12 +386,13 @@ mod test {
                 0,
                 0,
                 header_size(false) as u8
-            ]))
+            ]),)
             .unwrap()
             .unwrap(),
             Tiff {
                 ifds: BTreeMap::new(),
                 ifd_offsets: vec![header_size(false)],
+                extensions: HashMap::new(),
                 bigtiff: false,
                 byte_order: ByteOrder::BigEndian,
             }
@@ -386,10 +409,11 @@ mod test {
                 8,0,
                 0,0,
                 header_size(true) as u8,0,0,0,0,0,0,0,
-            ])).unwrap().unwrap(),
+            ]),).unwrap().unwrap(),
             Tiff {
                 ifds: BTreeMap::new(),
                 ifd_offsets: vec![header_size(true)],
+                extensions: HashMap::new(),
                 bigtiff: true,
                 byte_order: ByteOrder::LittleEndian,
             }
@@ -406,10 +430,11 @@ mod test {
                 0,8,
                 0,0,
                 0,0,0,0,0,0,0,header_size(true) as u8
-            ])).unwrap().unwrap(),
+            ]),).unwrap().unwrap(),
             Tiff {
                 ifds: BTreeMap::new(),
                 ifd_offsets: vec![header_size(true)],
+                extensions: HashMap::new(),
                 bigtiff: true,
                 byte_order: ByteOrder::BigEndian,
             }
@@ -419,7 +444,7 @@ mod test {
     #[test]
     fn test_too_short_buf_small() {
         assert_eq!(
-            Tiff::from_header(Bytes::new()).unwrap(),
+            Tiff::from_header(Bytes::new(),).unwrap(),
             TiffLoadResponse::NeedData(0..header_size(false))
         )
     }
@@ -427,7 +452,7 @@ mod test {
     #[test]
     fn test_invalid_bom() {
         assert_eq!(
-            Tiff::from_header(Bytes::copy_from_slice(&[0; header_size(false) as _]))
+            Tiff::from_header(Bytes::copy_from_slice(&[0; header_size(false) as _]),)
                 .unwrap_err()
                 .deref(),
             &TiffLoadError::permanent("failed to parse byte order mark, found [0, 0]".into())
@@ -437,10 +462,12 @@ mod test {
     #[test]
     fn test_invalid_magic() {
         assert_eq!(
-            //                                         |   bom  | |magic||  offset  |
-            Tiff::from_header(Bytes::copy_from_slice(&[b'I', b'I', 41, 0, 0, 0, 0, 0,]))
-                .unwrap_err()
-                .deref(),
+            Tiff::from_header(
+                //                       |   bom  | |magic||  offset  |
+                Bytes::copy_from_slice(&[b'I', b'I', 41, 0, 0, 0, 0, 0,]),
+            )
+            .unwrap_err()
+            .deref(),
             &TiffLoadError::permanent("magic number 41 should be either 42 or 43".into())
         );
     }
@@ -448,8 +475,11 @@ mod test {
     #[test]
     fn test_too_short_buf_big() {
         assert_eq!(
-            //                                         |   bom  | |magic||osize_zero|
-            Tiff::from_header(Bytes::copy_from_slice(&[b'I', b'I', 43, 0, 8, 0, 0, 0,])).unwrap(),
+            Tiff::from_header(
+                //                       |   bom  | |magic||osize_zero|
+                Bytes::copy_from_slice(&[b'I', b'I', 43, 0, 8, 0, 0, 0,]),
+            )
+            .unwrap(),
             TiffLoadResponse::NeedData(0..header_size(true))
         );
     }
@@ -460,7 +490,7 @@ mod test {
             Tiff::from_header(Bytes::copy_from_slice(&[
                 //  bom  | |magic||osize_zero||0  1  2  3  4  5  6  7|
                 b'I', b'I', 43, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-            ]))
+            ]),)
             .unwrap_err()
             .deref(),
             &TiffLoadError::permanent("[offset_size, 0] should be [8,0], was Short([0, 0])".into())

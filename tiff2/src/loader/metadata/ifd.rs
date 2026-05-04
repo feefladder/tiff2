@@ -1,22 +1,26 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
+use std::sync::Arc;
 
 use exn::{bail, OptionExt, ResultExt};
 
 use crate::loader::metadata::error::TiffLoadError;
 use crate::loader::metadata::IfdLoadResponse;
-use crate::loader::TiffLoadResult;
+use crate::loader::{TiffExtLoader, TiffExtLoaderRegistry, TiffLoadResult};
 use crate::structs::{
     entry_size, num_entries_size, offset_size, offset_tag_type, Ifd, IfdEntry, Offset, Tag,
     TagData, TagType,
 };
 use crate::ByteOrder;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct IfdLoader {
     pub bigtiff: bool,
     pub byte_order: ByteOrder,
     pub ifd: Ifd,
+    pub extension_loaders: Vec<Box<dyn TiffExtLoader>>,
+    pub extension_tags: HashMap<u16, usize>,
     pub next_ifd_offset: Option<u64>,
 }
 
@@ -53,11 +57,15 @@ impl IfdLoader {
         bigtiff: bool,
         byte_order: ByteOrder,
         next_ifd_offset: Option<u64>,
+        extension_registry: Arc<TiffExtLoaderRegistry>,
     ) -> Self {
+        let (extension_loaders, extension_tags) = extension_registry.build();
         Self {
             bigtiff,
             byte_order,
             ifd,
+            extension_loaders,
+            extension_tags,
             next_ifd_offset,
         }
     }
@@ -92,6 +100,7 @@ impl IfdLoader {
         offset: u64,
         bigtiff: bool,
         byte_order: ByteOrder,
+        extension_registry: Arc<TiffExtLoaderRegistry>,
     ) -> TiffLoadResult<Self> {
         let entry_count = Self::ifd_entry_count(ifd_buf, offset, bigtiff, byte_order)?;
 
@@ -109,6 +118,9 @@ impl IfdLoader {
         }
         let mut pos = num_entries_size(bigtiff) as usize;
         let mut ifd_data = BTreeMap::new();
+        // TODO: this should also load in-range tags, so we should already filter tags based on extensions...
+        // That should ideally have some semi-ergonomic function
+        let (mut extension_loaders, extension_tags) = extension_registry.build();
         // start reading entries
         for _ in 0..entry_count {
             // TODO: This should really become a
@@ -166,17 +178,26 @@ impl IfdLoader {
                     )
                 };
             pos += offset_size(bigtiff) as usize;
-            ifd_data.insert(tag, entry);
+            if extension_tags.contains_key(&tag.to_u16()) {
+                // TODO: should this be only on resolved tags, e.g. TagData?
+                // Otherwise, it'd be very very sad with regards to "all places where deferredness lives"
+                extension_loaders[extension_tags[&tag.to_u16()]].insert_tag(tag.to_u16(), entry);
+            } else {
+                ifd_data.insert(tag, entry);
+            }
         }
         let next_ifd_offset: u64 =
             TagData::from_buffer(&ifd_buf[pos..], offset_tag_type(bigtiff), 1, byte_order)
                 .unwrap()
                 .try_into()
                 .unwrap();
+
         Ok(Self {
             bigtiff,
             byte_order,
             ifd: Ifd::from_tags(ifd_data),
+            extension_loaders,
+            extension_tags,
             next_ifd_offset: Some(next_ifd_offset),
         })
     }
@@ -261,6 +282,18 @@ mod test {
 
     use super::*;
 
+    impl PartialEq for IfdLoader {
+        fn eq(&self, other: &Self) -> bool {
+            self.bigtiff == other.bigtiff
+                && self.byte_order == other.byte_order
+                && self.ifd == other.ifd
+                && self.extension_loaders.is_empty()
+                && other.extension_loaders.is_empty()
+                && self.extension_tags == other.extension_tags
+                && self.next_ifd_offset == other.next_ifd_offset
+        }
+    }
+
     /// test loading multiple tags, esp. whether we skip over the offset properly
     #[test]
     #[rustfmt::skip]
@@ -286,8 +319,8 @@ mod test {
                     (Tag::ImageWidth, IfdEntry::Value(res2))
                 ])
             };
-            let res = IfdLoader:: from_buffer(&buf, 0, false, ByteOrder::LittleEndian).unwrap();
-            assert_eq!(&res, &IfdLoader{bigtiff: false, byte_order: ByteOrder::LittleEndian, ifd, next_ifd_offset: Some(0)});
+            let res = IfdLoader::from_buffer(&buf, 0, false, ByteOrder::LittleEndian, Arc::new(Vec::new().into())).unwrap();
+            assert_eq!(&res, &IfdLoader{bigtiff: false, byte_order: ByteOrder::LittleEndian, ifd, next_ifd_offset: Some(0), extension_loaders: Vec::new(), extension_tags: HashMap::new()});
         }
     }
 
@@ -334,8 +367,8 @@ mod test {
             let ifd = Ifd {
                 data: BTreeMap::from([(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Value(data))])
             };
-            let res = IfdLoader:: from_buffer(&buf, 0, false, byte_order).unwrap();
-            assert_eq!(res, IfdLoader{bigtiff: false, byte_order, ifd, next_ifd_offset: Some(0)});
+            let res = IfdLoader:: from_buffer(&buf, 0, false, byte_order, Arc::new(Vec::new().into())).unwrap();
+            assert_eq!(res, IfdLoader{bigtiff: false, byte_order, ifd, next_ifd_offset: Some(0), extension_loaders: Vec::new(), extension_tags: HashMap::new()});
         }
     }
 
@@ -389,8 +422,8 @@ mod test {
             let ifd = Ifd {
                 data: BTreeMap::from([(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Value(data))])
             };
-            let res = IfdLoader:: from_buffer(&buf, 0, true, byte_order).unwrap();
-            assert_eq!(res, IfdLoader{bigtiff: true, byte_order, ifd, next_ifd_offset: Some(0)});
+            let res = IfdLoader:: from_buffer(&buf, 0, true, byte_order, Arc::new(Vec::new().into())).unwrap();
+            assert_eq!(res, IfdLoader{bigtiff: true, byte_order, ifd, next_ifd_offset: Some(0), extension_loaders: Vec::new(), extension_tags: HashMap::new()});
         }
     }
 
@@ -426,8 +459,8 @@ mod test {
             let ifd = Ifd {
                 data: BTreeMap::from([(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Value(data))])
             };
-            let res = IfdLoader:: from_buffer(&buf, 0, false, byte_order).unwrap();
-            assert_eq!(res, IfdLoader{bigtiff: false, byte_order, ifd, next_ifd_offset: Some(0)});
+            let res = IfdLoader:: from_buffer(&buf, 0, false, byte_order, Arc::new(Vec::new().into())).unwrap();
+            assert_eq!(res, IfdLoader{bigtiff: false, byte_order, ifd, next_ifd_offset: Some(0), extension_loaders: Vec::new(), extension_tags: HashMap::new()});
         }
     }
 
@@ -469,8 +502,8 @@ mod test {
             let ifd = Ifd {
                 data: BTreeMap::from([(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Value(data))])
             };
-            let res = IfdLoader:: from_buffer(&buf, 0, true, byte_order).unwrap();
-            assert_eq!(res, IfdLoader{bigtiff: true, byte_order, ifd, next_ifd_offset: Some(0)});
+            let res = IfdLoader:: from_buffer(&buf, 0, true, byte_order, Arc::new(Vec::new().into())).unwrap();
+            assert_eq!(res, IfdLoader{bigtiff: true, byte_order, ifd, next_ifd_offset: Some(0), extension_loaders: Vec::new(), extension_tags: HashMap::new()});
         }
     }
 
@@ -519,8 +552,8 @@ mod test {
             let ifd = Ifd {
                 data: BTreeMap::from([(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Offset(Offset { tag_type, count, offset: 42 }))])
             };
-            let res = IfdLoader:: from_buffer(&buf, 0, false, byte_order).unwrap();
-            assert_eq!(res, IfdLoader{bigtiff: false, byte_order, ifd, next_ifd_offset: Some(0)});
+            let res = IfdLoader:: from_buffer(&buf, 0, false, byte_order, Arc::new(Vec::new().into())).unwrap();
+            assert_eq!(res, IfdLoader{bigtiff: false, byte_order, ifd, next_ifd_offset: Some(0), extension_loaders: Vec::new(), extension_tags: HashMap::new()});
         }
     }
 
@@ -574,8 +607,8 @@ mod test {
             let ifd = Ifd {
                 data: BTreeMap::from([(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Offset(Offset { tag_type, count, offset: 42 }))])
             };
-            let res = IfdLoader:: from_buffer(&buf, 0, true, byte_order).unwrap();
-            assert_eq!(res, IfdLoader{bigtiff: true, byte_order, ifd, next_ifd_offset: Some(0)});
+            let res = IfdLoader:: from_buffer(&buf, 0, true, byte_order, Arc::new(Vec::new().into())).unwrap();
+            assert_eq!(res, IfdLoader{bigtiff: true, byte_order, ifd, next_ifd_offset: Some(0), extension_loaders: Vec::new(), extension_tags: HashMap::new()});
         }
     }
 }

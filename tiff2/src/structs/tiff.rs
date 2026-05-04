@@ -1,8 +1,10 @@
 //! Tiff struct that holds all *meta*data of a tiff
 //! Can be used for both decoding and encoding purposes
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use crate::structs::Ifd;
+use crate::structs::TiffExtension;
 use crate::ByteOrder;
 
 /// The header byte size of a tiff file in bytes
@@ -36,6 +38,7 @@ pub struct Tiff {
     // flag to say if it's written or not...
     pub(crate) ifds: BTreeMap<u64, Ifd>,
     pub(crate) ifd_offsets: Vec<u64>,
+    pub(crate) extensions: HashMap<&'static str, Arc<dyn TiffExtension>>,
     pub(crate) bigtiff: bool,
     pub(crate) byte_order: ByteOrder,
     // add additional global stuff such as geo-info here
