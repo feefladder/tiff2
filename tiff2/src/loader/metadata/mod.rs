@@ -15,6 +15,7 @@ mod error;
 pub use error::{CacheMiss, TiffLoadError};
 mod ifd;
 pub use ifd::IfdLoader;
+mod extra_tags;
 
 pub type TiffLoadResult<T> = exn::Result<T, TiffLoadError>;
 
@@ -71,9 +72,7 @@ pub trait TiffLoader: Sized + Send + Sync {
     ///
     fn ifd_loader(&mut self, buf: Bytes, offset: u64) -> TiffLoadResult<IfdLoadResponse>;
 
-    /// Give more data to the loader
-    ///
-    /// This does nothing on `Tiff`, but is needed for caching
+    /// Resume loading with the provided data
     fn resume_loader(
         &mut self,
         ranges: Vec<Range<u64>>,
