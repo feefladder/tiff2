@@ -3,8 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use crate::structs::Ifd;
-use crate::structs::TiffExtension;
+use crate::structs::{Ifd, TiffExtension};
 use crate::ByteOrder;
 
 /// The header byte size of a tiff file in bytes

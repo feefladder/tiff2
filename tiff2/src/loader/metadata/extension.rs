@@ -36,7 +36,7 @@
 //!
 
 use std::any::{Any, TypeId};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Debug;
 use std::ops::Range;
 
@@ -44,7 +44,7 @@ use bytes::Bytes;
 use derive_more::{Display, Error};
 use exn::{ensure, Result};
 
-use crate::structs::{IfdEntry, TiffExtError, TiffExtension};
+use crate::structs::{IfdEntry, TagData, TiffExtError, TiffExtension};
 
 /// A registry for tiff extensions - on the loader side.
 ///
@@ -58,7 +58,7 @@ use crate::structs::{IfdEntry, TiffExtError, TiffExtension};
 pub struct TiffExtLoaderRegistry {
     factories: Vec<Box<dyn TiffExtLoaderFactory>>,
     id_idx: HashMap<TypeId, usize>,
-    tag_idx: HashMap<u16, usize>,
+    tag_idx: BTreeMap<u16, usize>,
 }
 
 /// You tried to register an extension that overlaps with an already-registered
@@ -103,7 +103,7 @@ impl TiffExtLoaderRegistry {
     /// Build this registry into loaders and tag index
     ///
     /// Currently used by `IfdLoader`
-    pub(crate) fn build(&self) -> (Vec<Box<dyn TiffExtLoader>>, HashMap<u16, usize>) {
+    pub(crate) fn build(&self) -> (Vec<Box<dyn TiffExtLoader>>, BTreeMap<u16, usize>) {
         (
             self.factories.iter().map(|f| f.create_loader()).collect(),
             // Since we do not drop any factories, we can copy over the index
@@ -118,7 +118,7 @@ impl From<Vec<Box<dyn TiffExtLoaderFactory>>> for TiffExtLoaderRegistry {
         let mut r = TiffExtLoaderRegistry {
             factories: Vec::with_capacity(value.len()),
             id_idx: HashMap::with_capacity(value.len()),
-            tag_idx: HashMap::with_capacity(value.len()), // this under-estimates, probably
+            tag_idx: BTreeMap::new(),
         };
         for v in value {
             if let Err(e) = r.register(v) {
@@ -148,7 +148,7 @@ pub trait TiffExtLoader: Debug + Any + Send + Sync {
     ///     ext_loader.insert_tag(self.tags[tag])
     /// }
     /// ```
-    fn insert_tag(&mut self, tag: u16, value: IfdEntry);
+    fn insert_tag(&mut self, tag: u16, value: TagData);
     // Do we need an additional "needed_ranges, feed_ranges" method or
     // something? I kind of have the idea... we'd sorta-copy over the
     // IfdLoader-like api? how does that work? it has a
@@ -182,5 +182,5 @@ pub trait TiffExtLoader: Debug + Any + Send + Sync {
     }
 
     /// Finish parsing and return an extension
-    fn finish(self) -> Result<Option<Box<dyn TiffExtension>>, TiffExtError>;
+    fn finish(self: Box<Self>) -> Result<Option<Box<dyn TiffExtension>>, TiffExtError>;
 }

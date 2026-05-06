@@ -220,8 +220,16 @@ impl TagData {
     }
 
     #[inline]
-    pub fn to_buffer(&self, buffer: &mut [u8], byte_order: ByteOrder) -> usize {
+    pub fn to_buffer(
+        &self,
+        buffer: &mut [u8],
+        byte_order: ByteOrder,
+    ) -> exn::Result<usize, CastError> {
         let req_len = self.as_ref().len();
+        ensure!(
+            req_len <= buffer.len(),
+            CastError::invalid_buffer(buffer.len(), req_len)
+        );
         buffer[..req_len].copy_from_slice(self.as_ref());
         fix_endianness(
             &mut buffer[..req_len],
@@ -229,7 +237,7 @@ impl TagData {
             byte_order,
             u16::from(self.tag_type().primitive_size()) * 8,
         );
-        req_len
+        Ok(req_len)
     }
 
     /// The length in values of the underlying datatype

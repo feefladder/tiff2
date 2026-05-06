@@ -1,9 +1,10 @@
-use std::collections::BTreeMap;
+use std::any::TypeId;
+use std::collections::{BTreeMap, HashMap};
 
 use exn::OptionExt;
 
 use crate::structs::error::IfdError;
-use crate::structs::{IfdEntry, Tag, TagData, TagType};
+use crate::structs::{IfdEntry, Offset, Tag, TagData, TagType, TiffExtension};
 
 type IfdResult<T> = exn::Result<T, IfdError>;
 type Directory = BTreeMap<Tag, IfdEntry>;
@@ -74,42 +75,44 @@ pub(crate) const fn offset_tag_type(bigtiff: bool) -> TagType {
 }
 
 #[derive(Debug, PartialEq, Default, Clone)]
+#[non_exhaustive]
 pub struct Ifd {
     // TODO: should an Ifd know its offset?
-    pub data: Directory,
-    // TODO: add custom tag registry/parsing
+    /// Tags loaded into this ifd
+    pub tags: BTreeMap<Tag, TagData>,
+    /// Tags not loaded, but stored as offsets
+    pub tag_offsets: BTreeMap<Tag, Offset>,
+    /// Tags parsed as an extensions
+    pub extensions: Vec<Box<dyn TiffExtension>>,
+    pub ext_typeid_idx: HashMap<TypeId, usize>,
+    pub ext_tag_idx: BTreeMap<u16, usize>,
 }
 
 /// Base IFD struct without any special-cased metadata
 impl Ifd {
-    /// Iterate this IFD in increasing tag-order
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (&Tag, &IfdEntry)> {
-        self.data.iter()
-    }
-
-    /// Iterate this IFD in increasing tag-order
-    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = (&Tag, &mut IfdEntry)> {
-        self.data.iter_mut()
-    }
     /// The number of entries in this ifd
     pub fn count(&self) -> usize {
-        self.data.len()
+        self.tags.len() + self.tag_offsets.len()
     }
 
     pub(crate) fn from_tags(data: BTreeMap<Tag, IfdEntry>) -> Self {
-        Self { data }
-    }
-
-    /// Get a tag. Will return None if the tag isn't present (in this tiff/Image)
-    pub fn get_tag(&self, tag: &Tag) -> Option<&IfdEntry> {
-        self.data.get(tag)
-    }
-
-    /// Get a tag, returning error if not present
-    ///
-    /// Can return `IfdEntry::Offset` if the tag is not loaded
-    pub fn require_tag(&self, tag: &Tag) -> IfdResult<&IfdEntry> {
-        self.data.get(tag).ok_or_raise(|| IfdError::not_found(*tag))
+        let mut tags = BTreeMap::new();
+        let mut tag_offsets = BTreeMap::new();
+        for (tag, entry) in data {
+            match entry {
+                IfdEntry::Value(v) => {
+                    tags.insert(tag, v);
+                }
+                IfdEntry::Offset(o) => {
+                    tag_offsets.insert(tag, o);
+                }
+            }
+        }
+        Self {
+            tags,
+            tag_offsets,
+            ..Default::default()
+        }
     }
 
     // /// remove a required tag from this Ifd, so we can use it as fast-access
@@ -150,10 +153,21 @@ impl Ifd {
 
     /// Get a tag, returning error if not present or loaded
     pub(crate) fn require_val(&self, tag: &Tag) -> IfdResult<&TagData> {
-        match self.require_tag(tag)? {
-            IfdEntry::Offset(o) => Err(IfdError::not_loaded(*tag, o.range()).into()),
-            IfdEntry::Value(be) => Ok(be),
+        if let Some(val) = self.tags.get(tag) {
+            Ok(val)
+        } else {
+            if let Some(o) = self.tag_offsets.get(tag) {
+                Err(IfdError::not_loaded(*tag, o.range()).into())
+            } else {
+                Err(IfdError::not_found(*tag).into())
+            }
         }
+    }
+
+    pub(crate) fn contains_tag(&self, tag: &Tag) -> bool {
+        self.tags.contains_key(tag)
+            || self.tag_offsets.contains_key(tag)
+            || self.ext_tag_idx.contains_key(tag)
     }
 
     // /// get a tag, returning error if not loaded, Ok(None) if not present

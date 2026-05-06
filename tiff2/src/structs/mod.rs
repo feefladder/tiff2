@@ -3,7 +3,7 @@ pub mod metadata;
 pub(crate) use metadata::offset_tag_type;
 pub use metadata::{
     entry_size, num_entries_size, offset_size, Ifd, IfdEntry, Offset, Tag, TagData, TagType,
-    TiffExtEq, TiffExtError, TiffExtension,
+    TiffExtEqClone, TiffExtError, TiffExtension,
 };
 /// Tiff struct that can hold multiple images. This should be thin and ideally
 /// re-implemented for more specific tiff types

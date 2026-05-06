@@ -3,8 +3,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use derive_more::{Display, Error};
-use exn::{bail, OptionExt, ResultExt};
-use exn::{ensure, Result};
+use exn::{bail, ensure, OptionExt, Result, ResultExt};
 
 use crate::loader::metadata::error::TiffLoadError;
 use crate::loader::metadata::IfdLoadResponse;
@@ -20,9 +19,10 @@ use crate::ByteOrder;
 pub struct IfdLoader {
     pub bigtiff: bool,
     pub byte_order: ByteOrder,
-    pub ifd: Ifd,
+    pub tags: BTreeMap<Tag, TagData>,
+    pub tag_offsets: BTreeMap<Tag, Offset>,
     pub extension_loaders: Vec<Box<dyn TiffExtLoader>>,
-    pub extension_tags: HashMap<u16, usize>,
+    pub extension_tags: BTreeMap<u16, usize>,
     pub next_ifd_offset: Option<u64>,
 }
 
@@ -47,7 +47,7 @@ fn permanent(message: String) -> IfdLoadError {
 
 impl IfdLoader {
     pub fn count(&self) -> usize {
-        self.ifd.count()
+        self.tags.len() + self.tag_offsets.len() + self.extension_tags.len()
     }
 
     /// given a buffer holding the count value, get the number of entries
@@ -84,7 +84,9 @@ impl IfdLoader {
         Self {
             bigtiff,
             byte_order,
-            ifd,
+            tags: ifd.tags,
+            tag_offsets: ifd.tag_offsets,
+            // Here it's sad that extension_loaders are re-building extension tags by construction
             extension_loaders,
             extension_tags,
             next_ifd_offset,
@@ -114,7 +116,6 @@ impl IfdLoader {
     ///     0,0,0,0,
     /// ];
     /// let (loader, next) = IfdLoader::from_buffer(&buf, 0, false, ByteOrder::LittleEndian);
-    ///
     /// ```
     pub fn from_buffer(
         ifd_buf: &[u8],
@@ -138,7 +139,8 @@ impl IfdLoader {
             )
         );
         let mut pos = num_entries_size(bigtiff) as usize;
-        let mut ifd_data = BTreeMap::new();
+        let mut ifd_tags = BTreeMap::new();
+        let mut tag_offsets = BTreeMap::new();
         // TODO: this should also load in-range tags, so we should already filter tags based on extensions...
         // That should ideally have some semi-ergonomic function
         let (mut extension_loaders, extension_tags) = extension_registry.build();
@@ -168,47 +170,45 @@ impl IfdLoader {
                     .try_into()
                     .unwrap();
             pos += offset_size(bigtiff) as usize; // 8 or 4, coincidentally also offset_size(bigtiff)
-            let entry =
-                if u64::try_from(tag_type.size()).unwrap() * value_count > offset_size(bigtiff) {
-                    IfdEntry::Offset(Offset {
-                        tag_type,
-                        count: value_count,
-                        offset: TagData::from_buffer(
-                            &ifd_buf[pos..],
-                            offset_tag_type(bigtiff),
-                            1,
-                            byte_order,
-                        )
-                        .unwrap()
-                        .try_into()
-                        .unwrap(),
-                    })
-                } else {
-                    IfdEntry::Value(
-                        TagData::from_buffer(
-                            &ifd_buf[pos..],
-                            tag_type,
-                            value_count as usize,
-                            byte_order,
-                        )
-                        .unwrap(),
+            if u64::try_from(tag_type.size()).unwrap() * value_count > offset_size(bigtiff) {
+                let o = Offset {
+                    tag_type,
+                    count: value_count,
+                    offset: TagData::from_buffer(
+                        &ifd_buf[pos..],
+                        offset_tag_type(bigtiff),
+                        1,
+                        byte_order,
                     )
+                    .unwrap()
+                    .try_into()
+                    .unwrap(),
                 };
-            pos += offset_size(bigtiff) as usize;
-            if extension_tags.contains_key(&tag.to_u16()) {
-                // TODO: should this be only on resolved tags, e.g. TagData?
-                // Otherwise, it'd be very very sad with regards to "all places where deferredness lives"
-                // But then again, TiffExtLoaders are there especially for this case...
-                // even though they are thrown out if incomplete when finalizing the ifd...
-                // So that'd kind of mean they'd only have TagData
-                // But that requires some changes with regards to deferred_values_mut...
-                // I think I'd really not like a trait object there
-                // maybe just add a deferred_tags_mut to the TiffExtLoader trait?
-                // Or just tell the ifd: load_tags: BAM
-                extension_loaders[extension_tags[&tag.to_u16()]].insert_tag(tag.to_u16(), entry);
+                tag_offsets.insert(tag, o);
             } else {
-                ifd_data.insert(tag, entry);
+                let td = TagData::from_buffer(
+                    &ifd_buf[pos..],
+                    tag_type,
+                    value_count as usize,
+                    byte_order,
+                )
+                .expect("Buffer size checked");
+                if extension_tags.contains_key(&tag.to_u16()) {
+                    // TODO: should this be only on resolved tags, e.g. TagData?
+                    // Otherwise, it'd be very very sad with regards to "all places where deferredness lives"
+                    // But then again, TiffExtLoaders are there especially for this case...
+                    // even though they are thrown out if incomplete when finalizing the ifd...
+                    // So that'd kind of mean they'd only have TagData
+                    // But that requires some changes with regards to deferred_values_mut...
+                    // I think I'd really not like a trait object there
+                    // maybe just add a deferred_tags_mut to the TiffExtLoader trait?
+                    // Or just tell the ifd: load_tags: BAM
+                    extension_loaders[extension_tags[&tag.to_u16()]].insert_tag(tag.to_u16(), td);
+                } else {
+                    ifd_tags.insert(tag, td);
+                }
             }
+            pos += offset_size(bigtiff) as usize;
         }
         let next_ifd_offset: u64 =
             TagData::from_buffer(&ifd_buf[pos..], offset_tag_type(bigtiff), 1, byte_order)
@@ -219,7 +219,8 @@ impl IfdLoader {
         Ok(Self {
             bigtiff,
             byte_order,
-            ifd: Ifd::from_tags(ifd_data),
+            tags: ifd_tags,
+            tag_offsets,
             extension_loaders,
             extension_tags,
             next_ifd_offset: Some(next_ifd_offset),
@@ -268,28 +269,40 @@ impl IfdLoader {
     ///     *val = IfdEntry::Value(loaded);
     /// }
     /// ```
-    pub fn deferred_values_mut(&mut self) -> impl Iterator<Item = (&Tag, &mut IfdEntry)> {
-        self.ifd
-            .iter_mut()
-            .filter(|(_, v)| matches!(v, IfdEntry::Offset(_)))
+    pub fn deferred_values_mut(&mut self) -> impl Iterator<Item = (&Tag, &mut Offset)> {
+        self.tag_offsets.iter_mut()
     }
 
     pub fn deferred_ranges<'a>(&'a self) -> impl Iterator<Item = Range<u64>> + use<'a> {
-        self.ifd.iter().filter_map(|(_, v)| match v {
-            IfdEntry::Offset(o) => Some(o.range()),
-            _ => None,
-        })
+        self.tag_offsets.iter().map(|(_, o)| o.range())
     }
 
     pub fn finish(self) -> Ifd {
-        self.ifd
+        let extensions = self
+            .extension_loaders
+            .into_iter()
+            .filter_map(|l| l.finish().transpose())
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let ext_typeid_idx = extensions
+            .iter()
+            .enumerate()
+            .map(|(idx, ext)| (ext.type_id(), idx))
+            .collect();
+        Ifd {
+            tags: self.tags,
+            tag_offsets: self.tag_offsets,
+            extensions,
+            ext_tag_idx: self.extension_tags,
+            ext_typeid_idx,
+        }
     }
 
     pub(crate) fn to_response(self) -> IfdLoadResponse {
         if self.deferred_ranges().peekable().peek().is_none() {
             IfdLoadResponse::Complete {
-                ifd: self.ifd,
                 next_ifd_offset: self.next_ifd_offset.unwrap(),
+                ifd: self.finish(),
             }
         } else {
             IfdLoadResponse::Partial {
@@ -302,6 +315,8 @@ impl IfdLoader {
 
 #[cfg(test)]
 mod test {
+    use std::default;
+
     use smallvec::smallvec;
 
     use super::*;
@@ -310,7 +325,8 @@ mod test {
         fn eq(&self, other: &Self) -> bool {
             self.bigtiff == other.bigtiff
                 && self.byte_order == other.byte_order
-                && self.ifd == other.ifd
+                && self.tags == other.tags
+                && self.tag_offsets == other.tag_offsets
                 && self.extension_loaders.is_empty()
                 && other.extension_loaders.is_empty()
                 && self.extension_tags == other.extension_tags
@@ -338,10 +354,11 @@ mod test {
         ];
         for (buf, res1, res2) in cases {
             let ifd = Ifd {
-                data: BTreeMap::from([
-                    (Tag::ImageLength, IfdEntry::Value(res1)),
-                    (Tag::ImageWidth, IfdEntry::Value(res2))
-                ])
+                tags: BTreeMap::from([
+                    (Tag::ImageLength, res1),
+                    (Tag::ImageWidth, res2)
+                ]),
+                ..Default::default()
             };
             let res = IfdLoader::from_buffer(&buf, 0, false, ByteOrder::LittleEndian, Arc::new(Vec::new().into())).unwrap();
             assert_eq!(&res, &IfdLoader{bigtiff: false, byte_order: ByteOrder::LittleEndian, ifd, next_ifd_offset: Some(0), extension_loaders: Vec::new(), extension_tags: HashMap::new()});

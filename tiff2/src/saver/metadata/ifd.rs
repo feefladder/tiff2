@@ -1,7 +1,11 @@
-use exn::{bail, ResultExt};
+use std::collections::BTreeMap;
+
+use derive_more::Display;
+use exn::{bail, OptionExt, Result, ResultExt};
 use smallvec::smallvec;
 
 use crate::saver::metadata::error::SaverError;
+use crate::saver::metadata::extension::TiffExtSaver;
 use crate::saver::metadata::SaverResult;
 use crate::structs::{
     entry_size, num_entries_size, offset_size, Ifd, IfdEntry, Offset, Tag, TagData,
@@ -18,71 +22,122 @@ pub struct IfdSaver {
     offset: u64,
     bigtiff: bool,
     byte_order: ByteOrder,
-    ifd: Ifd,
+    /// Tags that fit in the offset field
+    ///
+    /// These can be either values or offsets
+    writeable: BTreeMap<Tag, IfdEntry>,
+    /// Tags that don't fit in the offset field
+    ///
+    /// Their values need to be written to the file and converted to an offset
+    to_write: BTreeMap<Tag, TagData>,
+    /// Extensions
+    ///
+    /// These need to be converted to tags and can also write arbitrary data to the tiff
+    extension_savers: Vec<Box<dyn TiffExtSaver>>,
+    /// All tags held by these extensions
+    ///
+    /// When an extension is done, it is converted into tags and they are removed from here, together with the extension
+    extension_tags: BTreeMap<u16, usize>,
 }
 
+#[derive(Debug, Display)]
+pub struct IfdSaverError(String);
+impl std::error::Error for IfdSaverError {}
+
 impl IfdSaver {
+    /// The total number of tags in this IFD
     pub fn count(&self) -> usize {
-        self.ifd.count()
+        self.writeable.len() + self.to_write.len() + self.extension_tags.len()
     }
 
     /// Returns an iterator of Entries that still need to be changed to Offset before this can be written
-    pub(crate) fn to_do(&self) -> impl Iterator<Item = (&Tag, &TagData)> {
-        self.ifd.iter().filter_map(|(k, v)| match v {
-            IfdEntry::Value(tag_data) => {
-                if u64::try_from(tag_data.as_ref().len()).unwrap() > offset_size(self.bigtiff) {
-                    Some((k, tag_data))
-                } else {
-                    None
-                }
-            }
-            IfdEntry::Offset(_) => None,
-        })
+    pub(crate) fn to_write(&self) -> impl Iterator<Item = (&Tag, &TagData)> {
+        self.to_write.iter()
     }
 
-    pub(crate) fn to_do_mut(&mut self) -> impl Iterator<Item = (&Tag, &mut IfdEntry)> {
-        self.ifd.iter_mut().filter_map(|(k, v)| match v {
-            IfdEntry::Value(tag_data) => {
-                if u64::try_from(tag_data.as_ref().len()).unwrap() > offset_size(self.bigtiff) {
-                    Some((k, v))
-                } else {
-                    None
-                }
-            }
-            IfdEntry::Offset(_) => None,
-        })
+    /// Write tag data for the given tag into the provided buffer
+    pub(crate) fn write_tag_data(
+        &mut self,
+        buf: &mut [u8],
+        tag: Tag,
+        offset: usize,
+    ) -> Result<(), IfdSaverError> {
+        let data = self
+            .to_write
+            .remove(&tag)
+            .ok_or_raise(|| IfdSaverError(format!("tag {tag:?} not in todo list")))?;
+        self.writeable.insert(
+            tag,
+            IfdEntry::Offset(Offset {
+                tag_type: data.tag_type(),
+                count: u64::try_from(data.len()).unwrap(),
+                offset: u64::try_from(offset).unwrap(),
+            }),
+        );
+        data.to_buffer(&mut buf[offset..], self.byte_order);
+        Ok(())
     }
-
-    /// Replace to-do values with their corresponding in-file offsets
-    pub(crate) fn replace(&mut self, entries: impl Iterator<Item = (Tag, Offset)>) {
-        for (tag, offset) in entries {
-            self.ifd.data.insert(tag, IfdEntry::Offset(offset));
-        }
-    }
-
-    /// Given an IFD and a buffer, write the IFD to the buffer
+    /// Replace selected to-do values with their corresponding in-file offsets
     ///
-    /// TODO: how should it treat the IFD? also defer non-inlined values?
+    // This is probably sad, because it requires the entire metadata portion to
+    // be in-memory while also all metadata is known, but that is not really
+    // possible... Or no, because it doesn't _require_ all tags to be already
+    // written... but still it'll be probably-weird in COG case...
+    //
+    // The problem is that we may want to just give a properly-aligned buffer
+    // and tell it "this is the offset" in stead of having the in-buffer offset
+    // and in-file offset linked, see write_tag_data
+    ///
+    /// Writes data to the
+    ///
+    pub(crate) fn write_tags_data(
+        &mut self,
+        buf: &mut [u8],
+        entries: impl Iterator<Item = (Tag, usize)>,
+    ) -> Result<(), IfdSaverError> {
+        for (tag, offset) in entries {
+            let data = self
+                .to_write
+                .remove(&tag)
+                .ok_or_raise(|| IfdSaverError(format!("tag {tag:?} not in to_write")))?;
+            self.writeable.insert(
+                tag,
+                IfdEntry::Offset(Offset {
+                    tag_type: data.tag_type(),
+                    count: u64::try_from(data.len()).unwrap(),
+                    offset: u64::try_from(offset).unwrap(),
+                }),
+            );
+            data.to_buffer(&mut buf[offset..], self.byte_order);
+        }
+        Ok(())
+    }
+
+    /// Create this IfdSaver from an IFD
+    ///
+    /// This is mainly used for round-tripping read-write
     pub fn from_ifd(ifd: Ifd, offset: u64, bigtiff: bool, byte_order: ByteOrder) -> Self {
+        let writeable = BTreeMap::new();
+
         Self {
             offset,
             bigtiff,
             byte_order,
-            ifd,
         }
     }
 
     /// The required length for this ifd without external data
     pub(crate) fn required_len(&self) -> u64 {
-        let count = u64::try_from(self.ifd.count()).unwrap();
+        let count = u64::try_from(self.count()).unwrap();
         num_entries_size(self.bigtiff)
             + count * entry_size(self.bigtiff)
             + offset_size(self.bigtiff)
     }
 
+    /// Write this Ifd (inline) to the buffer
     pub fn write(&self, buf: &mut [u8], next_ifd_offset: u64) -> SaverResult<()> {
         // check if all entries can be written
-        let mut to_dos = self.to_do().peekable();
+        let mut to_dos = self.to_write().peekable();
         if to_dos.peek().is_some() {
             bail!(SaverError::unfinished_ifd(
                 to_dos.map(|(k, _)| *k),
@@ -101,7 +156,7 @@ impl IfdSaver {
             ))
         }
         // we can unwrap here, because the BtreeMap key type is u16, so it cannot overflow u64
-        let count = u64::try_from(self.ifd.count()).unwrap();
+        let count = u64::try_from(self.count()).unwrap();
         // all good: start writing
         // offset is our in-buffer cursor position
         let mut offset = if self.bigtiff {
@@ -110,12 +165,14 @@ impl IfdSaver {
             // we can unwrap here, because the key type is u16, so it cannot overflow u16
             TagData::Short(smallvec![u16::try_from(count).unwrap()])
         }
-        .to_buffer(buf, self.byte_order);
+        .to_buffer(buf, self.byte_order)
+        .unwrap();
         // Spec says we MUST write tags in-order, ifd.iter() is in-order
-        for (tag, entry) in self.ifd.iter() {
+        for (tag, entry) in self.writeable.iter() {
             // tag and tag type
             offset += TagData::Short(smallvec![tag.to_u16(), entry.tag_type().to_u16()])
-                .to_buffer(&mut buf[offset..], self.byte_order);
+                .to_buffer(&mut buf[offset..], self.byte_order)
+                .unwrap();
 
             // count
             offset += if self.bigtiff {
@@ -126,7 +183,8 @@ impl IfdSaver {
                     SaverError::need_bigtiff(format!("entry count {} overflows u32", entry.count()))
                 })?])
             }
-            .to_buffer(&mut buf[offset..], self.byte_order);
+            .to_buffer(&mut buf[offset..], self.byte_order)
+            .unwrap();
 
             offset += match entry {
                 IfdEntry::Value(v) => {
@@ -151,6 +209,7 @@ impl IfdSaver {
                         })?])
                     }
                     .to_buffer(&mut buf[offset..], self.byte_order)
+                    .unwrap()
                 }
             };
         }
@@ -163,7 +222,8 @@ impl IfdSaver {
                 ))
             )?])
         }
-        .to_buffer(&mut buf[offset..], self.byte_order);
+        .to_buffer(&mut buf[offset..], self.byte_order)
+        .unwrap();
         if u64::try_from(offset).unwrap() != self.required_len() {
             unreachable!("this is really bad, pleas open an issue")
         }
@@ -174,6 +234,7 @@ impl IfdSaver {
 #[allow(unused_imports, clippy::useless_conversion)]
 mod test_ifd {
     use std::collections::BTreeMap;
+    use std::default;
 
     use smallvec::smallvec;
 
@@ -206,10 +267,11 @@ mod test_ifd {
         ];
         for (buf, res1, res2) in cases {
             let ifd = Ifd {
-                data: BTreeMap::from([
-                    (Tag::from_u16_exhaustive(0x0101), IfdEntry::Value(res1)),
-                    (Tag::from_u16_exhaustive(0x0100), IfdEntry::Value(res2))
-                ])
+                tags: BTreeMap::from([
+                    (Tag::from_u16_exhaustive(0x0101), res1),
+                    (Tag::from_u16_exhaustive(0x0100), res2)
+                ]),
+                ..default::Default::default()
             };
             let mut res = vec![0;buf.len()];
             IfdSaver::from_ifd(ifd, 0,  false, ByteOrder::LittleEndian).write(&mut res, 0).unwrap();
@@ -221,24 +283,22 @@ mod test_ifd {
     fn test_todo_small() {
         let ifd_saver = IfdSaver::from_ifd(
             Ifd {
-                data: BTreeMap::from([
+                tags: BTreeMap::from([
                     // this one fits
-                    (
-                        Tag::ImageWidth,
-                        IfdEntry::Value(TagData::Byte(smallvec![42;4])),
-                    ),
+                    (Tag::ImageWidth, TagData::Byte(smallvec![42;4])),
                     // this one doesn't
-                    (
-                        Tag::ImageLength,
-                        IfdEntry::Value(TagData::Byte(smallvec![42;5])),
-                    ),
+                    (Tag::ImageLength, TagData::Byte(smallvec![42;5])),
                 ]),
+                ..Default::default()
             },
             0,
             false,
             NATIVE_ENDIAN,
         );
-        let to_dos = &ifd_saver.to_do().map(|(k, v)| (*k, v)).collect::<Vec<_>>();
+        let to_dos = &ifd_saver
+            .to_write()
+            .map(|(k, v)| (*k, v))
+            .collect::<Vec<_>>();
         assert_eq!(to_dos.len(), 1);
         assert_eq!(to_dos[0].0, Tag::ImageLength);
         assert_eq!(to_dos[0].1, &TagData::Byte(smallvec![42;5]));
@@ -248,24 +308,22 @@ mod test_ifd {
     fn test_todo_big() {
         let ifd_saver = IfdSaver::from_ifd(
             Ifd {
-                data: BTreeMap::from([
+                tags: BTreeMap::from([
                     // this one fits
-                    (
-                        Tag::ImageWidth,
-                        IfdEntry::Value(TagData::Byte(smallvec![42;8])),
-                    ),
+                    (Tag::ImageWidth, TagData::Byte(smallvec![42;8])),
                     // this one doesn't
-                    (
-                        Tag::ImageLength,
-                        IfdEntry::Value(TagData::Byte(smallvec![42;9])),
-                    ),
+                    (Tag::ImageLength, TagData::Byte(smallvec![42;9])),
                 ]),
+                ..Default::default()
             },
             0,
             true,
             NATIVE_ENDIAN,
         );
-        let to_dos = &ifd_saver.to_do().map(|(k, v)| (*k, v)).collect::<Vec<_>>();
+        let to_dos = &ifd_saver
+            .to_write()
+            .map(|(k, v)| (*k, v))
+            .collect::<Vec<_>>();
         assert_eq!(to_dos.len(), 1);
         assert_eq!(to_dos[0].0, Tag::ImageLength);
         assert_eq!(to_dos[0].1, &TagData::Byte(smallvec![42;9]));
@@ -279,18 +337,13 @@ mod test_ifd {
     fn test_write_todo_small() {
         let ifd_saver = IfdSaver::from_ifd(
             Ifd {
-                data: BTreeMap::from([
+                tags: BTreeMap::from([
                     // this one fits
-                    (
-                        Tag::ImageWidth,
-                        IfdEntry::Value(TagData::Byte(smallvec![42;4])),
-                    ),
+                    (Tag::ImageWidth, TagData::Byte(smallvec![42;4])),
                     // this one doesn't
-                    (
-                        Tag::ImageLength,
-                        IfdEntry::Value(TagData::Byte(smallvec![42;5])),
-                    ),
+                    (Tag::ImageLength, TagData::Byte(smallvec![42;5])),
                 ]),
+                ..Default::default()
             },
             0,
             false,
@@ -306,7 +359,7 @@ mod test_ifd {
                 .downcast_ref::<SaverError>()
                 .unwrap(),
             &SaverError::unfinished_ifd(
-                ifd_saver.to_do().map(|(k, _)| *k),
+                ifd_saver.to_write().map(|(k, _)| *k),
                 "cannot write ifd yet, some tags still need to be externalized".into()
             )
         );
@@ -316,18 +369,13 @@ mod test_ifd {
     fn test_write_todo_big() {
         let ifd_saver = IfdSaver::from_ifd(
             Ifd {
-                data: BTreeMap::from([
+                tags: BTreeMap::from([
                     // this one fits
-                    (
-                        Tag::ImageWidth,
-                        IfdEntry::Value(TagData::Byte(smallvec![42;8])),
-                    ),
+                    (Tag::ImageWidth, TagData::Byte(smallvec![42;8])),
                     // this one doesn't
-                    (
-                        Tag::ImageLength,
-                        IfdEntry::Value(TagData::Byte(smallvec![42;9])),
-                    ),
+                    (Tag::ImageLength, TagData::Byte(smallvec![42;9])),
                 ]),
+                ..Default::default()
             },
             0,
             true,
@@ -344,7 +392,7 @@ mod test_ifd {
                 .downcast_ref::<SaverError>()
                 .unwrap(),
             &SaverError::unfinished_ifd(
-                ifd_saver.to_do().map(|(k, _)| *k),
+                ifd_saver.to_write().map(|(k, _)| *k),
                 "cannot write ifd yet, some tags still need to be externalized".into()
             )
         );
@@ -354,26 +402,27 @@ mod test_ifd {
     fn test_write_fitting_offset_small() {
         let ifd_saver = IfdSaver::from_ifd(
             Ifd {
-                data: BTreeMap::from([
+                tag_offsets: BTreeMap::from([
                     // this one doesn't fit
                     (
                         Tag::ImageWidth,
-                        IfdEntry::Offset(Offset {
+                        Offset {
                             tag_type: TagType::BYTE,
                             count: 5,
                             offset: 42,
-                        }),
+                        },
                     ),
                     // this one does
                     (
                         Tag::ImageLength,
-                        IfdEntry::Offset(Offset {
+                        Offset {
                             tag_type: TagType::BYTE,
                             count: 4,
                             offset: 42,
-                        }),
+                        },
                     ),
                 ]),
+                ..Default::default()
             },
             0,
             false,
@@ -399,26 +448,27 @@ mod test_ifd {
     fn test_write_fitting_offset_big() {
         let ifd_saver = IfdSaver::from_ifd(
             Ifd {
-                data: BTreeMap::from([
+                tag_offsets: BTreeMap::from([
                     // this one doesn't fit
                     (
                         Tag::ImageWidth,
-                        IfdEntry::Offset(Offset {
+                        Offset {
                             tag_type: TagType::BYTE,
                             count: 9,
                             offset: 42,
-                        }),
+                        },
                     ),
                     // this one does
                     (
                         Tag::ImageLength,
-                        IfdEntry::Offset(Offset {
+                        Offset {
                             tag_type: TagType::BYTE,
                             count: 8,
                             offset: 42,
-                        }),
+                        },
                     ),
                 ]),
+                ..Default::default()
             },
             0,
             true,
@@ -444,14 +494,15 @@ mod test_ifd {
     fn test_write_need_big_entry_count() {
         let ifd_saver = IfdSaver::from_ifd(
             Ifd {
-                data: BTreeMap::from([(
+                tag_offsets: BTreeMap::from([(
                     Tag::ImageWidth,
-                    IfdEntry::Offset(Offset {
+                    Offset {
                         tag_type: TagType::BYTE,
                         count: 1 << 32,
                         offset: 42,
-                    }),
+                    },
                 )]),
+                ..Default::default()
             },
             0,
             false,
@@ -474,14 +525,15 @@ mod test_ifd {
     fn test_write_need_big_entry_offset() {
         let ifd_saver = IfdSaver::from_ifd(
             Ifd {
-                data: BTreeMap::from([(
+                tag_offsets: BTreeMap::from([(
                     Tag::ImageWidth,
-                    IfdEntry::Offset(Offset {
+                    Offset {
                         tag_type: TagType::BYTE,
                         count: 42,
                         offset: 1 << 32,
-                    }),
+                    },
                 )]),
+                ..Default::default()
             },
             0,
             false,
@@ -502,14 +554,7 @@ mod test_ifd {
 
     #[test]
     fn test_write_need_big_next_ifd_offset() {
-        let ifd_saver = IfdSaver::from_ifd(
-            Ifd {
-                data: BTreeMap::from([]),
-            },
-            0,
-            false,
-            NATIVE_ENDIAN,
-        );
+        let ifd_saver = IfdSaver::from_ifd(Ifd::default(), 0, false, NATIVE_ENDIAN);
         let mut buf = vec![0; ifd_saver.required_len() as usize];
         assert_eq!(
             ifd_saver
@@ -525,14 +570,7 @@ mod test_ifd {
 
     #[test]
     fn test_write_too_small_buf() {
-        let ifd_saver = IfdSaver::from_ifd(
-            Ifd {
-                data: BTreeMap::from([]),
-            },
-            0,
-            false,
-            NATIVE_ENDIAN,
-        );
+        let ifd_saver = IfdSaver::from_ifd(Ifd::default(), 0, false, NATIVE_ENDIAN);
         let mut buf = vec![0; ifd_saver.required_len() as usize - 1];
         assert_eq!(
             ifd_saver
@@ -589,7 +627,8 @@ mod test_ifd {
         for (buf, byte_order, data) in cases {
             println!("Trying {data:?} with {byte_order:?}, should become  {buf:?}");
             let ifd = Ifd {
-                data: BTreeMap::from([(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Value(data))])
+                tags: BTreeMap::from([(Tag::from_u16_exhaustive(0x01_01), data)]),
+                ..Default::default()
             };
             let mut res = vec![0;buf.len()];
             IfdSaver::from_ifd(ifd, 0, false, byte_order).write(&mut res, 0).unwrap();
@@ -645,7 +684,8 @@ mod test_ifd {
         for (buf, byte_order, data) in cases {
             println!("Trying {data:?} with {byte_order:?}, should become  {buf:?}");
             let ifd = Ifd {
-                data: BTreeMap::from([(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Value(data))])
+                tags: BTreeMap::from([(Tag::from_u16_exhaustive(0x01_01), data)]),
+                ..Default::default()
             };
             let mut res = vec![0;buf.len()];
             IfdSaver::from_ifd(ifd, 0, true, byte_order).write(&mut res, 0).unwrap();
@@ -683,7 +723,8 @@ mod test_ifd {
         for (buf, byte_order, data) in cases {
             println!("Trying {data:?} with {byte_order:?}, should become  {buf:?}");
             let ifd = Ifd {
-                data: BTreeMap::from([(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Value(data))])
+                tags: BTreeMap::from([(Tag::from_u16_exhaustive(0x01_01), data)]),
+                ..Default::default()
             };
             let mut res = vec![0;buf.len()];
             IfdSaver::from_ifd(ifd, 0, false, byte_order).write(&mut res, 0).unwrap();
@@ -727,7 +768,8 @@ mod test_ifd {
         for (buf, byte_order, data) in cases {
             println!("Trying {data:?} with {byte_order:?}, should become  {buf:?}");
             let ifd = Ifd {
-                data: BTreeMap::from([(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Value(data))])
+                tags: BTreeMap::from([(Tag::from_u16_exhaustive(0x01_01), data)]),
+                ..Default::default()
             };
             let mut res = vec![0;buf.len()];
             IfdSaver::from_ifd(ifd, 0, true, byte_order).write(&mut res, 0).unwrap();
@@ -778,7 +820,8 @@ mod test_ifd {
         for (buf, byte_order, count, tag_type) in cases {
             println!("Trying {tag_type:?} with {byte_order:?}, should become  {buf:?}");
             let ifd = Ifd {
-                data: BTreeMap::from([(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Offset(Offset { tag_type, count, offset: 42 }))])
+                tag_offsets: BTreeMap::from([(Tag::from_u16_exhaustive(0x01_01), Offset { tag_type, count, offset: 42 })]),
+                ..Default::default()
             };
             let mut res = vec![0;buf.len()];
             IfdSaver::from_ifd(ifd, 0, false, byte_order).write(&mut res, 0).unwrap();
@@ -834,7 +877,8 @@ mod test_ifd {
         for (buf, byte_order, count, tag_type) in cases {
             println!("Trying {tag_type:?} with {byte_order:?}, should become  {buf:?}");
             let ifd = Ifd {
-                data: BTreeMap::from([(Tag::from_u16_exhaustive(0x01_01), IfdEntry::Offset(Offset { tag_type, count, offset: 42 }))])
+                tag_offsets: BTreeMap::from([(Tag::from_u16_exhaustive(0x01_01), Offset { tag_type, count, offset: 42 })]),
+                ..Default::default()
             };
             let mut res = vec![0;buf.len()];
             IfdSaver::from_ifd(ifd, 0, true, byte_order).write(&mut res, 0).unwrap();

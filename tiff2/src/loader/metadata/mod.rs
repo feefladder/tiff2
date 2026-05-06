@@ -7,6 +7,7 @@ use bytes::Bytes;
 use exn::{bail, ensure, ResultExt};
 use smallvec::smallvec;
 
+use crate::loader::metadata::ifd::IfdLoadError;
 use crate::structs::tiff::header_size;
 use crate::structs::{Ifd, IfdEntry, TagData, TagType, Tiff};
 use crate::ByteOrder;
@@ -205,14 +206,20 @@ impl TiffLoader for Tiff {
         offset: u64,
         extension_registry: Arc<TiffExtLoaderRegistry>,
     ) -> TiffLoadResult<IfdLoadResponse> {
-        let ifd_loader = IfdLoader::from_buffer(
+        let ifd_loader = match IfdLoader::from_buffer(
             &buf,
             offset,
             self.bigtiff,
             self.byte_order,
             extension_registry,
-        )
-        .map_err(|e| e.deref().clone())?;
+        ) {
+            Ok(loader) => loader,
+            Err(e) => match e {
+                IfdLoadError::InvalidBuffer { required } => {
+                    return IfdLoadResponse::NeedData(required)
+                }
+            },
+        };
         if self
             .ifd_offsets
             .contains(&ifd_loader.next_ifd_offset.unwrap())

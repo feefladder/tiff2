@@ -227,10 +227,7 @@ fn ensure_present(tags: &[Tag], ifd: &Ifd) -> TileLoadResult<()> {
 ///
 /// They may be not present, that is ok
 fn ensure_not_deferred(tags: impl Iterator<Item = &'static Tag>, ifd: &Ifd) -> TileLoadResult<()> {
-    let deferred_tags: Vec<_> = tags
-        .filter_map(|t| ifd.data.get(t))
-        .filter(|entry| matches!(entry, IfdEntry::Offset(_)))
-        .collect();
+    let deferred_tags: Vec<_> = tags.filter_map(|t| ifd.tag_offsets.get(t)).collect();
     if !deferred_tags.is_empty() {
         Err(deferred_ifd(format!("{} optional tags deferred", deferred_tags.len())).into())
     } else {
@@ -302,10 +299,10 @@ impl TileLoader {
             .ok_or_raise(invalid_tag(Tag::PlanarConfiguration))?;
         }
         match (
-            ifd.data.contains_key(&Tag::StripByteCounts),
-            ifd.data.contains_key(&Tag::StripOffsets),
-            ifd.data.contains_key(&Tag::TileByteCounts),
-            ifd.data.contains_key(&Tag::TileOffsets),
+            ifd.contains_tag(&Tag::StripByteCounts),
+            ifd.contains_tag(&Tag::StripOffsets),
+            ifd.contains_tag(&Tag::TileByteCounts),
+            ifd.contains_tag(&Tag::TileOffsets),
         ) {
             (true, true, false, false) => {
                 ensure_present(&STRIP_TAGS, ifd)?;
@@ -395,11 +392,9 @@ impl TileLoader {
             .unwrap_or(PlanarConfiguration::Chunky);
 
         let jpeg_tables = if compression_method == CompressionMethod::ModernJPEG
-            && ifd.data.contains_key(&Tag::JPEGTables)
+            && ifd.contains_tag(&Tag::JPEGTables)
         {
-            let IfdEntry::Value(jt_tb) = ifd.data.remove(&Tag::JPEGTables).unwrap() else {
-                unreachable!()
-            };
+            let jt_tb = ifd.tags.remove(&Tag::JPEGTables).unwrap();
             Some(<Vec<u8>>::try_from(jt_tb).or_raise(invalid_tag(Tag::JPEGTables))?)
         } else {
             None
@@ -425,21 +420,16 @@ impl TileLoader {
         let tile_width;
         let tile_height;
         match (
-            ifd.data.contains_key(&Tag::StripByteCounts),
-            ifd.data.contains_key(&Tag::StripOffsets),
-            ifd.data.contains_key(&Tag::TileByteCounts),
-            ifd.data.contains_key(&Tag::TileOffsets),
+            ifd.contains_tag(&Tag::StripByteCounts),
+            ifd.contains_tag(&Tag::StripOffsets),
+            ifd.contains_tag(&Tag::TileByteCounts),
+            ifd.contains_tag(&Tag::TileOffsets),
         ) {
             (true, true, false, false) => {
                 // stripped tiff
-                let IfdEntry::Value(so_td) = ifd.data.remove(&Tag::StripOffsets).unwrap() else {
-                    unreachable!()
-                };
+                let so_td = ifd.tags.remove(&Tag::StripOffsets).unwrap();
                 tile_offsets = <Vec<u64>>::try_from(so_td).unwrap();
-                let IfdEntry::Value(sbc_td) = ifd.data.remove(&Tag::StripByteCounts).unwrap()
-                else {
-                    unreachable!()
-                };
+                let sbc_td = ifd.tags.remove(&Tag::StripByteCounts).unwrap();
                 // this can fail if there were a strip bigger than 4 GB
                 tile_byte_counts =
                     <Vec<u32>>::try_from(sbc_td).or_raise(invalid_tag(Tag::StripByteCounts))?;
@@ -462,13 +452,9 @@ impl TileLoader {
             (false, false, true, true) => {
                 tile_width = u32::try_from(ifd.require_val(&Tag::TileWidth).unwrap()).unwrap();
                 tile_height = u32::try_from(ifd.require_val(&Tag::TileLength).unwrap()).unwrap();
-                let IfdEntry::Value(to_td) = ifd.data.remove(&Tag::TileOffsets).unwrap() else {
-                    unreachable!()
-                };
+                let to_td = ifd.tags.remove(&Tag::TileOffsets).unwrap();
                 tile_offsets = <Vec<u64>>::try_from(to_td).unwrap();
-                let IfdEntry::Value(tbc_td) = ifd.data.remove(&Tag::TileByteCounts).unwrap() else {
-                    unreachable!()
-                };
+                let tbc_td = ifd.tags.remove(&Tag::TileByteCounts).unwrap();
                 // this can fail if there were a tile larger than 4GB
                 tile_byte_counts =
                     <Vec<u32>>::try_from(tbc_td).or_raise(invalid_tag(Tag::TileByteCounts))?;

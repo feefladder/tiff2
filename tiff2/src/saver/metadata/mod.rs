@@ -7,6 +7,7 @@ use crate::structs::{TagData, Tiff};
 use crate::ByteOrder;
 
 pub mod error;
+mod extension;
 mod ifd;
 
 pub type SaverResult<T> = exn::Result<T, error::SaverError>;
