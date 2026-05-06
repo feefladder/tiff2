@@ -180,7 +180,7 @@ impl<'a, Fetch: SyncFetch> SyncIfdReader<'a, Fetch> for TiffIfdReader<'a, Fetch>
         for ((tag, entry), buf) in self.ifd_loader.deferred_values_mut().zip(data) {
             entry
                 .load(&buf, byte_order)
-                .or_raise(|| IfdReadError(format!("could nto read entry for tag {tag:?}")))?;
+                .or_raise(|| IfdReadError(format!("could not read entry for tag {tag:?}")))?;
         }
         Ok(())
     }

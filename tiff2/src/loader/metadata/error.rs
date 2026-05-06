@@ -17,14 +17,6 @@ pub struct CacheMiss(pub Bound<usize>, pub Bound<usize>);
 #[derive(Debug, Display, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum TiffLoadError {
-    #[display("could not load ifd from buffer, need {required:?}")]
-    InvalidBuffer { required: Range<u64> },
-    #[display("need more data to fully parse ifd")]
-    NeedMoreData {
-        ifd: Ifd,
-        next_ifd_offset: u64,
-        required: Vec<Range<u64>>,
-    },
     #[display("ifd parsing failed: {message}")]
     Fatal { message: String },
 }
@@ -52,31 +44,8 @@ impl Display for CacheMiss {
 impl Error for CacheMiss {}
 
 impl TiffLoadError {
-    pub fn need_more_data(required: Vec<Range<u64>>, ifd: Ifd, next_ifd_offset: u64) -> Self {
-        Self::NeedMoreData {
-            ifd,
-            next_ifd_offset,
-            required,
-        }
-    }
-
     pub(crate) fn permanent(message: String) -> Self {
         Self::Fatal { message }
-    }
-
-    pub(crate) fn invalid_buffer(range: Range<u64>) -> Self {
-        Self::InvalidBuffer { required: range }
-    }
-
-    pub fn is_partial(&self) -> bool {
-        matches!(
-            self,
-            TiffLoadError::NeedMoreData {
-                ifd: _,
-                next_ifd_offset: _,
-                required: _
-            }
-        )
     }
 
     // pub(crate) fn invalid_ifd(ifd_offset: u64, missing_tags: Vec<Tag>, message: String) -> Self {

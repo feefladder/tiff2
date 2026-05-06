@@ -2,7 +2,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 use std::sync::Arc;
 
+use derive_more::{Display, Error};
 use exn::{bail, OptionExt, ResultExt};
+use exn::{ensure, Result};
 
 use crate::loader::metadata::error::TiffLoadError;
 use crate::loader::metadata::IfdLoadResponse;
@@ -24,6 +26,25 @@ pub struct IfdLoader {
     pub next_ifd_offset: Option<u64>,
 }
 
+#[derive(Debug, Display, Error, Clone, PartialEq)]
+pub enum IfdLoadError {
+    #[display("Invalid buffer, need {required:?}")]
+    InvalidBuffer {
+        required: Range<u64>,
+    },
+    Permanent {
+        message: String,
+    },
+}
+
+fn invalid_buffer(required: Range<u64>) -> IfdLoadError {
+    IfdLoadError::InvalidBuffer { required }
+}
+
+fn permanent(message: String) -> IfdLoadError {
+    IfdLoadError::Permanent { message }
+}
+
 impl IfdLoader {
     pub fn count(&self) -> usize {
         self.ifd.count()
@@ -35,7 +56,7 @@ impl IfdLoader {
         offset: u64,
         bigtiff: bool,
         byte_order: ByteOrder,
-    ) -> TiffLoadResult<u64> {
+    ) -> Result<u64, IfdLoadError> {
         let count: u64 = TagData::from_buffer(
             buf,
             if bigtiff {
@@ -46,7 +67,7 @@ impl IfdLoader {
             1,
             byte_order,
         )
-        .or_raise(|| TiffLoadError::invalid_buffer(offset..offset + num_entries_size(bigtiff)))?
+        .or_raise(|| invalid_buffer(offset..offset + num_entries_size(bigtiff)))?
         .try_into()
         .unwrap();
         Ok(count)
@@ -101,21 +122,21 @@ impl IfdLoader {
         bigtiff: bool,
         byte_order: ByteOrder,
         extension_registry: Arc<TiffExtLoaderRegistry>,
-    ) -> TiffLoadResult<Self> {
+    ) -> Result<Self, IfdLoadError> {
         let entry_count = Self::ifd_entry_count(ifd_buf, offset, bigtiff, byte_order)?;
 
         // check if the entire ifd is in memory
-        if u64::try_from(ifd_buf.len()).unwrap()
-            < entry_count * entry_size(bigtiff) + offset_size(bigtiff)
-        {
-            bail!(TiffLoadError::invalid_buffer(
+        ensure!(
+            u64::try_from(ifd_buf.len()).unwrap()
+                >= entry_count * entry_size(bigtiff) + offset_size(bigtiff),
+            invalid_buffer(
                 offset
                     ..offset
                         + entry_count * entry_size(bigtiff)
                         + offset_size(bigtiff)
                         + num_entries_size(bigtiff),
-            ))
-        }
+            )
+        );
         let mut pos = num_entries_size(bigtiff) as usize;
         let mut ifd_data = BTreeMap::new();
         // TODO: this should also load in-range tags, so we should already filter tags based on extensions...
@@ -131,18 +152,14 @@ impl IfdLoader {
             // after this refactor
 
             // tag and tag type in a single array
-            let tag_ttype = TagData::from_buffer(&ifd_buf[pos..], TagType::SHORT, 2, byte_order)
-                .expect("TODO: error handling");
+            let tag_ttype_td = TagData::from_buffer(&ifd_buf[pos..], TagType::SHORT, 2, byte_order)
+                .expect("buffer size checked");
+            let tag_ttype = <&[u16]>::try_from(&tag_ttype_td).expect("values match");
             pos += tag_ttype.as_ref().len(); // 4
                                              // extract tag and tag type from array
-            let tag = Tag::from_u16_exhaustive(<&[u16]>::try_from(&tag_ttype).unwrap()[0]);
-            let tag_type = TagType::from_u16(<&[u16]>::try_from(&tag_ttype).unwrap()[1])
-                .ok_or_raise(|| {
-                    TiffLoadError::permanent(format!(
-                        "invalid tag type {}",
-                        <&[u16]>::try_from(&tag_ttype).unwrap()[1]
-                    ))
-                })?;
+            let tag = Tag::from_u16_exhaustive(tag_ttype[0]);
+            let tag_type = TagType::from_u16(tag_ttype[1])
+                .ok_or_raise(|| permanent(format!("invalid tag type {}", tag_ttype[1])))?;
             // count
             let value_count: u64 =
                 TagData::from_buffer(&ifd_buf[pos..], offset_tag_type(bigtiff), 1, byte_order)
@@ -181,6 +198,13 @@ impl IfdLoader {
             if extension_tags.contains_key(&tag.to_u16()) {
                 // TODO: should this be only on resolved tags, e.g. TagData?
                 // Otherwise, it'd be very very sad with regards to "all places where deferredness lives"
+                // But then again, TiffExtLoaders are there especially for this case...
+                // even though they are thrown out if incomplete when finalizing the ifd...
+                // So that'd kind of mean they'd only have TagData
+                // But that requires some changes with regards to deferred_values_mut...
+                // I think I'd really not like a trait object there
+                // maybe just add a deferred_tags_mut to the TiffExtLoader trait?
+                // Or just tell the ifd: load_tags: BAM
                 extension_loaders[extension_tags[&tag.to_u16()]].insert_tag(tag.to_u16(), entry);
             } else {
                 ifd_data.insert(tag, entry);
