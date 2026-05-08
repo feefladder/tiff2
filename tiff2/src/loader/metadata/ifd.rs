@@ -21,7 +21,11 @@ use crate::ByteOrder;
 pub struct IfdLoader {
     pub bigtiff: bool,
     pub byte_order: ByteOrder,
+    /// Tags that are fully loaded
     pub tags: BTreeMap<Tag, TagData>,
+    /// Tags that aren't loaded yet
+    ///
+    /// They need to be read from the file and converted to TagData
     pub tag_offsets: BTreeMap<Tag, Offset>,
     pub extension_loaders: Vec<Box<dyn TiffExtLoader>>,
     pub extension_tags: BTreeMap<u16, usize>,
@@ -48,10 +52,6 @@ fn permanent(message: String) -> IfdLoadError {
 }
 
 impl IfdLoader {
-    pub fn count(&self) -> usize {
-        self.tags.len() + self.tag_offsets.len() + self.extension_tags.len()
-    }
-
     /// given a buffer holding the count value, get the number of entries
     fn ifd_entry_count(
         buf: &[u8],

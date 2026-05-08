@@ -44,7 +44,7 @@ use bytes::Bytes;
 use derive_more::{Display, Error};
 use exn::{ensure, Result};
 
-use crate::structs::{IfdEntry, TagData, TiffExtError, TiffExtension};
+use crate::structs::{TagData, TiffExtError, TiffExtension};
 
 /// A registry for tiff extensions - on the loader side.
 ///
@@ -173,7 +173,7 @@ pub trait TiffExtLoader: Debug + Any + Send + Sync {
     ///
     /// while !ext_loader.deferred_ranges().is_empty() {
     ///     let data = self.fetch.fetch_ranges(ext_loader.deferred_ranges());
-    ///     ext_loader.load(data).or_raise(|| SomeError);
+    ///     ext_loader.load_ranges(data).or_raise(|| SomeError);
     /// }
     /// ```
     #[allow(unused_variables)]

@@ -110,6 +110,7 @@ pub trait AsyncFetch: Send + Sync {
 pub struct TiffMetaReader<Fetch, Loader> {
     fetch: Fetch,
     loader: Loader,
+    /// The extension registry that loads extensions into loaders
     extension_registry: Arc<TiffExtLoaderRegistry>,
 }
 
@@ -188,6 +189,8 @@ impl<Fetch, Loader: TiffLoader> TiffMetaReader<Fetch, Loader> {
 
 pub struct TiffReader<Fetch> {
     fetch: Fetch,
+    // TODO: should this become a TiffLoader? or even Box<dyn TiffLoader>?
+    // In any case, that'll allow reading
     tiff: Tiff,
     tile_loaders: BTreeMap<u64, TileLoader>,
     decoder_registry: DecoderRegistry,
@@ -284,91 +287,44 @@ impl ReadError {
 
 #[cfg(test)]
 mod test {
+    use std::ops::Deref;
 
     use bytes::Bytes;
+    use exn::Exn;
 
     use super::*;
-    #[rustfmt::skip]
-    fn circular_tiff() -> Bytes {
-        Bytes::from_owner([
-        //    0     1    2  3
-            b'I', b'I',
-            42, 0,// header
-        //  4 5 6 7
-            8,0,0,0,       // first ifd offset, u32
-        //  8 9
-            0,0,           // first ifd entry count, u16
-        //   A B C D
-            14,0,0,0,       // next ifd offset, u32
-            0,0,            // second ifd entry count, u16
-            8,0,0,0         // next ifd offset (points to 0)
-        ])
-    }
 
-    // #[tokio::test]
-    // async fn test_async_copy() {
-    //     // for now everything is infallible
-    //     #[async_trait::async_trait]
-    //     trait AsyncRead {
-    //         async fn read_range(&self, range: Range<u64>) -> Bytes;
-    //         // yeah so I guess this is kind of sad, because we could coalesce_ranges downstream,
-    //         // so I guess just a &[Range<u64>]->&[Bytes] should suffice?
-    //         async fn read_ranges(&self, ranges: &[Range<u64>]) -> impl Iterator<Item = Bytes>;
-    //     }
-    //     async fn async_copy(reader: impl AsyncRead) -> TiffLoadResult<Tiff> {
-    //         let prefetch = reader.read_range(0..1024 * 16).await;
-    //         let mut writer = CogCache::from_header(prefetch).unwrap();
-    //         while match writer.next() {
-    //             // ok to unwrap the downcast_ref because of `writer.next()` return type
-    //             Err(e) => match e.frame().error().downcast_ref::<TiffLoadError>().unwrap() {
-    //                 TiffLoadError {
-    //                     status: ErrorStatus::MissingRange { required },
-    //                     kind: _,
-    //                     message: _,
-    //                 } => {
-    //                     writer.insert(
-    //                         usize::try_from(required.start).unwrap(),
-    //                         reader.read_range(required.clone()).await,
-    //                     );
-    //                     true
-    //                     // so the idea is here that calling `next` which errors doesn't advance the iterator, so calling "next" again will retry
-    //                     // except that it may be the idea to skip ifds
-    //                 }
-    //                 // any other error is bad, why can't I raise without cloning?
-    //                 // ah well, whatevs
-    //                 e => bail!(e.clone()),
-    //             },
-    //             Ok(Some(v)) => true,
-    //             Ok(None) => false,
-    //         } {
-    //             // println!("weee");
-    //         }
-    //         Ok(writer.finish())
-    //     }
-    //     #[async_trait::async_trait]
-    //     impl AsyncRead for Bytes {
-    //         async fn read_range(&self, range: Range<u64>) -> Bytes {
-    //             self.slice(range.start as usize..self.len().min(range.end as usize))
-    //         }
-    //         async fn read_ranges(&self, ranges: &[Range<u64>]) -> impl Iterator<Item = Bytes> {
-    //             ranges
-    //                 .iter()
-    //                 .map(|r| self.slice(r.start as usize..r.end as usize))
-    //         }
-    //     }
-    //     assert_eq!(
-    //         async_copy(circular_tiff())
-    //             .await
-    //             .unwrap_err()
-    //             .frame()
-    //             .error()
-    //             .downcast_ref::<TiffLoadError>()
-    //             .unwrap(),
-    //         &TiffLoadError {
-    //             message: "Cycle in offsets detected at ifd 8".into(),
-    //             status: ErrorStatus::Permanent,
-    //             kind: TiffLoadErrorKind::InvalidTiff
-    //         }
-    //     )
-    // }
+    #[tokio::test]
+    async fn test_circular_tiff() {
+        #[async_trait]
+        impl AsyncFetch for Bytes {
+            async fn fetch_range(&self, range: Range<u64>) -> FetchResult<Bytes> {
+                Ok(self.slice(range.start as usize..self.len().min(range.end as usize)))
+            }
+        }
+        let tiff = Bytes::from_owner([
+            //    0     1    2  3
+            b'I', b'I', 42, 0, // header
+            //  4 5 6 7
+            8, 0, 0, 0, // first ifd offset, u32
+            //  8 9
+            0, 0, // first ifd entry count, u16
+            //   A B C D
+            14, 0, 0, 0, // next ifd offset, u32
+            0, 0, // second ifd entry count, u16
+            8, 0, 0, 0, // next ifd offset (points to 0)
+        ]);
+        let prefetch = tiff.len() as u64;
+        let mut reader = <TiffMetaReader<Bytes, Tiff> as AsyncMetaReader<Bytes, Tiff>>::open(
+            tiff,
+            prefetch,
+            Arc::new(Vec::new().into()),
+        )
+        .await
+        .unwrap();
+        for _ in 0..1 {
+            assert!(reader.next().await.unwrap().is_some())
+        }
+        assert_eq!(&reader.next().await.unwrap_err().to_string(), &"hello")
+    }
 }

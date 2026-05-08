@@ -63,6 +63,7 @@ pub type TiffLoadResult<T> = exn::Result<T, TiffLoadError>;
 pub trait TiffLoader: Sized + Send + Sync {
     /// Create this loader from a buffer containing at least the header
     ///
+    /// This works on `bytes::Bytes` because then a caching layer can make a cheap clone
     fn from_header(buf: Bytes) -> TiffLoadResult<TiffLoadResponse<Self>>;
 
     /// get a mutable reference to the underlying tiff

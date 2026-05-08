@@ -62,7 +62,7 @@ impl IfdSaver {
 
     /// Write tag data for the given tag into the provided buffer
     ///
-    /// This removes the tag from the internal to_save list
+    /// This removes the tag from the internal `to_save` list and adds it to `writeable`
     pub(crate) fn save_tag_data(
         &mut self,
         buf: &mut [u8],
@@ -123,10 +123,20 @@ impl IfdSaver {
 
     /// Create this IfdSaver from an IFD
     ///
-    /// This is mainly used for round-tripping read-write
+    /// This assumes the offsets in the ifd are already written to the file.
+    ///
+    /// This is mainly used when the tiff is the source-of-truth for saving tiffs
+    /// which may not be that bad after all?
+    ///
+    /// Just need some nice-ish api to construct a tiff out of thin air
     pub fn from_ifd(ifd: Ifd, offset: u64, bigtiff: bool, byte_order: ByteOrder) -> Self {
-        assert!(ifd.tag_offsets.is_empty());
-        let mut writeable = BTreeMap::new();
+        let mut writeable: BTreeMap<Tag, IfdEntry> = ifd
+            .tag_offsets
+            .into_iter()
+            // TODO: here it's possible that the ifd contains a bad offset, but
+            // that'll be caught at writing time
+            .map(|(t, o)| (t, IfdEntry::Offset(o)))
+            .collect();
         let mut to_save = BTreeMap::new();
         for (tag, tag_data) in ifd.tags.into_iter() {
             // If the tag is larger than the offset field, it needs to be
