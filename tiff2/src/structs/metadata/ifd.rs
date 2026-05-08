@@ -78,9 +78,12 @@ pub(crate) const fn offset_tag_type(bigtiff: bool) -> TagType {
 #[non_exhaustive]
 pub struct Ifd {
     // TODO: should an Ifd know its offset?
+    // I think not, since it should be in a tiff and the tiff knows its offset
     /// Tags loaded into this ifd
     pub tags: BTreeMap<Tag, TagData>,
     /// Tags not loaded, but stored as offsets
+    // TODO: I'm conflicted about having tag offsets here, ideally an IFD should be fully loaded
+    // I'll keep it here for now, but ideally there'd be a nice way to ??keep IfdLoaders around while also loading tiles??
     pub tag_offsets: BTreeMap<Tag, Offset>,
     /// Tags parsed as an extensions
     pub extensions: Vec<Box<dyn TiffExtension>>,
@@ -92,7 +95,7 @@ pub struct Ifd {
 impl Ifd {
     /// The number of entries in this ifd
     pub fn count(&self) -> usize {
-        self.tags.len() + self.tag_offsets.len()
+        self.tags.len() + self.tag_offsets.len() + self.ext_tag_idx.len()
     }
 
     pub(crate) fn from_tags(data: BTreeMap<Tag, IfdEntry>) -> Self {
@@ -167,7 +170,7 @@ impl Ifd {
     pub(crate) fn contains_tag(&self, tag: &Tag) -> bool {
         self.tags.contains_key(tag)
             || self.tag_offsets.contains_key(tag)
-            || self.ext_tag_idx.contains_key(tag)
+            || self.ext_tag_idx.contains_key(&tag.to_u16())
     }
 
     // /// get a tag, returning error if not loaded, Ok(None) if not present

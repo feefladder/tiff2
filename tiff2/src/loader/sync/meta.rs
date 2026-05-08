@@ -176,11 +176,17 @@ impl<'a, Fetch: SyncFetch> SyncIfdReader<'a, Fetch> for TiffIfdReader<'a, Fetch>
             .fetch
             .fetch_ranges(&ranges)
             .or_raise(|| IfdReadError(format!("Could not fill deferred values of ifd")))?;
-        let byte_order = self.ifd_loader.byte_order;
-        for ((tag, entry), buf) in self.ifd_loader.deferred_values_mut().zip(data) {
-            entry
-                .load(&buf, byte_order)
-                .or_raise(|| IfdReadError(format!("could not read entry for tag {tag:?}")))?;
+
+        for (tag, buf) in self
+            .ifd_loader
+            .deferred_tags()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .zip(data)
+        {
+            self.ifd_loader
+                .load_tag_data(&buf, tag)
+                .or_raise(|| IfdReadError(format!("Failed to fill tag {tag:?} into ifd")))?;
         }
         Ok(())
     }

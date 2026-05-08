@@ -94,25 +94,16 @@ impl<Loader: TiffLoader> TiffLoader for CogCache<Loader> {
                 let mut deferred_tags = Vec::new();
 
                 // try to get all values from the cache
-                for (t, entry) in ifd_loader.deferred_values_mut() {
-                    let IfdEntry::Offset(o) = entry else {
-                        unreachable!()
-                    };
-                    if let Some(data) = self.slice(o.range().clone()) {
-                        *entry = IfdEntry::Value(
-                            TagData::from_buffer(
-                                &data,
-                                o.tag_type,
-                                o.count as usize,
-                                self.loader.tiff().byte_order,
-                            )
-                            .unwrap(),
-                        )
+                for (tag, range) in ifd_loader.to_load().collect::<Vec<_>>() {
+                    if let Some(buf) = self.slice(range.clone()) {
+                        ifd_loader.load_tag_data(&buf, tag).or_raise(|| {
+                            TiffLoadError::permanent("Failed to fill ifd from cache".to_string())
+                        })?;
                     } else {
                         // insert magic caching/filtering strategies here
                         // For now, we just error at the end with all deferred values
-                        missing_ranges.push(o.range());
-                        deferred_tags.push(*t);
+                        missing_ranges.push(range);
+                        deferred_tags.push(tag);
                     }
                 }
                 // FIXME: this is bad on skipping behaviour, because we can't recover from the error
@@ -156,16 +147,10 @@ impl<Loader: TiffLoader> TiffLoader for CogCache<Loader> {
 
         // try to get all values from the cache
         let bo = ifd_loader.byte_order;
-        for (_t, entry) in ifd_loader.deferred_values_mut() {
-            let range = {
-                let IfdEntry::Offset(o) = entry else {
-                    unreachable!()
-                };
-                o.range()
-            };
-            if let Some(d) = self.slice(range) {
-                entry.load(&d, bo).or_raise(|| {
-                    TiffLoadError::permanent("Could not load entry for ifd".to_string())
+        for (tag, range) in ifd_loader.to_load().collect::<Vec<_>>() {
+            if let Some(buf) = self.slice(range.clone()) {
+                ifd_loader.load_tag_data(&buf, tag).or_raise(|| {
+                    TiffLoadError::permanent("Failed to fill ifd from cache".to_string())
                 })?;
             }
         }

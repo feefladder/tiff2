@@ -7,6 +7,11 @@ pub use entry::{CastError, CastErrorKind};
 mod ifd;
 pub use ifd::{IfdError, IfdErrorKind};
 
+/// The string to `.expect` with if `TagData::from/to_buffer` is infallible
+pub const BUF_CHECK: &str = "buffer checked";
+/// The string to `.expect` with if `TagData` casts are infallible
+pub const VMATCH: &str = "values match";
+
 /// The error status.
 ///
 /// This is a coarse-grained "Can I retry" flag.

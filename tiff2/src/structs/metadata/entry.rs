@@ -225,7 +225,7 @@ impl TagData {
         buffer: &mut [u8],
         byte_order: ByteOrder,
     ) -> exn::Result<usize, CastError> {
-        let req_len = self.as_ref().len();
+        let req_len = self.blen();
         ensure!(
             req_len <= buffer.len(),
             CastError::invalid_buffer(buffer.len(), req_len)
@@ -271,6 +271,13 @@ impl TagData {
             Self::Rational (v) => v.len(),
             Self::SRational(v) => v.len(),
         }
+    }
+
+    /// The length in number of bytes
+    #[inline]
+    pub fn blen(&self) -> usize {
+        let su8: &[u8] = self.as_ref();
+        su8.len()
     }
 
     pub fn is_empty(&self) -> bool {

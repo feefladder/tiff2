@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::num::TryFromIntError;
 use std::ops::Range;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -14,6 +15,7 @@ use tiff2::loader::{
     AsyncFetch, AsyncMetaReader, AsyncReader, DecoderRegistry, FetchError, FetchResult,
     TiffMetaReader,
 };
+use tiff2::structs::Tiff;
 use tokio::time::sleep;
 
 #[derive(Debug, Clone)]
@@ -123,8 +125,8 @@ async fn main() -> Result<(), exn::Exn<AppError>> {
     let cog_client = ReqwestFetch::new(href);
 
     let start = Instant::now();
-    let mut meta_reader: TiffMetaReader<ReqwestFetch, CogCache> =
-        AsyncMetaReader::open(cog_client, 16 * 1024)
+    let mut meta_reader: TiffMetaReader<ReqwestFetch, CogCache<Tiff>> =
+        AsyncMetaReader::open(cog_client, 16 * 1024, Arc::new(Vec::new().into()))
             .await
             .or_raise(|| AppError)?;
     // meta_reader.next().await.or_raise(|| AppError)?;

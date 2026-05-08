@@ -214,11 +214,15 @@ impl TiffLoader for Tiff {
             extension_registry,
         ) {
             Ok(loader) => loader,
-            Err(e) => match e {
-                IfdLoadError::InvalidBuffer { required } => {
-                    return IfdLoadResponse::NeedData(required)
+            Err(e) => {
+                if let IfdLoadError::InvalidBuffer { required } = e.deref() {
+                    return Ok(IfdLoadResponse::NeedData(required.clone()));
+                } else {
+                    bail!(e.raise(TiffLoadError::permanent(
+                        "Could not create loader".to_string()
+                    )));
                 }
-            },
+            }
         };
         if self
             .ifd_offsets
@@ -245,19 +249,11 @@ impl TiffLoader for Tiff {
     ) -> TiffLoadResult<IfdLoadResponse> {
         // directly try to fill from ifd
         // hmmm not super sure if this is nice though, maybe I'll keep Tiff dumb
-        let bo = loader.byte_order;
-        for (_tag, entry) in loader.deferred_values_mut() {
-            let range = {
-                let IfdEntry::Offset(o) = entry else {
-                    unreachable!()
-                };
-                o.range()
-            };
-
+        for (tag, range) in loader.to_load().collect::<Vec<_>>() {
             if let Some(idx) = ranges.iter().position(|r| r == &range) {
-                entry.load(&data[idx], bo).or_raise(|| {
+                loader.load_tag_data(&data[idx], tag).or_raise(|| {
                     TiffLoadError::permanent("Could not add data to ifd".to_string())
-                })?
+                })?;
             }
         }
 

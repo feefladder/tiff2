@@ -1,8 +1,10 @@
-use exn::ResultExt;
+use exn::{ensure, ResultExt};
 use smallvec::smallvec;
 
 use crate::saver::metadata::error::SaverError;
 use crate::saver::metadata::ifd::IfdSaver;
+use crate::structs::error::BUF_CHECK;
+use crate::structs::tiff::header_size;
 use crate::structs::{TagData, Tiff};
 use crate::ByteOrder;
 
@@ -15,6 +17,13 @@ pub type SaverResult<T> = exn::Result<T, error::SaverError>;
 impl Tiff {
     fn write_header(&self, buf: &mut [u8], first_ifd_offset: u64) -> SaverResult<usize> {
         // TODO: check buffer length
+        ensure!(
+            buf.len() >= header_size(self.bigtiff) as usize,
+            SaverError::invalid_buffer(
+                header_size(self.bigtiff),
+                "Could not write header".to_string()
+            )
+        );
         buf[0..2].copy_from_slice(match self.byte_order {
             ByteOrder::LittleEndian => b"II",
             ByteOrder::BigEndian => b"MM",
@@ -25,7 +34,8 @@ impl Tiff {
         } else {
             smallvec![42]
         })
-        .to_buffer(&mut buf[offset..], self.byte_order);
+        .to_buffer(&mut buf[offset..], self.byte_order)
+        .expect(BUF_CHECK);
         offset += if self.bigtiff {
             TagData::Long8(smallvec![first_ifd_offset])
         } else {
@@ -37,7 +47,8 @@ impl Tiff {
                 }
             )?])
         }
-        .to_buffer(&mut buf[offset..], self.byte_order);
+        .to_buffer(&mut buf[offset..], self.byte_order)
+        .expect(BUF_CHECK);
         Ok(offset)
     }
 
@@ -54,6 +65,7 @@ impl Tiff {
 #[cfg(test)]
 mod test {
     use std::collections::{BTreeMap, HashMap};
+    use std::default;
     use std::sync::Arc;
 
     use bytes::Bytes;
@@ -164,43 +176,23 @@ mod test {
             ifds: BTreeMap::from([(
                 header_size(false),
                 Ifd {
-                    data: BTreeMap::from([
-                        (
-                            Tag::ImageWidth,
-                            IfdEntry::Value(TagData::Short(smallvec![42])),
-                        ),
-                        (
-                            Tag::ImageLength,
-                            IfdEntry::Value(TagData::Short(smallvec![42])),
-                        ),
+                    tags: BTreeMap::from([
+                        (Tag::ImageWidth, TagData::Short(smallvec![42])),
+                        (Tag::ImageLength, TagData::Short(smallvec![42])),
                         (
                             Tag::PhotometricInterpretation,
-                            IfdEntry::Value(TagData::Short(smallvec![
+                            TagData::Short(smallvec![
                                 PhotometricInterpretation::BlackIsZero.to_u16()
-                            ])),
+                            ]),
                         ),
-                        (
-                            Tag::SamplesPerPixel,
-                            IfdEntry::Value(TagData::Short(smallvec![1])),
-                        ),
+                        (Tag::SamplesPerPixel, TagData::Short(smallvec![1])),
                         (
                             Tag::Compression,
-                            IfdEntry::Value(TagData::Short(smallvec![
-                                CompressionMethod::None.to_u16()
-                            ])),
+                            TagData::Short(smallvec![CompressionMethod::None.to_u16()]),
                         ),
-                        (
-                            Tag::TileWidth,
-                            IfdEntry::Value(TagData::Short(smallvec![8])),
-                        ),
-                        (
-                            Tag::TileLength,
-                            IfdEntry::Value(TagData::SByte(smallvec![8])),
-                        ),
-                        (
-                            Tag::TileByteCounts,
-                            IfdEntry::Value(TagData::Short(smallvec![8*8;6*6])),
-                        ), // So at this point everything breaks down a bit...
+                        (Tag::TileWidth, TagData::Short(smallvec![8])),
+                        (Tag::TileLength, TagData::SByte(smallvec![8])),
+                        (Tag::TileByteCounts, TagData::Short(smallvec![8*8;6*6])), // So at this point everything breaks down a bit...
                         // Ideally, there'd be some sort of TiffBuilder struct or something
                         // Anyways, this here is not really the way to do stuff?
                         // I mean, what should TileOffsets be? At this point we don't really know that...
@@ -211,11 +203,12 @@ mod test {
                         (
                             Tag::TileOffsets,
                             // all tiles point to the same in-file location
-                            IfdEntry::Value(TagData::Long(
+                            TagData::Long(
                                 smallvec![u32::try_from(header_size(false) + num_entries_size(false) + entry_size(false) * 9 + offset_size(false) + 6*6*(2+4)).unwrap();6*6],
-                            )),
+                            ),
                         ),
                     ]),
+                    ..Default::default()
                 },
             )]),
             ifd_offsets: vec![header_size(false), 0],
@@ -242,22 +235,11 @@ mod test {
         //
         // So now we just do the really ugly thing of making all tiles point to the same place in the file...
         offset += saver.required_len() as usize;
-        for (tag, tag_data) in saver.to_do_mut() {
+        for (tag, tag_data) in saver.to_save().collect::<Vec<_>>() {
             println!("{tag_data:?}");
-            let o;
-            {
-                let IfdEntry::Value(v) = tag_data else {
-                    unreachable!()
-                };
-                o = Offset {
-                    tag_type: v.tag_type(),
-                    count: v.len() as u64,
-                    offset: offset as u64,
-                };
-                offset += v.to_buffer(&mut out[offset..], tiff.byte_order);
-            }
-            println!("{o:?}:{out:?}");
-            *tag_data = IfdEntry::Offset(o);
+            offset += saver
+                .save_tag_data(&mut out[offset..], tag, offset)
+                .unwrap();
         }
         saver
             .write(&mut out[header_size(false) as usize..], 0)
@@ -280,22 +262,10 @@ mod test {
             panic!("bare tiff should return partial for ifdloadresponse with deferred tags")
         };
         assert!(needed_data.is_empty());
-        for (_t, o) in read_ifd.deferred_values_mut() {
-            let v;
-            {
-                let IfdEntry::Offset(o) = o else {
-                    unreachable!()
-                };
-                let r = o.range();
-                v = TagData::from_buffer(
-                    &f[r.start as _..r.end as _],
-                    o.tag_type,
-                    o.count as _,
-                    read.byte_order,
-                )
+        for (t, r) in read_ifd.to_load().collect::<Vec<_>>() {
+            read_ifd
+                .load_tag_data(&f[r.start as _..r.end as _], t)
                 .unwrap();
-            }
-            *o = IfdEntry::Value(v);
         }
         read.insert_ifd(
             read.next_ifd_offset().unwrap(),
@@ -303,12 +273,8 @@ mod test {
             read_ifd.finish(),
         );
         assert_eq!(read, tiff);
-        let IfdEntry::Value(tbyte_counts) = &read.ifd(0).data[&Tag::TileByteCounts] else {
-            unreachable!()
-        };
-        let IfdEntry::Value(toffsets) = &read.ifd(0).data[&Tag::TileOffsets] else {
-            unreachable!()
-        };
+        let tbyte_counts = &read.ifd(0).tags[&Tag::TileByteCounts];
+        let toffsets = &read.ifd(0).tags[&Tag::TileOffsets];
         for tile_idx in 0..6 * 6 {
             let l = <&[u16]>::try_from(tbyte_counts).unwrap()[tile_idx];
             let r = <&[u32]>::try_from(toffsets).unwrap()[tile_idx];

@@ -28,6 +28,11 @@ pub enum ByteOrder {
     LittleEndian,
 }
 
+impl Default for ByteOrder {
+    fn default() -> Self {
+        NATIVE_ENDIAN
+    }
+}
 #[cfg(target_endian = "big")]
 pub const NATIVE_ENDIAN: ByteOrder = ByteOrder::BigEndian;
 #[cfg(target_endian = "little")]
