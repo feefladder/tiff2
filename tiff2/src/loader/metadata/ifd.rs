@@ -335,7 +335,7 @@ impl IfdLoader {
     }
 
     pub(crate) fn to_response(self) -> IfdLoadResponse {
-        if self.deferred_ranges().peekable().peek().is_none() {
+        if self.to_load().peekable().peek().is_none() {
             IfdLoadResponse::Complete {
                 next_ifd_offset: self.next_ifd_offset.unwrap(),
                 ifd: self.finish(),

@@ -15,7 +15,7 @@
 //! `async` layer and non-locking decoding. The `Reader` acts as a slightly
 //! fancier [`std::io::Copy`] implementation.
 //!
-//! ```
+//! ```text
 //!               Reader
 //!           +----/  \--------------+
 //! interwebs---Fetch Loader-..-Tiff |
@@ -66,8 +66,8 @@ use crate::structs::{Ifd, Tiff, TileCoord, TileData, TileOpts};
 
 pub(crate) mod metadata;
 pub use metadata::{
-    cache, CacheMiss, IfdLoader, TiffExtLoader, TiffExtLoaderFactory, TiffExtLoaderRegistry,
-    TiffLoadError, TiffLoadResult, TiffLoader,
+    cache, CacheMiss, DuplicateError, IfdLoader, TiffExtLoader, TiffExtLoaderFactory,
+    TiffExtLoaderRegistry, TiffLoadError, TiffLoadResult, TiffLoader,
 };
 #[cfg(feature = "async")]
 mod r#async;

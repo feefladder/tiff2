@@ -3,9 +3,9 @@ use std::fmt::Display;
 use crate::structs::Tag;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct SaverError {
+pub struct TiffSaveError {
     pub status: SaverErrorStatus,
-    pub kind: SaverErrorKind,
+    pub kind: TiffSaveErrorKind,
     pub message: String,
 }
 
@@ -16,18 +16,16 @@ pub enum SaverErrorStatus {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum SaverErrorKind {
+pub enum TiffSaveErrorKind {
     /// A number did not fit in the smalltiff format
     NeedBigTiff,
     /// Some data provided gave an irreversible error
     InvalidData,
     /// The provided buffer for an operation was invalid
-    InvalidBuffer {
-        required_len: u64,
-    },
-    IncompleteIfd {
-        missing_tags: Vec<Tag>,
-    },
+    InvalidBuffer { required_len: u64 },
+    /// An Ifd was not completely written yet, while you attempted to write it
+    // TODO: remove, this is not an error, but part of the response
+    IncompleteIfd { missing_tags: Vec<Tag> },
     /// Everything went well, but more writing space is needed.
     ///
     /// A middleware should intercept non-fatal errors to become this error
@@ -36,11 +34,11 @@ pub enum SaverErrorKind {
     NeedMoreSpace,
 }
 
-impl SaverError {
+impl TiffSaveError {
     pub(crate) fn permanent(message: String) -> Self {
         Self {
             status: SaverErrorStatus::Permanent,
-            kind: SaverErrorKind::InvalidData,
+            kind: TiffSaveErrorKind::InvalidData,
             message,
         }
     }
@@ -48,7 +46,7 @@ impl SaverError {
     pub(crate) fn need_bigtiff(message: String) -> Self {
         Self {
             status: SaverErrorStatus::Permanent,
-            kind: SaverErrorKind::NeedBigTiff,
+            kind: TiffSaveErrorKind::NeedBigTiff,
             message,
         }
     }
@@ -56,7 +54,7 @@ impl SaverError {
     pub(crate) fn invalid_buffer(required_len: u64, message: String) -> Self {
         Self {
             status: SaverErrorStatus::EasyFix,
-            kind: SaverErrorKind::InvalidBuffer { required_len },
+            kind: TiffSaveErrorKind::InvalidBuffer { required_len },
             message,
         }
     }
@@ -65,19 +63,19 @@ impl SaverError {
         Self {
             status: SaverErrorStatus::EasyFix,
             message,
-            kind: SaverErrorKind::IncompleteIfd {
+            kind: TiffSaveErrorKind::IncompleteIfd {
                 missing_tags: todo_tags.collect(),
             },
         }
     }
 }
 
-impl Display for SaverError {
+impl Display for TiffSaveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}: {}", self.status, self.message)
     }
 }
-impl std::error::Error for SaverError {}
+impl std::error::Error for TiffSaveError {}
 
 impl Display for SaverErrorStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

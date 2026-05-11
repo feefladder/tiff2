@@ -8,9 +8,11 @@ mod ifd;
 pub use ifd::{IfdError, IfdErrorKind};
 
 /// The string to `.expect` with if `TagData::from/to_buffer` is infallible
-pub const BUF_CHECK: &str = "buffer checked";
+pub const BUF_CHECK: &str = "buffer was checked, if you encounter this, please open a tiff2 issue";
 /// The string to `.expect` with if `TagData` casts are infallible
-pub const VMATCH: &str = "values match";
+pub const VMATCH: &str =
+    "checked that values match, if you encounter this, please open a tiff2 issue";
+pub const USIZE64: &str = "This crate only supports 32 and 64 bit pointer widths";
 
 /// The error status.
 ///

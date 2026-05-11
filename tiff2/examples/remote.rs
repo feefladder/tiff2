@@ -18,91 +18,6 @@ use tiff2::loader::{
 use tiff2::structs::Tiff;
 use tokio::time::sleep;
 
-#[derive(Debug, Clone)]
-struct ReqwestFetch {
-    client: reqwest::Client,
-    url: String,
-}
-
-impl ReqwestFetch {
-    fn new(url: &str) -> Self {
-        ReqwestFetch {
-            client: reqwest::Client::new(),
-            url: url.to_string(),
-        }
-    }
-}
-
-async fn fetch_with_retry(
-    client: &reqwest::Client,
-    url: &str,
-    range: &std::ops::Range<u64>,
-    max_retries: usize,
-) -> FetchResult<bytes::Bytes> {
-    let mut attempts = 0;
-
-    loop {
-        let response = client
-            .get(url)
-            .header(RANGE, format!("bytes={}-{}", range.start, range.end - 1))
-            .send()
-            .await;
-
-        match response {
-            Ok(resp) if resp.status().is_success() => {
-                return resp
-                    .bytes()
-                    .await
-                    .or_raise(|| FetchError("Invalid response".into()))
-            }
-            Ok(resp) if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS => {
-                ensure!(
-                    attempts > max_retries,
-                    FetchError(format!("request limit {max_retries} exceeded"))
-                );
-                // Exponential backoff
-                let retry_after = resp
-                    .headers()
-                    .get("Retry-After")
-                    .and_then(|h| h.to_str().ok())
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .map(Duration::from_secs)
-                    .unwrap_or_else(|| Duration::from_secs(1 << attempts));
-
-                attempts += 1;
-                sleep(retry_after).await;
-            }
-            Err(e) => bail!(e.raise().raise(FetchError("Transport error".into()))),
-            Ok(r) => {
-                // Handle other HTTP errors
-                bail!(r
-                    .error_for_status()
-                    .unwrap_err()
-                    .raise()
-                    .raise(FetchError(format!("Http error on attempt {attempts}"))))
-            }
-        }
-    }
-}
-
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-impl AsyncFetch for ReqwestFetch {
-    async fn fetch_range(&self, range: Range<u64>) -> FetchResult<Bytes> {
-        let start = Instant::now();
-        println!("fetching {range:?}");
-        let res = fetch_with_retry(&self.client, &self.url, &range, 10).await;
-        println!("fetch took {:?}", start.elapsed());
-        res
-    }
-
-    async fn fetch_ranges(&self, ranges: &[Range<u64>]) -> FetchResult<Vec<Bytes>> {
-        return coalesce_ranges(ranges, |r| self.fetch_range(r), 1024)
-            .await
-            .or_raise(|| FetchError(format!("help")));
-    }
-}
-
 #[derive(Debug, Display, Clone, PartialEq)]
 #[display("app failed")]
 struct AppError;
@@ -182,6 +97,8 @@ async fn main() -> Result<(), exn::Exn<AppError>> {
     );
     // merge all tiles into one huge tiff?
 
+    // TODO: show images in-terminal with viuer?
+    // Or make a Ratatui interface at some point
     // let img = &decoder.images[&decoder.ifd_offsets()[ifd_idx]];
     // let img_buf = reader
     //     .decode_image(ifd_idx)
@@ -312,3 +229,88 @@ pub const OBJECT_STORE_COALESCE_DEFAULT: u64 = 1024 * 1024;
 
 /// Up to this number of range requests will be performed in parallel by [`coalesce_ranges`]
 pub(crate) const OBJECT_STORE_COALESCE_PARALLEL: usize = 10;
+
+#[derive(Debug, Clone)]
+struct ReqwestFetch {
+    client: reqwest::Client,
+    url: String,
+}
+
+impl ReqwestFetch {
+    fn new(url: &str) -> Self {
+        ReqwestFetch {
+            client: reqwest::Client::new(),
+            url: url.to_string(),
+        }
+    }
+}
+
+async fn fetch_with_retry(
+    client: &reqwest::Client,
+    url: &str,
+    range: &std::ops::Range<u64>,
+    max_retries: usize,
+) -> FetchResult<bytes::Bytes> {
+    let mut attempts = 0;
+
+    loop {
+        let response = client
+            .get(url)
+            .header(RANGE, format!("bytes={}-{}", range.start, range.end - 1))
+            .send()
+            .await;
+
+        match response {
+            Ok(resp) if resp.status().is_success() => {
+                return resp
+                    .bytes()
+                    .await
+                    .or_raise(|| FetchError("Invalid response".into()))
+            }
+            Ok(resp) if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS => {
+                ensure!(
+                    attempts > max_retries,
+                    FetchError(format!("request limit {max_retries} exceeded"))
+                );
+                // Exponential backoff
+                let retry_after = resp
+                    .headers()
+                    .get("Retry-After")
+                    .and_then(|h| h.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .map(Duration::from_secs)
+                    .unwrap_or_else(|| Duration::from_secs(1 << attempts));
+
+                attempts += 1;
+                sleep(retry_after).await;
+            }
+            Err(e) => bail!(e.raise().raise(FetchError("Transport error".into()))),
+            Ok(r) => {
+                // Handle other HTTP errors
+                bail!(r
+                    .error_for_status()
+                    .unwrap_err()
+                    .raise()
+                    .raise(FetchError(format!("Http error on attempt {attempts}"))))
+            }
+        }
+    }
+}
+
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+impl AsyncFetch for ReqwestFetch {
+    async fn fetch_range(&self, range: Range<u64>) -> FetchResult<Bytes> {
+        let start = Instant::now();
+        println!("fetching {range:?}");
+        let res = fetch_with_retry(&self.client, &self.url, &range, 10).await;
+        println!("fetch took {:?}", start.elapsed());
+        res
+    }
+
+    async fn fetch_ranges(&self, ranges: &[Range<u64>]) -> FetchResult<Vec<Bytes>> {
+        return coalesce_ranges(ranges, |r| self.fetch_range(r), 1024)
+            .await
+            .or_raise(|| FetchError(format!("help")));
+    }
+}

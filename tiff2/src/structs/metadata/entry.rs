@@ -219,6 +219,11 @@ impl TagData {
         Ok(e)
     }
 
+    /// Write this data to the underlying buffer
+    ///
+    /// returns the number of bytes written
+    ///
+    /// Errors if the provided buffer is too small
     #[inline]
     pub fn to_buffer(
         &self,

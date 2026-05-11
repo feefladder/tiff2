@@ -18,7 +18,7 @@ pub use error::{CacheMiss, TiffLoadError};
 mod ifd;
 pub use ifd::IfdLoader;
 mod extension;
-pub use extension::{TiffExtLoader, TiffExtLoaderFactory, TiffExtLoaderRegistry};
+pub use extension::{DuplicateError, TiffExtLoader, TiffExtLoaderFactory, TiffExtLoaderRegistry};
 
 pub type TiffLoadResult<T> = exn::Result<T, TiffLoadError>;
 
@@ -66,7 +66,7 @@ pub trait TiffLoader: Sized + Send + Sync {
     /// This works on `bytes::Bytes` because then a caching layer can make a cheap clone
     fn from_header(buf: Bytes) -> TiffLoadResult<TiffLoadResponse<Self>>;
 
-    /// get a mutable reference to the underlying tiff
+    /// Get a mutable reference to the underlying tiff
     fn tiff_mut(&mut self) -> &mut Tiff;
 
     /// Get an immutable reference to the underlying tiff
@@ -74,6 +74,9 @@ pub trait TiffLoader: Sized + Send + Sync {
 
     /// Get the IfdLoader for the given offset
     ///
+    /// This takes `&mut` self to allow for caching buffers. It should not
+    /// change Tiff state. In other words: Creating an IfdLoader does not load
+    /// anything or remove the Ifd.
     fn ifd_loader(
         &mut self,
         buf: Bytes,

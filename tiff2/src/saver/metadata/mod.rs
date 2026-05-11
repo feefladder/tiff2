@@ -1,29 +1,123 @@
-use exn::{ensure, ResultExt};
+use std::ops::Range;
+use std::sync::Arc;
+
+use exn::{ensure, OptionExt, ResultExt};
 use smallvec::smallvec;
 
-use crate::saver::metadata::error::SaverError;
-use crate::saver::metadata::ifd::IfdSaver;
 use crate::structs::error::BUF_CHECK;
 use crate::structs::tiff::header_size;
 use crate::structs::{TagData, Tiff};
 use crate::ByteOrder;
 
 pub mod error;
+use error::TiffSaveError;
 mod extension;
+pub use extension::TiffExtSaverRegistry;
 mod ifd;
+pub use ifd::IfdSaver;
+mod planner;
 
-pub type SaverResult<T> = exn::Result<T, error::SaverError>;
+pub type TiffSaveResult<T> = exn::Result<T, error::TiffSaveError>;
 
-impl Tiff {
-    fn write_header(&self, buf: &mut [u8], first_ifd_offset: u64) -> SaverResult<usize> {
-        // TODO: check buffer length
+#[derive(Debug, Clone, PartialEq)]
+pub enum TiffSaveResponse {
+    /// The tiff does not contains any IFDs, so it can't write the header yet
+    NeedIfd,
+    /// Header of n bytes written
+    Done(usize),
+}
+
+impl TiffSaveResponse {
+    fn unwrap(self) -> usize {
+        match self {
+            Self::Done(v) => v,
+            other => panic!("Called Unwrap on a not-Done TiffSaveResponse {other:?}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum IfdSaveResponse {
+    NeedBuffer(Range<u64>),
+    Partial {
+        ifd_saver: IfdSaver,
+        needed_buffers: Vec<usize>,
+    },
+    Complete,
+}
+
+/// Trait for all Saver types to implement
+///
+/// This is a lower-lever API where special planners can be implemented (such as COG).
+/// For extension tags or adding metadata, creating an [`ExtensionSaver`] may be the better option.
+pub trait TiffSaver: Sized + Send + Sync {
+    /// Write the header of the tiff file to the provided buffer
+    ///
+    /// It will point the ifd to the first ifd in the tiff
+    fn save_header(&mut self, buf: &mut [u8]) -> TiffSaveResult<TiffSaveResponse>;
+
+    /// Get a mutable reference to the underlying tiff
+    fn tiff_mut(&mut self) -> &mut Tiff;
+
+    /// Get an immutable reference to the underlying tiff
+    fn tiff(&self) -> &Tiff;
+
+    /// Get the ifd saver
+    // shenanigans wrt wtf this actually means...I mean: we can have a saver
+    // without having saved any tiles right? the loader gets it from an offset,
+    // so maybe we want to get it from an offset here as well? The tiff should
+    // know ifd offsets right? I sure think so? or since it implements
+    // TiffSaver, it should be this -at-least-capable-of-if-inefficient-at- TiffSaver
+    // But that would also mean...
+    // idk what that means, something with it being nice that Ifd can also store offset values
+    // and that's I guess the right place for a KISS implementation
+    //
+    // So the thing is: Work on Tiff until the locations of ifds is known.
+    // Then create IfdSavers and write them. It may also be needed to change the ifd location
+    // I guess at that point... Somethingsomething planner something
+    //
+    // or not? like howto ghost area and such?
+    // actually, it's perfectly fine to re-create IfdSavers every now and then
+    //
+    /// Takes a `&mut self` to allow planners to change state. This should not
+    /// change the tiff. In other words: Creating an IfdSaver does not save
+    /// anything yet or remove the Ifd.
+    fn ifd_saver(
+        &mut self,
+        ifd_offset: u64,
+        extension_registry: Arc<TiffExtSaverRegistry>,
+    ) -> TiffSaveResult<IfdSaveResponse>;
+
+    /// TODO: I don't know what this will do yet, it's mainly there for symmetry with the loading side now
+    fn resume_saver(
+        &mut self,
+        ranges: Vec<Range<u64>>,
+        buffers: Vec<&mut [u8]>,
+        saver: IfdSaver,
+    ) -> TiffSaveResult<IfdSaveResponse>;
+}
+
+impl TiffSaver for Tiff {
+    fn tiff(&self) -> &Tiff {
+        self
+    }
+    fn tiff_mut(&mut self) -> &mut Tiff {
+        self
+    }
+    fn save_header(&mut self, buf: &mut [u8]) -> TiffSaveResult<TiffSaveResponse> {
+        // Please pass in correct buffers to this function
+        // You should kind of be knowing what you're doing?
         ensure!(
             buf.len() >= header_size(self.bigtiff) as usize,
-            SaverError::invalid_buffer(
+            TiffSaveError::invalid_buffer(
                 header_size(self.bigtiff),
                 "Could not write header".to_string()
             )
         );
+        // That we do not have an IFD is somewhat expected if we are building an
+        let Some(first_ifd_offset) = self.ifd_offsets.get(0) else {
+            return Ok(TiffSaveResponse::NeedIfd);
+        };
         buf[0..2].copy_from_slice(match self.byte_order {
             ByteOrder::LittleEndian => b"II",
             ByteOrder::BigEndian => b"MM",
@@ -37,11 +131,11 @@ impl Tiff {
         .to_buffer(&mut buf[offset..], self.byte_order)
         .expect(BUF_CHECK);
         offset += if self.bigtiff {
-            TagData::Long8(smallvec![first_ifd_offset])
+            TagData::Long8(smallvec![*first_ifd_offset])
         } else {
-            TagData::Long(smallvec![u32::try_from(first_ifd_offset).or_raise(
+            TagData::Long(smallvec![u32::try_from(*first_ifd_offset).or_raise(
                 || {
-                    SaverError::need_bigtiff(format!(
+                    TiffSaveError::need_bigtiff(format!(
                         "first ifd offset {first_ifd_offset} overflows u32"
                     ))
                 }
@@ -49,23 +143,61 @@ impl Tiff {
         }
         .to_buffer(&mut buf[offset..], self.byte_order)
         .expect(BUF_CHECK);
-        Ok(offset)
+        Ok(TiffSaveResponse::Done(offset))
     }
-
-    fn ifd_saver(&self, ifd_offset: u64) -> IfdSaver {
-        IfdSaver::from_ifd(
+    fn ifd_saver(
+        &mut self,
+        ifd_offset: u64,
+        extension_registry: Arc<TiffExtSaverRegistry>,
+    ) -> TiffSaveResult<IfdSaveResponse> {
+        eprintln!("extension saving WIP, not working");
+        Ok(IfdSaver::from_ifd(
             self.ifds[&ifd_offset].clone(),
             ifd_offset,
             self.bigtiff,
             self.byte_order,
         )
+        .to_response())
+    }
+    /// Write the saver's data to the provided buffers
+    ///
+    /// This assumes a one-to-one correspondence between buffers and ranges
+    /// e.g.
+    /// ```
+    /// # let saver;
+    /// let ifd_saver = saver.ifd_saver(42, Arc::new(Vec::new().into()))
+    /// let bufs = ifd_saver.to_save().map(|(_tag, byte_len)| vec![0;byte_len]);
+    ///
+    /// ```
+    fn resume_saver(
+        &mut self,
+        ranges: Vec<Range<u64>>,
+        mut buffers: Vec<&mut [u8]>,
+        mut saver: IfdSaver,
+    ) -> TiffSaveResult<IfdSaveResponse> {
+        let to_do = saver.to_save().enumerate().collect::<Vec<_>>();
+        ensure!(
+            to_do.len() == buffers.len() && to_do.len() == ranges.len(),
+            TiffSaveError::permanent(format!("invalid buffers encountered for writing from Tiff"))
+        );
+        // directly try to write ifd to_write tags to the provided buffers
+        for (idx, (tag, byte_length)) in to_do {
+            ensure!(
+                byte_length < buffers[idx].len(),
+                TiffSaveError::permanent(format!("TODO"))
+            );
+            saver
+                .save_tag_data(&mut buffers[idx], tag, ranges[idx].start)
+                .expect(BUF_CHECK);
+        }
+        Ok(saver.to_response())
     }
 }
 
 #[cfg(test)]
 mod test {
     use std::collections::{BTreeMap, HashMap};
-    use std::default;
+    use std::default::Default;
     use std::sync::Arc;
 
     use bytes::Bytes;
@@ -75,11 +207,11 @@ mod test {
     use crate::loader::TiffLoader;
     use crate::structs::metadata::tags::{CompressionMethod, PhotometricInterpretation};
     use crate::structs::tiff::header_size;
-    use crate::structs::{entry_size, num_entries_size, offset_size, Ifd, IfdEntry, Offset, Tag};
+    use crate::structs::{entry_size, num_entries_size, offset_size, Ifd, Tag};
 
     #[test]
     fn test_save_header_small_le() {
-        let tiff = Tiff {
+        let mut tiff = Tiff {
             ifds: BTreeMap::new(),
             ifd_offsets: vec![header_size(false)],
             extensions: HashMap::new(),
@@ -87,7 +219,7 @@ mod test {
             byte_order: ByteOrder::LittleEndian,
         };
         let mut buf = vec![0; header_size(true) as usize];
-        tiff.write_header(&mut buf, header_size(false)).unwrap();
+        tiff.save_header(&mut buf).unwrap();
         assert_eq!(
             &buf[..header_size(false) as usize],
             [b'I', b'I', 42, 0, header_size(false) as u8, 0, 0, 0,]
@@ -100,7 +232,7 @@ mod test {
 
     #[test]
     fn test_save_header_small_be() {
-        let tiff = Tiff {
+        let mut tiff = Tiff {
             ifds: BTreeMap::new(),
             ifd_offsets: vec![header_size(false)],
             extensions: HashMap::new(),
@@ -108,7 +240,7 @@ mod test {
             byte_order: ByteOrder::BigEndian,
         };
         let mut buf = vec![0; header_size(true) as usize];
-        tiff.write_header(&mut buf, header_size(false)).unwrap();
+        tiff.save_header(&mut buf).unwrap();
         assert_eq!(
             &buf[..header_size(false) as usize],
             &[b'M', b'M', 0, 42, 0, 0, 0, header_size(false) as u8]
@@ -122,7 +254,7 @@ mod test {
     #[test]
     #[rustfmt::skip]
     fn test_save_header_big_le() {
-        let tiff = Tiff {
+        let mut tiff = Tiff {
             ifds: BTreeMap::new(),
             ifd_offsets: vec![header_size(true)],
             extensions: HashMap::new(),
@@ -130,7 +262,7 @@ mod test {
             byte_order: ByteOrder::LittleEndian,
         };
         let mut buf = vec![0; header_size(true) as usize];
-        tiff.write_header(&mut buf, header_size(true)).unwrap();
+        tiff.save_header(&mut buf).unwrap();
         assert_eq!(
             &buf[..],
             &[
@@ -147,7 +279,7 @@ mod test {
     #[test]
     #[rustfmt::skip]
     fn test_save_header_big_be() {
-        let tiff = Tiff {
+        let mut tiff = Tiff {
             ifds: BTreeMap::new(),
             ifd_offsets: vec![header_size(true)],
             extensions: HashMap::new(),
@@ -155,7 +287,7 @@ mod test {
             byte_order: ByteOrder::BigEndian,
         };
         let mut buf = vec![0; header_size(true) as usize];
-        tiff.write_header(&mut buf, header_size(true)).unwrap();
+        tiff.save_header(&mut buf).unwrap();
         assert_eq!(&buf[..], &[
             b'M',b'M',
             0,43,
@@ -172,7 +304,7 @@ mod test {
         // the hack is that in stead of having multiple tiles, all offsets refer to the same tile
         // Also tile ranges are incorrect for edge tiles
         let tile_data = [42u8; 8 * 8];
-        let tiff = Tiff {
+        let mut tiff = Tiff {
             ifds: BTreeMap::from([(
                 header_size(false),
                 Ifd {
@@ -226,22 +358,30 @@ mod test {
                 + 8 * 8
         ];
         let mut offset = 0;
-        offset += tiff.write_header(&mut out, header_size(false)).unwrap();
+        offset += tiff.save_header(&mut out).unwrap().unwrap();
         println!("{out:?}");
-        let mut saver = tiff.ifd_saver(header_size(false));
+        let IfdSaveResponse::Partial {
+            mut ifd_saver,
+            needed_buffers,
+        } = tiff
+            .ifd_saver(header_size(false), Arc::new(Vec::new().into()))
+            .unwrap()
+        else {
+            panic!()
+        };
         // hmm, the kind of logical thing to do now.... ah well, I think it'll work like that
         // I already inserted TileByteCounts, even though maybe that was only possible because we don't compress anything...
         // so well, imagine in future this will also have a tile_bytecounts somewhere
         //
         // So now we just do the really ugly thing of making all tiles point to the same place in the file...
-        offset += saver.required_len() as usize;
-        for (tag, tag_data) in saver.to_save().collect::<Vec<_>>() {
+        offset += ifd_saver.required_len() as usize;
+        for (tag, tag_data) in ifd_saver.to_save().collect::<Vec<_>>() {
             println!("{tag_data:?}");
-            offset += saver
-                .save_tag_data(&mut out[offset..], tag, offset)
+            offset += ifd_saver
+                .save_tag_data(&mut out[offset..], tag, u64::try_from(offset).unwrap())
                 .unwrap();
         }
-        saver
+        ifd_saver
             .write(&mut out[header_size(false) as usize..], 0)
             .unwrap();
         out[offset as usize..].copy_from_slice(&tile_data);
