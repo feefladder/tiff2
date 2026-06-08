@@ -4,3 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+gdal = {version="0.16", features=["bindgen"]}
+tiff2 = { workspace = true, features = ["sync"]}
+bytes = {workspace = true}
+exn = {workspace = true}
+bytemuck = {workspace=true}
