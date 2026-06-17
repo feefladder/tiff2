@@ -1,14 +1,11 @@
 use std::collections::BTreeMap;
-use std::mem;
-use std::ops::Range;
 
 use derive_more::{Display, Error};
 use exn::{bail, ensure, OptionExt, Result, ResultExt};
 use smallvec::smallvec;
 
-use crate::saver::metadata::error::TiffSaveError;
 use crate::saver::metadata::extension::TiffExtSaver;
-use crate::saver::metadata::{IfdSaveResponse, TiffSaveResult};
+use crate::saver::metadata::IfdSaveResponse;
 use crate::structs::error::BUF_CHECK;
 use crate::structs::{
     entry_size, num_entries_size, offset_size, Ifd, IfdEntry, Offset, Tag, TagData,
@@ -44,7 +41,7 @@ pub struct IfdSaver {
     extension_tags: BTreeMap<u16, usize>,
 }
 
-#[derive(Debug, Display, Error)]
+#[derive(Debug, Display, Error, PartialEq)]
 pub enum IfdSaveError {
     NeedBigTiff {
         reason: String,
@@ -131,42 +128,6 @@ impl IfdSaver {
         Ok(written)
     }
 
-    /// Replace selected to-do values with their corresponding in-file offsets
-    ///
-    // This is probably sad, because it requires the entire metadata portion to
-    // be in-memory while also all metadata is known, but that is not really
-    // possible... Or no, because it doesn't _require_ all tags to be already
-    // written... but still it'll be probably-weird in COG case...
-    //
-    // The problem is that we may want to just give a properly-aligned buffer
-    // and tell it "this is the offset" in stead of having the in-buffer offset
-    // and in-file offset linked, see write_tag_data
-    ///
-    /// Writes data to the
-    ///
-    pub(crate) fn write_tags_data(
-        &mut self,
-        buf: &mut [u8],
-        entries: impl Iterator<Item = (Tag, usize)>,
-    ) -> Result<(), IfdSaveError> {
-        for (tag, offset) in entries {
-            let data = self
-                .to_save
-                .remove(&tag)
-                .ok_or_raise(|| IfdSaveError::err(format!("tag {tag:?} not in to_write")))?;
-            self.writeable.insert(
-                tag,
-                IfdEntry::Offset(Offset {
-                    tag_type: data.tag_type(),
-                    count: u64::try_from(data.len()).unwrap(),
-                    offset: u64::try_from(offset).unwrap(),
-                }),
-            );
-            data.to_buffer(&mut buf[offset..], self.byte_order);
-        }
-        Ok(())
-    }
-
     /// Create this IfdSaver from an IFD
     ///
     /// This assumes the offsets in the ifd are already written to the file.
@@ -224,7 +185,7 @@ impl IfdSaver {
         );
         // check if the buffer is large enough
         ensure!(
-            self.required_len() < u64::try_from(buf.len()).unwrap(),
+            self.required_len() <= u64::try_from(buf.len()).unwrap(),
             IfdSaveError::invalid_buffer(buf.len(), self.required_len())
         );
         // BtreeMap key type is u16, so cannot overflow u64
@@ -442,12 +403,9 @@ mod test_ifd {
                 .unwrap_err()
                 .frame()
                 .error()
-                .downcast_ref::<TiffSaveError>()
+                .downcast_ref::<IfdSaveError>()
                 .unwrap(),
-            &TiffSaveError::unfinished_ifd(
-                ifd_saver.to_save().map(|(k, _)| k),
-                "cannot write ifd yet, some tags still need to be externalized".into()
-            )
+            &IfdSaveError::unfinished(ifd_saver.to_save().map(|(k, _)| k).collect())
         );
     }
 
@@ -474,12 +432,9 @@ mod test_ifd {
                 .unwrap_err()
                 .frame()
                 .error()
-                .downcast_ref::<TiffSaveError>()
+                .downcast_ref::<IfdSaveError>()
                 .unwrap(),
-            &TiffSaveError::unfinished_ifd(
-                ifd_saver.to_save().map(|(k, _)| k),
-                "cannot write ifd yet, some tags still need to be externalized".into()
-            )
+            &IfdSaveError::unfinished(ifd_saver.to_save().map(|(k, _)| k).collect())
         );
     }
 
@@ -517,9 +472,9 @@ mod test_ifd {
                 .unwrap_err()
                 .frame()
                 .error()
-                .downcast_ref::<TiffSaveError>()
+                .downcast_ref::<IfdSaveError>()
                 .unwrap(),
-            &TiffSaveError::permanent(
+            &IfdSaveError::err(
                 "Offset { tag_type: BYTE, count: 4, offset: 42 } for tag ImageLength fits as value, but is an offset"
                     .into()
             )
@@ -560,9 +515,9 @@ mod test_ifd {
                 .unwrap_err()
                 .frame()
                 .error()
-                .downcast_ref::<TiffSaveError>()
+                .downcast_ref::<IfdSaveError>()
                 .unwrap(),
-            &TiffSaveError::permanent(
+            &IfdSaveError::err(
                 "Offset { tag_type: BYTE, count: 8, offset: 42 } for tag ImageLength fits as value, but is an offset"
                     .into()
             )
@@ -591,9 +546,9 @@ mod test_ifd {
                 .unwrap_err()
                 .frame()
                 .error()
-                .downcast_ref::<TiffSaveError>()
+                .downcast_ref::<IfdSaveError>()
                 .unwrap(),
-            &TiffSaveError::need_bigtiff(format!("entry count {} overflows u32", 1u64 << 32))
+            &IfdSaveError::need_big(format!("entry count {} overflows u32", 1u64 << 32))
         );
     }
 
@@ -619,9 +574,9 @@ mod test_ifd {
                 .unwrap_err()
                 .frame()
                 .error()
-                .downcast_ref::<TiffSaveError>()
+                .downcast_ref::<IfdSaveError>()
                 .unwrap(),
-            &TiffSaveError::need_bigtiff(format!("entry offset {} overflows u32", 1u64 << 32))
+            &IfdSaveError::need_big(format!("entry offset {} overflows u32", 1u64 << 32))
         );
     }
 
@@ -635,9 +590,9 @@ mod test_ifd {
                 .unwrap_err()
                 .frame()
                 .error()
-                .downcast_ref::<TiffSaveError>()
+                .downcast_ref::<IfdSaveError>()
                 .unwrap(),
-            &TiffSaveError::need_bigtiff(format!("next ifd offset {} overflows u32", 1u64 << 32))
+            &IfdSaveError::need_big(format!("next ifd offset {} overflows u32", 1u64 << 32))
         );
     }
 
@@ -651,12 +606,9 @@ mod test_ifd {
                 .unwrap_err()
                 .frame()
                 .error()
-                .downcast_ref::<TiffSaveError>()
+                .downcast_ref::<IfdSaveError>()
                 .unwrap(),
-            &TiffSaveError::invalid_buffer(
-                ifd_saver.required_len(),
-                format!("ifd buffer of length 5 too small, need 6")
-            )
+            &IfdSaveError::invalid_buffer(buf.len(), ifd_saver.required_len())
         );
     }
     // -----------------------------------------------------------------

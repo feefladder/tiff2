@@ -1,11 +1,15 @@
-use crate::saver::{metadata::TiffSaver, SyncMetaWriter, SyncPush, TiffMetaWriter};
+use std::sync::Arc;
 
-impl<Push: SyncPush, Saver: TiffSaver> SyncMetaWriter<Push> for TiffMetaWriter<Push, Saver> {
+use crate::saver::metadata::{TiffExtSaverRegistry, TiffSaver};
+use crate::saver::{MetaWriteResult, SyncMetaWriter, SyncPush, TiffMetaWriter, TiffWriter};
+use crate::structs::TileOpts;
+
+impl<Push: SyncPush, Saver: TiffSaver> SyncMetaWriter<Push, Saver> for TiffMetaWriter<Push, Saver> {
     fn open(
         push: Push,
         saver: Saver,
-        extension_registry: std::sync::Arc<crate::saver::metadata::TiffExtSaverRegistry>,
-    ) -> crate::saver::MetaWriteResult<Self> {
+        extension_registry: Arc<TiffExtSaverRegistry>,
+    ) -> MetaWriteResult<Self> {
         Ok(Self {
             push,
             saver,
@@ -13,5 +17,11 @@ impl<Push: SyncPush, Saver: TiffSaver> SyncMetaWriter<Push> for TiffMetaWriter<P
         })
     }
 
-    fn next(&mut self) -> crate::saver::MetaWriteResult<Option<u64>> {}
+    fn next(&mut self) -> MetaWriteResult<Option<u64>> {
+        todo!()
+    }
+
+    fn finish(self) -> MetaWriteResult<TiffWriter<Push, Saver>> {
+        todo!()
+    }
 }

@@ -1,17 +1,15 @@
-use std::collections::{BTreeMap, HashMap};
-use std::fmt::format;
+use std::collections::BTreeMap;
 use std::ops::Range;
 use std::sync::Arc;
 
 use derive_more::{Display, Error};
-use exn::{bail, ensure, OptionExt, Result, ResultExt};
+use exn::{ensure, OptionExt, Result, ResultExt};
 
-use crate::loader::metadata::error::TiffLoadError;
 use crate::loader::metadata::IfdLoadResponse;
-use crate::loader::{TiffExtLoader, TiffExtLoaderRegistry, TiffLoadResult};
+use crate::loader::{TiffExtLoader, TiffExtLoaderRegistry};
 use crate::structs::error::{BUF_CHECK, VMATCH};
 use crate::structs::{
-    entry_size, num_entries_size, offset_size, offset_tag_type, Ifd, IfdEntry, Offset, Tag,
+    entry_size, num_entries_size, offset_size, offset_tag_type, Ifd, Offset, Tag,
     TagData, TagType,
 };
 use crate::ByteOrder;
@@ -306,11 +304,11 @@ impl IfdLoader {
     }
 
     pub fn deferred_ranges<'a>(&'a self) -> impl Iterator<Item = Range<u64>> + use<'a> {
-        self.tag_offsets.iter().map(|(_, o)| o.range())
+        self.tag_offsets.values().map(|o| o.range())
     }
 
     pub fn deferred_tags<'a>(&'a self) -> impl Iterator<Item = Tag> + use<'a> {
-        self.tag_offsets.iter().map(|(t, _)| *t)
+        self.tag_offsets.keys().map(|t| *t)
     }
 
     pub fn finish(self) -> Ifd {

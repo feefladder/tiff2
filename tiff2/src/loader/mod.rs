@@ -177,32 +177,42 @@ impl<Fetch, Loader: TiffLoader> TiffMetaReader<Fetch, Loader> {
         (self.fetch, self.loader)
     }
 
-    pub fn finish(self, decoder_registry: DecoderRegistry) -> TiffReader<Fetch> {
+    pub fn finish(self, decoder_registry: DecoderRegistry) -> TiffReader<Fetch, Loader> {
         TiffReader {
             fetch: self.fetch,
-            tiff: self.loader.into_tiff(),
+            loader: self.loader,
+            tile_loaders: BTreeMap::new(),
+            decoder_registry,
+        }
+    }
+
+    pub fn finalize(self, decoder_registry: DecoderRegistry) -> TiffReader<Fetch, Tiff> {
+        TiffReader {
+            fetch: self.fetch,
+            loader: self.loader.into_tiff(),
             tile_loaders: BTreeMap::new(),
             decoder_registry,
         }
     }
 }
 
-pub struct TiffReader<Fetch> {
+pub struct TiffReader<Fetch, MetaLoader> {
     fetch: Fetch,
     // TODO: should this become a TiffLoader? or even Box<dyn TiffLoader>?
     // In any case, that'll allow reading
-    tiff: Tiff,
+    loader: MetaLoader,
     tile_loaders: BTreeMap<u64, TileLoader>,
     decoder_registry: DecoderRegistry,
 }
 
-impl<Fetch> TiffReader<Fetch> {
+impl<Fetch, MetaLoader: TiffLoader> TiffReader<Fetch, MetaLoader> {
     pub fn tiff(&self) -> &Tiff {
-        &self.tiff
+        self.loader.tiff()
     }
 
     pub fn tile_opts(&self, idx: usize) -> Option<&TileOpts> {
-        self.tiff
+        self.loader
+            .tiff()
             .ifd_offsets
             .get(idx)
             .and_then(|offset| self.tile_loaders.get(offset).map(|tl| &tl.tile_opts))
@@ -287,10 +297,7 @@ impl ReadError {
 
 #[cfg(test)]
 mod test {
-    use std::ops::Deref;
-
     use bytes::Bytes;
-    use exn::Exn;
 
     use super::*;
 
@@ -325,6 +332,9 @@ mod test {
         for _ in 0..1 {
             assert!(reader.next().await.unwrap().is_some())
         }
-        assert_eq!(&reader.next().await.unwrap_err().to_string(), &"hello")
+        assert_eq!(
+            &reader.next().await.unwrap_err().to_string(),
+            &"read error: Could not parse next ifd"
+        )
     }
 }

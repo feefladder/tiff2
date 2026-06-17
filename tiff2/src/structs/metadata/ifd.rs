@@ -1,9 +1,7 @@
 use std::any::TypeId;
 use std::collections::{BTreeMap, HashMap};
 
-use exn::OptionExt;
-
-use crate::structs::error::IfdError;
+use crate::structs::error::{IfdError, USIZE64};
 use crate::structs::{IfdEntry, Offset, Tag, TagData, TagType, TiffExtension};
 
 type IfdResult<T> = exn::Result<T, IfdError>;
@@ -164,6 +162,27 @@ impl Ifd {
             } else {
                 Err(IfdError::not_found(*tag).into())
             }
+        }
+    }
+
+    /// Get the byte length of a tag
+    pub(crate) fn tag_byte_length(&self, tag: &Tag) -> IfdResult<u64> {
+        if let Some(val) = self.tags.get(tag) {
+            Ok(val.blen().try_into().expect(USIZE64))
+        } else if let Some(o) = self.tag_offsets.get(tag) {
+            Ok(o.len())
+        } else {
+            Err(IfdError::not_found(*tag).into())
+        }
+    }
+
+    pub(crate) fn tag_n_values(&self, tag: &Tag) -> IfdResult<u64> {
+        if let Some(val) = self.tags.get(tag) {
+            Ok(u64::try_from(val.len()).expect(USIZE64))
+        } else if let Some(o) = self.tag_offsets.get(tag) {
+            Ok(o.len() / u64::try_from(o.tag_type.size()).unwrap())
+        } else {
+            Err(IfdError::not_found(*tag).into())
         }
     }
 

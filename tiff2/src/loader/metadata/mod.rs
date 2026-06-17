@@ -9,7 +9,7 @@ use smallvec::smallvec;
 
 use crate::loader::metadata::ifd::IfdLoadError;
 use crate::structs::tiff::header_size;
-use crate::structs::{Ifd, IfdEntry, TagData, TagType, Tiff};
+use crate::structs::{Ifd, TagData, TagType, Tiff};
 use crate::ByteOrder;
 
 pub mod cache;

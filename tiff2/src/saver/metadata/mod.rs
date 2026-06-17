@@ -1,7 +1,7 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use exn::{ensure, OptionExt, ResultExt};
+use exn::{ensure, ResultExt};
 use smallvec::smallvec;
 
 use crate::structs::error::BUF_CHECK;
@@ -15,7 +15,7 @@ mod extension;
 pub use extension::TiffExtSaverRegistry;
 mod ifd;
 pub use ifd::IfdSaver;
-mod planner;
+mod cog_planner;
 
 pub type TiffSaveResult<T> = exn::Result<T, error::TiffSaveError>;
 
@@ -115,7 +115,7 @@ impl TiffSaver for Tiff {
             )
         );
         // That we do not have an IFD is somewhat expected if we are building an
-        let Some(first_ifd_offset) = self.ifd_offsets.get(0) else {
+        let Some(first_ifd_offset) = self.ifd_offsets.first() else {
             return Ok(TiffSaveResponse::NeedIfd);
         };
         buf[0..2].copy_from_slice(match self.byte_order {
@@ -148,7 +148,7 @@ impl TiffSaver for Tiff {
     fn ifd_saver(
         &mut self,
         ifd_offset: u64,
-        extension_registry: Arc<TiffExtSaverRegistry>,
+        _extension_registry: Arc<TiffExtSaverRegistry>,
     ) -> TiffSaveResult<IfdSaveResponse> {
         eprintln!("extension saving WIP, not working");
         Ok(IfdSaver::from_ifd(
@@ -178,16 +178,18 @@ impl TiffSaver for Tiff {
         let to_do = saver.to_save().enumerate().collect::<Vec<_>>();
         ensure!(
             to_do.len() == buffers.len() && to_do.len() == ranges.len(),
-            TiffSaveError::permanent(format!("invalid buffers encountered for writing from Tiff"))
+            TiffSaveError::permanent(
+                "invalid buffers encountered for writing from Tiff".to_string()
+            )
         );
         // directly try to write ifd to_write tags to the provided buffers
         for (idx, (tag, byte_length)) in to_do {
             ensure!(
                 byte_length < buffers[idx].len(),
-                TiffSaveError::permanent(format!("TODO"))
+                TiffSaveError::permanent("TODO".to_string())
             );
             saver
-                .save_tag_data(&mut buffers[idx], tag, ranges[idx].start)
+                .save_tag_data(buffers[idx], tag, ranges[idx].start)
                 .expect(BUF_CHECK);
         }
         Ok(saver.to_response())

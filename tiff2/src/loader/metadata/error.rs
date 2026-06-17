@@ -1,10 +1,9 @@
 use std::error::Error;
 use std::fmt::Display;
-use std::ops::{Bound, Range};
+use std::ops::Bound;
 
 use derive_more::Display;
 
-use crate::structs::Ifd;
 
 /// The error that most caches should implement imho
 ///

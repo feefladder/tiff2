@@ -35,20 +35,16 @@
 //! So I'm not too sure about the layering there...
 //!
 
-use std::{collections::BTreeMap, error::Error, sync::Arc};
+use std::collections::BTreeMap;
+use std::error::Error;
+use std::sync::Arc;
 
 use bytes::Bytes;
 use derive_more::{Display, Error};
 
-use crate::{
-    loader::SyncFetch,
-    saver::{
-        metadata::{TiffExtSaverRegistry, TiffSaver},
-        tile::{EncoderRegistry, TileSaver},
-    },
-    structs::TileCoord,
-    ByteOrder,
-};
+use crate::saver::metadata::{TiffExtSaverRegistry, TiffSaver};
+use crate::saver::tile::{EncoderRegistry, TileSaver};
+use crate::structs::TileCoord;
 
 mod metadata;
 mod sync;
@@ -72,17 +68,24 @@ pub struct TiffWriteError;
 pub type TiffWriteResult<T> = exn::Result<T, TiffWriteError>;
 
 pub trait SyncTiffWriter {
+    /// Return which tile indices are not written yet for the selected ifd
     fn to_write_tiles<'a>(
         &'a self,
         ifd_idx: usize,
     ) -> impl Iterator<Item = TileCoord> + use<'a, Self>;
+    /// Write tiles for the given indices
+    ///
+    /// Tile datas should be properly sized
     fn write_tiles(
         &mut self,
         ifd_idx: usize,
         coords: &[TileCoord],
-        tile_datas: &[Bytes],
+        tile_datas: &[&[u8]],
     ) -> TiffWriteResult<()>;
-    fn finalize_ifd(&mut self, ifd_idx: usize) -> TiffWriteResult<()>;
+    /// Patch the ifd with the tile offsets/byte counts actually written
+    ///
+    /// This should be called at the end. Not doing so will result in a broken tiff file.
+    fn patch_ifd(&mut self, ifd_idx: usize) -> TiffWriteResult<()>;
 }
 
 #[derive(Debug, Display, Clone, PartialEq)]
@@ -96,8 +99,7 @@ pub trait SyncPush {
         offsets
             .iter()
             .zip(data)
-            .map(|(offset, data)| self.push_range(*offset, data))
-            .collect()
+            .try_for_each(|(offset, data)| self.push_range(*offset, data))
     }
 }
 
@@ -110,9 +112,22 @@ pub trait SyncMetaWriter<Push: SyncPush, Saver: TiffSaver>: Sized {
     /// This could write the header already, or not?
     fn open(
         push: Push,
-        tiff: Saver,
+        saver: Saver,
         extension_registry: Arc<TiffExtSaverRegistry>,
     ) -> MetaWriteResult<Self>;
+    /// Finalize this IFD and start writing the next IFD's data
     fn next(&mut self) -> MetaWriteResult<Option<u64>>;
-    // skipping really does not make sense when writing
+}
+
+impl<Push, Saver: TiffSaver> TiffMetaWriter<Push, Saver> {
+    pub fn finish(self, encoder_registry: EncoderRegistry) -> TiffWriter<Push, Saver> {
+        TiffWriter {
+            push: self.push,
+            saver: self.saver,
+            tile_savers: todo!(
+                "Actually create tile savers (these are not on-demand as in loading)"
+            ),
+            encoder_registry,
+        }
+    }
 }

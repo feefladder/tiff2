@@ -7,11 +7,11 @@ use rayon::prelude::*;
 use crate::loader::tile::{CodingResult, TileLoadErrorKind};
 use crate::loader::{
     IfdLoader, IfdReader, ReadError, ReadErrorKind, ReadResult, SyncFetch, SyncIfdReader,
-    SyncReader, TiffIfdReader, TiffReader, TileLoader,
+    SyncReader, TiffIfdReader, TiffLoader, TiffReader, TileLoader,
 };
 use crate::structs::{TileCoord, TileData};
 
-impl<Fetch: SyncFetch> SyncReader for TiffReader<Fetch> {
+impl<Fetch: SyncFetch, Loader: TiffLoader> SyncReader for TiffReader<Fetch, Loader> {
     /// Get tiles for the corresponding coordinates
     ///
     /// will filter out invalid coordinates. Possible decoding errors are forwarded.
@@ -32,12 +32,13 @@ impl<Fetch: SyncFetch> SyncReader for TiffReader<Fetch> {
             }
         };
         let ifd_offset = self
-            .tiff
+            .loader
+            .tiff()
             .ifd_offsets
             .get(ifd_idx)
             .ok_or_raise(fatal(format!(
                 "no ifd {ifd_idx}, tiff has {} public ifds",
-                self.tiff.ifd_offsets.len()
+                self.loader.tiff().ifd_offsets.len()
             )))?;
         let no_loader = |ifd_offset: u64| {
             move || ReadError {
@@ -75,12 +76,14 @@ impl<Fetch: SyncFetch> SyncReader for TiffReader<Fetch> {
 
     fn prep_ifd(&mut self, ifd_idx: usize) -> ReadResult<()> {
         let ifd_offset = self
-            .tiff
+            .loader
+            .tiff()
             .ifd_offsets
             .get(ifd_idx)
             .ok_or_raise(|| ReadError::fatal(format!("no ifd {ifd_idx}")))?;
         let mut ifd = self
-            .tiff
+            .loader
+            .tiff()
             .ifds
             .remove(ifd_offset)
             .ok_or_raise(|| ReadError::fatal(format!("ifd {ifd_offset} missing")))?;
@@ -93,8 +96,8 @@ impl<Fetch: SyncFetch> SyncReader for TiffReader<Fetch> {
                         &self.fetch,
                         IfdLoader::wrap(
                             ifd,
-                            self.tiff.bigtiff,
-                            self.tiff.byte_order,
+                            self.loader.tiff().bigtiff,
+                            self.loader.tiff().byte_order,
                             None,
                             // We're recovering from an error here, if you have
                             // unloaded extensions at this point, that's kind of
@@ -104,14 +107,17 @@ impl<Fetch: SyncFetch> SyncReader for TiffReader<Fetch> {
                         ),
                     );
                     if let Err(e) = ifd_reader.fill_deferred() {
-                        self.tiff.ifds.insert(*ifd_offset, ifd_reader.finish());
+                        self.loader
+                            .tiff()
+                            .ifds
+                            .insert(*ifd_offset, ifd_reader.finish());
                         bail!(e.raise(ReadError::fatal(
                             "ifd prep failed: could not fill its values".into()
                         )))
                     }
                     ifd = ifd_reader.finish();
                 } else {
-                    self.tiff.ifds.insert(*ifd_offset, ifd);
+                    self.loader.tiff().ifds.insert(*ifd_offset, ifd);
                     bail!(e.raise(ReadError::fatal(format!("ifd not an image on {n}th try"))))
                 }
             } else {

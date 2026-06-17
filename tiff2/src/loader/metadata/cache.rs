@@ -14,7 +14,7 @@ use crate::loader::metadata::extension::TiffExtLoaderRegistry;
 use crate::loader::metadata::{
     IfdLoadResponse, Tiff, TiffLoadResponse, TiffLoadResult, TiffLoader,
 };
-use crate::structs::{IfdEntry, Tag, TagData};
+use crate::structs::Tag;
 
 pub struct CogCache<Loader: TiffLoader> {
     cache: BTreeMap<usize, Bytes>,
@@ -146,7 +146,7 @@ impl<Loader: TiffLoader> TiffLoader for CogCache<Loader> {
         }
 
         // try to get all values from the cache
-        let bo = ifd_loader.byte_order;
+        let _bo = ifd_loader.byte_order;
         for (tag, range) in ifd_loader.to_load().collect::<Vec<_>>() {
             if let Some(buf) = self.slice(range.clone()) {
                 ifd_loader.load_tag_data(&buf, tag).or_raise(|| {

@@ -11,7 +11,7 @@ use crate::structs::error::CodingError;
 use crate::structs::metadata::tags::{
     CompressionMethod, PhotometricInterpretation, PlanarConfiguration, Predictor, SampleFormat,
 };
-use crate::structs::{Ifd, IfdEntry, Tag, Tiff, TileCoord, TileData, TileOpts};
+use crate::structs::{Ifd, Tag, Tiff, TileCoord, TileData, TileOpts};
 use crate::util::fix_endianness;
 use crate::{ByteOrder, NATIVE_ENDIAN};
 
@@ -185,7 +185,8 @@ impl TileLoader {
     }
 }
 
-/// Tags that are required to create a TileLoader
+/// Tags that are required to create a TileLoader/TileSaver
+/// These all fit in the offset field
 const REQUIRED_TAGS: [Tag; 3] = [
     Tag::ImageWidth,                // fits in offset (1  SHORT or LONG)
     Tag::ImageLength,               // fits in offset (1 SHORT or LONG)
@@ -201,23 +202,27 @@ const OPTIONAL_TAGS: [Tag; 7] = [
     Tag::PlanarConfiguration, // fits (1 SHORT)
     Tag::JPEGTables,          // may not fit
 ];
-const STRIP_TAGS: [Tag; 3] = [Tag::StripOffsets, Tag::StripByteCounts, Tag::RowsPerStrip];
+const STRIP_TAGS: [Tag; 3] = [
+    Tag::StripOffsets,    // probably doesn't fit
+    Tag::StripByteCounts, // probs doesn't fit
+    Tag::RowsPerStrip,    // fits?
+];
 const TILE_TAGS: [Tag; 4] = [
-    Tag::TileOffsets,
-    Tag::TileByteCounts,
-    Tag::TileWidth,
-    Tag::TileLength,
+    Tag::TileOffsets,    // probs doesn't fit
+    Tag::TileByteCounts, // probs doesn't fit
+    Tag::TileWidth,      // probs fits
+    Tag::TileLength,     // probs fits
 ];
 
 /// Check if provided tags are both present and loaded
-fn ensure_present(tags: &[Tag], ifd: &Ifd) -> TileLoadResult<()> {
-    let missing_tags: Vec<Tag> = tags
+pub fn ensure_present(tags: &[Tag], ifd: &Ifd) -> TileLoadResult<()> {
+    let mut missing_tags = tags
         .iter()
         .filter(|tag| ifd.require_val(tag).is_err())
-        .copied()
-        .collect();
-    if !missing_tags.is_empty() {
-        Err(invalid_ifd(format!("missing {} required tags", missing_tags.len())).into())
+        .peekable();
+    if missing_tags.peek().is_some() {
+        let n_missing = missing_tags.collect::<Vec<_>>().len();
+        Err(invalid_ifd(format!("missing {n_missing} required tags")).into())
     } else {
         Ok(())
     }
@@ -287,6 +292,10 @@ impl TileLoader {
             );
         }
 
+        if let Ok(v) = ifd.require_val(&Tag::Compression) {
+            u16::try_from(v).or_raise(invalid_tag(Tag::Compression))?;
+        }
+
         if let Ok(v) = ifd.require_val(&Tag::Predictor) {
             Predictor::from_u16(u16::try_from(v).or_raise(invalid_tag(Tag::Predictor))?)
                 .ok_or_raise(invalid_tag(Tag::Predictor))?;
@@ -341,6 +350,9 @@ impl TileLoader {
         Ok(())
     }
 
+    /// Create a tile server from this tiff at the given overview level (if relevant)
+    ///
+    /// This removes the Ifd from the tiff.
     pub fn from_tiff(tiff: &mut Tiff, idx: usize) -> TileLoadResult<Self> {
         let ifd_offset = tiff.ifd_offsets[idx];
         let ifd = tiff
@@ -349,11 +361,8 @@ impl TileLoader {
             .ok_or_raise(|| fatal(format!("ifd {idx} at {ifd_offset} not found")))?;
         Self::from_ifd(ifd, ifd_offset, tiff.byte_order())
     }
-    /// Create a tile server from this tiff at the given overview level (if relevant)
-    ///
-    /// This removes the Ifd from the tiff.
-    ///
-    // TODO: make this a check and infallible structure
+
+    /// Create this TileLoader from an Ifd
     pub fn from_ifd(mut ifd: Ifd, ifd_offset: u64, byte_order: ByteOrder) -> TileLoadResult<Self> {
         Self::check_ifd(&ifd).or_raise(|| invalid_ifd("invalid ifd".into()))?;
         let invalid_tag = |tag: Tag| {

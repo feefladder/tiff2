@@ -5,7 +5,7 @@ use std::ops::Range;
 use exn::{ensure, Exn, ResultExt};
 use smallvec::{smallvec, SmallVec};
 
-use crate::structs::error::{CastError, CastErrorKind};
+use crate::structs::error::{CastError, CastErrorKind, USIZE64};
 use crate::structs::TagType;
 use crate::util::fix_endianness;
 use crate::{ByteOrder, NATIVE_ENDIAN};
@@ -19,9 +19,11 @@ pub struct Offset {
 }
 
 impl Offset {
+    /// Get the length in bytes of the pointed-at buffer
     pub(crate) fn len(&self) -> u64 {
-        self.count * u64::try_from(self.tag_type.size()).unwrap()
+        self.count * u64::try_from(self.tag_type.size()).expect(USIZE64)
     }
+
     /// get the in-file byte range required to load this Tag
     pub fn range(&self) -> Range<u64> {
         self.offset..self.offset + self.len()
@@ -55,6 +57,13 @@ impl IfdEntry {
         }
     }
 
+    pub fn len(&self) -> usize {
+        match &self {
+            Self::Offset(o) => o.len() as usize,
+            Self::Value(v) => v.blen(),
+        }
+    }
+
     /// Load the data into this entry
     ///
     /// Note that this will lose the "entry offset" information
@@ -80,9 +89,11 @@ impl IfdEntry {
         offset: u64,
         byte_order: ByteOrder,
     ) -> exn::Result<(), CastError> {
+        let len = self.len();
         if let IfdEntry::Value(v) = self {
             let count = u64::try_from(v.len()).expect("don't support 128-bit arch");
-            v.to_buffer(buf, byte_order);
+            v.to_buffer(buf, byte_order)
+                .or_raise(|| CastError::invalid_buffer(buf.len(), len));
             *self = IfdEntry::Offset(Offset {
                 tag_type: v.tag_type(),
                 count,

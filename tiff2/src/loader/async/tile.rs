@@ -8,13 +8,13 @@ use rayon::prelude::*;
 use crate::loader::tile::{CodingResult, TileLoadErrorKind};
 use crate::loader::{
     AsyncFetch, AsyncIfdReader, AsyncReader, IfdLoader, IfdReader, ReadError, ReadErrorKind,
-    ReadResult, TiffIfdReader, TiffReader, TileLoader,
+    ReadResult, TiffIfdReader, TiffLoader, TiffReader, TileLoader,
 };
 use crate::structs::{TileCoord, TileData};
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-impl<Fetch: AsyncFetch> AsyncReader for TiffReader<Fetch> {
+impl<Fetch: AsyncFetch, Loader: TiffLoader> AsyncReader for TiffReader<Fetch, Loader> {
     /// Get tiles for the corresponding coordinates
     ///
     /// will filter out invalid coordinates. Possible decoding errors are forwarded.
@@ -35,12 +35,13 @@ impl<Fetch: AsyncFetch> AsyncReader for TiffReader<Fetch> {
             }
         };
         let ifd_offset = self
-            .tiff
+            .loader
+            .tiff()
             .ifd_offsets
             .get(ifd_idx)
             .ok_or_raise(fatal(format!(
                 "no ifd {ifd_idx}, tiff has {} public ifds",
-                self.tiff.ifd_offsets.len()
+                self.loader.tiff().ifd_offsets.len()
             )))?;
         let no_loader = |ifd_offset: u64| {
             move || ReadError {
@@ -57,7 +58,9 @@ impl<Fetch: AsyncFetch> AsyncReader for TiffReader<Fetch> {
         println!("finding thingies for {} coordinates", coords.len());
         for (coord, res) in tile_loader.tiles_ranges(coords.iter()) {
             out_coords.push(coord);
-            ranges.push(res.or_raise(fatal(format!("could not find range for tile coordinate")))?);
+            ranges.push(res.or_raise(fatal(
+                "could not find range for tile coordinate".to_string(),
+            ))?);
         }
         println!("hello");
         let compressed: Vec<Bytes> = self
@@ -77,15 +80,17 @@ impl<Fetch: AsyncFetch> AsyncReader for TiffReader<Fetch> {
     }
 
     async fn prep_ifd(&mut self, ifd_idx: usize) -> ReadResult<()> {
-        let ifd_offset = self
-            .tiff
+        let ifd_offset = *self
+            .loader
+            .tiff()
             .ifd_offsets
             .get(ifd_idx)
             .ok_or_raise(|| ReadError::fatal(format!("no ifd {ifd_idx}")))?;
         let mut ifd = self
-            .tiff
+            .loader
+            .tiff_mut()
             .ifds
-            .remove(ifd_offset)
+            .remove(&ifd_offset)
             .ok_or_raise(|| ReadError::fatal(format!("ifd {ifd_offset} missing")))?;
 
         // try twice: 1st time may de deferred
@@ -96,21 +101,24 @@ impl<Fetch: AsyncFetch> AsyncReader for TiffReader<Fetch> {
                         &self.fetch,
                         IfdLoader::wrap(
                             ifd,
-                            self.tiff.bigtiff,
-                            self.tiff.byte_order,
+                            self.loader.tiff().bigtiff,
+                            self.loader.tiff().byte_order,
                             None,
                             Arc::new(Vec::new().into()),
                         ),
                     );
                     if let Err(e) = ifd_reader.fill_deferred().await {
-                        self.tiff.ifds.insert(*ifd_offset, ifd_reader.finish());
+                        self.loader
+                            .tiff_mut()
+                            .ifds
+                            .insert(ifd_offset, ifd_reader.finish());
                         bail!(e.raise(ReadError::fatal(
                             "ifd prep failed: could not fill its values".into()
                         )))
                     }
                     ifd = ifd_reader.finish();
                 } else {
-                    self.tiff.ifds.insert(*ifd_offset, ifd);
+                    self.loader.tiff_mut().ifds.insert(ifd_offset, ifd);
                     bail!(e.raise(ReadError::fatal(format!("ifd not an image on {n}th try"))))
                 }
             } else {
@@ -118,13 +126,15 @@ impl<Fetch: AsyncFetch> AsyncReader for TiffReader<Fetch> {
             }
         }
         self.tile_loaders.insert(
-            *ifd_offset,
-            TileLoader::from_ifd(ifd, *ifd_offset, self.tiff.byte_order).or_raise(|| {
-                ReadError::fatal(
-                    "Could not create TileLoader from ifd. This is a bug. please open an issue"
-                        .into(),
-                )
-            })?,
+            ifd_offset,
+            TileLoader::from_ifd(ifd, ifd_offset, self.loader.tiff().byte_order).or_raise(
+                || {
+                    ReadError::fatal(
+                        "Could not create TileLoader from ifd. This is a bug. please open an issue"
+                            .into(),
+                    )
+                },
+            )?,
         );
         Ok(())
     }
