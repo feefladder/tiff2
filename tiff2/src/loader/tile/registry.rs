@@ -213,8 +213,9 @@ impl Decoder for JpegDecoder {
         out_buf: &mut [u8],
         tile_opts: &TileOpts,
     ) -> CodingResult<()> {
+        use zune_jpeg::zune_core::{self, bytestream::ZCursor, colorspace::ColorSpace};
+
         use crate::structs::metadata::tags::PhotometricInterpretation;
-        use std::io::{BufRead, BufReader};
 
         ensure!(
             tile_opts.jpeg_tables.is_none() || buf.len() >= 2,
@@ -232,43 +233,35 @@ impl Decoder for JpegDecoder {
         // bytes of the remaining JPEG data is removed because it follows `jpeg_tables`.
         // Similary, `jpeg_tables` ends with a `EOI` (HEX: `0xFFD9`) or __end of image__ marker,
         // this has to be removed as well (last two bytes of `jpeg_tables`).
-        let reader = Cursor::new(buf);
+        let jpeg_reader = ZCursor::new(merge_jpeg_stream(
+            if let Some(tables) = &tile_opts.jpeg_tables {
+                Some(&tables)
+            } else {
+                None
+            },
+            buf,
+        ));
 
-        let jpeg_reader = match &tile_opts.jpeg_tables {
-            Some(jpeg_tables) => {
-                let mut reader = reader.take(compressed_length);
-                reader
-                    .read_exact(&mut [0; 2])
-                    .or_raise(|| CodingError::failed("failed to decode into buffer".to_string()))?;
+        let mut decoder_options = zune_core::options::DecoderOptions::default();
 
-                Box::new(BufReader::new(
-                    Cursor::new(&jpeg_tables[..jpeg_tables.len() - 2])
-                        .chain(reader.take(compressed_length)),
-                )) as Box<dyn BufRead>
-            }
-            None => Box::new(BufReader::new(reader.take(compressed_length))) as Box<dyn BufRead>,
-        };
-
-        let mut decoder = zune_jpeg::JpegDecoder::new(jpeg_reader);
-
-        match tile_opts.photometric_interpretation {
+        decoder_options = match tile_opts.photometric_interpretation {
             PhotometricInterpretation::RGB => {
-                decoder.set_color_transform(jpeg::ColorTransform::RGB)
+                decoder_options.jpeg_set_out_colorspace(ColorSpace::RGB)
             }
             PhotometricInterpretation::WhiteIsZero => {
-                decoder.set_color_transform(jpeg::ColorTransform::None)
+                decoder_options.jpeg_set_out_colorspace(ColorSpace::Luma)
             }
             PhotometricInterpretation::BlackIsZero => {
-                decoder.set_color_transform(jpeg::ColorTransform::None)
+                decoder_options.jpeg_set_out_colorspace(ColorSpace::Luma)
             }
             PhotometricInterpretation::TransparencyMask => {
-                decoder.set_color_transform(jpeg::ColorTransform::None)
+                decoder_options.jpeg_set_out_colorspace(ColorSpace::Unknown)
             }
             PhotometricInterpretation::CMYK => {
-                decoder.set_color_transform(jpeg::ColorTransform::CMYK)
+                decoder_options.jpeg_set_out_colorspace(ColorSpace::CMYK)
             }
             PhotometricInterpretation::YCbCr => {
-                decoder.set_color_transform(jpeg::ColorTransform::YCbCr)
+                decoder_options.jpeg_set_out_colorspace(ColorSpace::YCbCr)
             }
             photometric_interpretation => {
                 use exn::bail;
@@ -277,8 +270,9 @@ impl Decoder for JpegDecoder {
                     "unsupported photometric interpretation {photometric_interpretation:?}"
                 )))
             }
-        }
+        };
 
+        let mut decoder = zune_jpeg::JpegDecoder::new_with_options(jpeg_reader, decoder_options);
         // copying data, so sad
         let data = decoder
             .decode()
@@ -286,6 +280,36 @@ impl Decoder for JpegDecoder {
         out_buf.copy_from_slice(&data);
         Ok(())
     }
+}
+
+#[cfg(feature = "jpeg-decoder")]
+fn merge_jpeg_stream(jpeg_tables: Option<&[u8]>, scan_data: &[u8]) -> Vec<u8> {
+    if jpeg_tables.is_none() {
+        return scan_data.to_vec();
+    }
+
+    let tables = jpeg_tables.unwrap_or_default();
+    let table_body = match tables.strip_suffix(&[0xff, 0xd9]) {
+        Some(without_eoi) => without_eoi,
+        None => tables,
+    };
+    let scan_body = match scan_data.strip_prefix(&[0xff, 0xd8]) {
+        Some(without_soi) => without_soi,
+        None => scan_data,
+    };
+
+    let mut merged = Vec::with_capacity(table_body.len() + scan_body.len() + 2);
+    if table_body.starts_with(&[0xff, 0xd8]) {
+        merged.extend_from_slice(table_body);
+    } else {
+        merged.extend_from_slice(&[0xff, 0xd8]);
+        merged.extend_from_slice(table_body);
+    }
+    merged.extend_from_slice(scan_body);
+    if !merged.ends_with(&[0xff, 0xd9]) {
+        merged.extend_from_slice(&[0xff, 0xd9]);
+    }
+    merged
 }
 
 #[cfg(feature = "webp-agpl")]
