@@ -78,12 +78,14 @@ impl TileSaver {
         .ok_or_raise(invalid_tag(Tag::PhotometricInterpretation))?;
 
         // optional tags
-        if let Ok(v) = ifd.require_val(&Tag::SamplesPerPixel) {
-            ensure!(
-                u16::try_from(v).or_raise(invalid_tag(Tag::SamplesPerPixel))? != 0,
-                invalid_ifd("SamplesPerPixel is zero".into())
-            )
-        };
+        let samples_per_pixel = ifd
+            .require_val(&Tag::SamplesPerPixel)
+            .map(|v| u16::try_from(v).or_raise(invalid_tag(Tag::SamplesPerPixel)))
+            .unwrap_or(Ok(1))?;
+        ensure!(
+            samples_per_pixel != 0,
+            invalid_ifd("SamplesPerPixel is zero".into())
+        );
 
         if let Ok(v) = ifd.require_val(&Tag::SampleFormat) {
             let sfs = <&[u16]>::try_from(v).or_raise(invalid_tag(Tag::SampleFormat))?;
@@ -106,12 +108,15 @@ impl TileSaver {
                 .ok_or_raise(invalid_tag(Tag::Predictor))?;
         }
 
-        let planar_config = ifd.require_val(&Tag::PlanarConfiguration).map(|v|
-            PlanarConfiguration::from_u16(
-                u16::try_from(v).or_raise(invalid_tag(Tag::PlanarConfiguration))?,
-            ))
-            .ok_or_raise(invalid_tag(Tag::PlanarConfiguration))?
-        };
+        let planar_config = ifd
+            .require_val(&Tag::PlanarConfiguration)
+            .map(|v| {
+                PlanarConfiguration::from_u16(
+                    u16::try_from(v).or_raise(invalid_tag(Tag::PlanarConfiguration))?,
+                )
+                .ok_or_raise(invalid_tag(Tag::PlanarConfiguration))
+            })
+            .unwrap_or(Ok(PlanarConfiguration::Chunky))?;
         let planes: u32 = match planar_config {
             PlanarConfiguration::Chunky => 1,
             PlanarConfiguration::Planar => samples_per_pixel.into(),

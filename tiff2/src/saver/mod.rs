@@ -117,6 +117,7 @@ pub trait SyncMetaWriter<Push: SyncPush, Saver: TiffSaver>: Sized {
     ) -> MetaWriteResult<Self>;
     /// Finalize this IFD and start writing the next IFD's data
     fn next(&mut self) -> MetaWriteResult<Option<u64>>;
+    fn finish(self) -> MetaWriteResult<TiffWriter<Push, Saver>>;
 }
 
 impl<Push, Saver: TiffSaver> TiffMetaWriter<Push, Saver> {

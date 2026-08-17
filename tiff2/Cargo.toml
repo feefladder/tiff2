@@ -1,6 +1,6 @@
 [package]
 name = "tiff2"
-version = "0.0.4"
+version = "0.0.5"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "temporary async implementation of tiff - to be upstreamed into image-tiff"
@@ -48,8 +48,6 @@ packbits = []
 webp-cpp = ["dep:webp"]
 webp-agpl = ["dep:zenwebp"]
 futures = ["dep:futures"]
-
-
 
 [[bench]]
 name = "horizontal_predict"

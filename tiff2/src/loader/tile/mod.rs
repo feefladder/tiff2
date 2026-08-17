@@ -187,7 +187,7 @@ impl TileLoader {
 
 /// Tags that are required to create a TileLoader/TileSaver
 /// These all fit in the offset field
-const REQUIRED_TAGS: [Tag; 3] = [
+pub const REQUIRED_TAGS: [Tag; 3] = [
     Tag::ImageWidth,                // fits in offset (1  SHORT or LONG)
     Tag::ImageLength,               // fits in offset (1 SHORT or LONG)
     Tag::PhotometricInterpretation, // fits in offset (1 SHORT)

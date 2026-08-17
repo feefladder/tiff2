@@ -75,15 +75,12 @@ impl<Fetch: SyncFetch, Loader: TiffLoader> SyncReader for TiffReader<Fetch, Load
     }
 
     fn prep_ifd(&mut self, ifd_idx: usize) -> ReadResult<()> {
-        let ifd_offset = self
-            .loader
-            .tiff()
+        let tiff = self.loader.tiff_mut();
+        let ifd_offset = tiff
             .ifd_offsets
             .get(ifd_idx)
             .ok_or_raise(|| ReadError::fatal(format!("no ifd {ifd_idx}")))?;
-        let mut ifd = self
-            .loader
-            .tiff()
+        let mut ifd = tiff
             .ifds
             .remove(ifd_offset)
             .ok_or_raise(|| ReadError::fatal(format!("ifd {ifd_offset} missing")))?;
@@ -96,8 +93,8 @@ impl<Fetch: SyncFetch, Loader: TiffLoader> SyncReader for TiffReader<Fetch, Load
                         &self.fetch,
                         IfdLoader::wrap(
                             ifd,
-                            self.loader.tiff().bigtiff,
-                            self.loader.tiff().byte_order,
+                            tiff.bigtiff,
+                            tiff.byte_order,
                             None,
                             // We're recovering from an error here, if you have
                             // unloaded extensions at this point, that's kind of
@@ -107,17 +104,14 @@ impl<Fetch: SyncFetch, Loader: TiffLoader> SyncReader for TiffReader<Fetch, Load
                         ),
                     );
                     if let Err(e) = ifd_reader.fill_deferred() {
-                        self.loader
-                            .tiff()
-                            .ifds
-                            .insert(*ifd_offset, ifd_reader.finish());
+                        tiff.ifds.insert(*ifd_offset, ifd_reader.finish());
                         bail!(e.raise(ReadError::fatal(
                             "ifd prep failed: could not fill its values".into()
                         )))
                     }
                     ifd = ifd_reader.finish();
                 } else {
-                    self.loader.tiff().ifds.insert(*ifd_offset, ifd);
+                    tiff.ifds.insert(*ifd_offset, ifd);
                     bail!(e.raise(ReadError::fatal(format!("ifd not an image on {n}th try"))))
                 }
             } else {
@@ -126,7 +120,7 @@ impl<Fetch: SyncFetch, Loader: TiffLoader> SyncReader for TiffReader<Fetch, Load
         }
         self.tile_loaders.insert(
             *ifd_offset,
-            TileLoader::from_ifd(ifd, *ifd_offset, self.tiff.byte_order).or_raise(|| {
+            TileLoader::from_ifd(ifd, *ifd_offset, self.tiff().byte_order).or_raise(|| {
                 ReadError::fatal(
                     "Could not create TileLoader from ifd. This is a bug. please open an issue"
                         .into(),

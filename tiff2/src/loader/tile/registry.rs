@@ -204,7 +204,7 @@ impl Decoder for ZstdCppDecoder {
 #[derive(Debug, Clone, Copy)]
 pub struct JpegDecoder;
 
-#[cfg(feature = "jpeg-encoder")]
+#[cfg(feature = "jpeg-decoder")]
 // https://github.com/image-rs/image-tiff/blob/3bfb43e83e31b0da476832067ada68a82b378b7b/src/decoder/image.rs#L389-L450
 impl Decoder for JpegDecoder {
     fn decode_tile(
@@ -214,6 +214,7 @@ impl Decoder for JpegDecoder {
         tile_opts: &TileOpts,
     ) -> CodingResult<()> {
         use crate::structs::metadata::tags::PhotometricInterpretation;
+        use std::io::{BufRead, BufReader};
 
         ensure!(
             tile_opts.jpeg_tables.is_none() || buf.len() >= 2,
@@ -240,15 +241,15 @@ impl Decoder for JpegDecoder {
                     .read_exact(&mut [0; 2])
                     .or_raise(|| CodingError::failed("failed to decode into buffer".to_string()))?;
 
-                Box::new(
+                Box::new(BufReader::new(
                     Cursor::new(&jpeg_tables[..jpeg_tables.len() - 2])
                         .chain(reader.take(compressed_length)),
-                ) as Box<dyn Read>
+                )) as Box<dyn BufRead>
             }
-            None => Box::new(reader.take(compressed_length)),
+            None => Box::new(BufReader::new(reader.take(compressed_length))) as Box<dyn BufRead>,
         };
 
-        let mut decoder = jpeg::Decoder::new(jpeg_reader);
+        let mut decoder = zune_jpeg::JpegDecoder::new(jpeg_reader);
 
         match tile_opts.photometric_interpretation {
             PhotometricInterpretation::RGB => {
